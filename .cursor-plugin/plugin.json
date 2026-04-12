@@ -1,0 +1,24 @@
+{
+  "name": "lope",
+  "displayName": "Lope",
+  "description": "Multi-CLI validator ensemble sprint runner. Any AI CLI implements, any AI CLI validates, majority vote decides. Three modes: negotiate, execute, audit. Works for engineering, business, and research.",
+  "version": "0.3.0",
+  "author": {
+    "name": "Sebastian Schkudlara",
+    "email": "sebastian@traylinx.com"
+  },
+  "homepage": "https://github.com/traylinx/lope",
+  "repository": "https://github.com/traylinx/lope",
+  "license": "MIT",
+  "keywords": [
+    "sprint",
+    "validator",
+    "ensemble",
+    "multi-cli",
+    "negotiate",
+    "execute",
+    "audit"
+  ],
+  "skills": "./skills/",
+  "commands": "./commands/"
+}

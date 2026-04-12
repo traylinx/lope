@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# Lope installer — registers skills and commands in each AI CLI host's
+# native command/skill directory using the format that host expects.
+#
+# Usage: ./install [--host claude|codex|gemini|opencode|cursor|all]
+# Compatible with bash 3.2+ (stock macOS).
+
+set -euo pipefail
+
+LOPE_DIR="$(cd "$(dirname "$0")" && pwd)"
+SKILLS_DIR="$LOPE_DIR/skills"
+COMMANDS_DIR="$LOPE_DIR/commands"
+
+# Parse args (POSIX-compatible, no bash 4+ features)
+HOST="all"
+SKIP_NEXT=0
+ARGS=("$@")
+for i in "${!ARGS[@]}"; do
+  if [ "$SKIP_NEXT" = "1" ]; then SKIP_NEXT=0; continue; fi
+  arg="${ARGS[$i]}"
+  case "$arg" in
+    --host=*)
+      HOST="${arg#--host=}"
+      ;;
+    --host)
+      next_i=$((i + 1))
+      if [ "$next_i" -lt "${#ARGS[@]}" ]; then
+        HOST="${ARGS[$next_i]}"
+        SKIP_NEXT=1
+      fi
+      ;;
+    claude|codex|gemini|opencode|cursor|all)
+      HOST="$arg"
+      ;;
+  esac
+done
+
+# Idempotent replace: remove whatever is at $target (symlink, dir, or file).
+replace_target() {
+  local target="$1"
+  if [ -L "$target" ]; then rm -f "$target"
+  elif [ -d "$target" ]; then rm -rf "$target"
+  elif [ -e "$target" ]; then rm -f "$target"
+  fi
+}
+
+# ─── Per-host install functions ────────────────────────────────
+
+# Claude Code: skills/ dir, one subdir per skill containing SKILL.md
+install_claude() {
+  local dir="$HOME/.claude/skills"
+  mkdir -p "$dir"
+  for skill in "$SKILLS_DIR"/lope "$SKILLS_DIR"/lope-*/ "$SKILLS_DIR"/using-lope; do
+    skill="${skill%/}"
+    [ -d "$skill" ] || continue
+    local target="$dir/$(basename "$skill")"
+    replace_target "$target"
+    ln -sf "$(cd "$skill" && pwd)" "$target"
+    echo "  claude:   $target -> $skill"
+  done
+}
+
+# Codex: skills/ dir for skill content; commands/ for slash commands.
+# Modern Codex ALSO reads AGENTS.md so we rely on that + skills symlinks.
+install_codex() {
+  local dir="$HOME/.codex/skills"
+  mkdir -p "$dir"
+  for skill in "$SKILLS_DIR"/lope "$SKILLS_DIR"/lope-*/ "$SKILLS_DIR"/using-lope; do
+    skill="${skill%/}"
+    [ -d "$skill" ] || continue
+    local target="$dir/$(basename "$skill")"
+    replace_target "$target"
+    ln -sf "$(cd "$skill" && pwd)" "$target"
+    echo "  codex:    $target -> $skill"
+  done
+}
+
+# Gemini CLI: commands/<namespace>/<command>.toml format.
+# We write 3 TOML files under ~/.gemini/commands/lope/ so the user gets
+# /lope:negotiate, /lope:execute, /lope:audit (Gemini's slash syntax).
+install_gemini() {
+  local dir="$HOME/.gemini/commands/lope"
+  mkdir -p "$dir"
+  for toml in "$COMMANDS_DIR"/lope/*.toml; do
+    [ -f "$toml" ] || continue
+    local target="$dir/$(basename "$toml")"
+    replace_target "$target"
+    ln -sf "$(cd "$(dirname "$toml")" && pwd)/$(basename "$toml")" "$target"
+    echo "  gemini:   $target -> $toml"
+  done
+}
+
+# OpenCode: ~/.config/opencode/command/ (singular "command") with flat
+# markdown files. We generate one .md per skill pointing at the SKILL.md
+# content, plus a lope.md umbrella.
+install_opencode() {
+  local dir="$HOME/.config/opencode/command"
+  mkdir -p "$dir"
+  for skill in "$SKILLS_DIR"/lope "$SKILLS_DIR"/lope-*/ "$SKILLS_DIR"/using-lope; do
+    skill="${skill%/}"
+    [ -d "$skill" ] || continue
+    local name="$(basename "$skill")"
+    local src="$skill/SKILL.md"
+    local target="$dir/$name.md"
+    [ -f "$src" ] || continue
+    replace_target "$target"
+    ln -sf "$src" "$target"
+    echo "  opencode: $target -> $src"
+  done
+}
+
+# Cursor: ~/.cursor/agents/ with flat markdown files.
+install_cursor() {
+  local dir="$HOME/.cursor/agents"
+  mkdir -p "$dir"
+  for skill in "$SKILLS_DIR"/lope "$SKILLS_DIR"/lope-*/ "$SKILLS_DIR"/using-lope; do
+    skill="${skill%/}"
+    [ -d "$skill" ] || continue
+    local name="$(basename "$skill")"
+    local src="$skill/SKILL.md"
+    local target="$dir/$name.md"
+    [ -f "$src" ] || continue
+    replace_target "$target"
+    ln -sf "$src" "$target"
+    echo "  cursor:   $target -> $src"
+  done
+}
+
+install_host() {
+  case "$1" in
+    claude)   install_claude ;;
+    codex)    install_codex ;;
+    gemini)   install_gemini ;;
+    opencode) install_opencode ;;
+    cursor)   install_cursor ;;
+    *) echo "Unknown host: $1"; return 1 ;;
+  esac
+}
+
+echo ""
+echo "Lope v0.2.1 — Installing skills and commands"
+echo "─────────────────────────────────────────────"
+echo ""
+
+if [ "$HOST" = "all" ]; then
+  for h in claude codex gemini opencode cursor; do
+    install_host "$h" 2>/dev/null || echo "  $h:      (skipped — not detected)"
+  done
+else
+  install_host "$HOST"
+fi
+
+echo ""
+echo "Verifying lope engine..."
+if python3 -c "import sys; sys.path.insert(0, '$LOPE_DIR'); import lope; print('  OK — lope v' + lope.__version__)" 2>/dev/null; then
+  :
+else
+  echo "  WARNING: python3 import check failed"
+  echo "  Make sure Python 3.9+ is installed: python3 --version"
+fi
+echo ""
+echo "Slash commands registered:"
+echo "  Claude Code  /lope  /lope-negotiate  /lope-execute  /lope-audit"
+echo "  Codex        /lope  /lope-negotiate  /lope-execute  /lope-audit"
+echo "  Gemini CLI   /lope:negotiate  /lope:execute  /lope:audit"
+echo "  OpenCode     /lope  /lope-negotiate  /lope-execute  /lope-audit"
+echo "  Cursor       /lope  /lope-negotiate  /lope-execute  /lope-audit"
+echo ""
+echo "Next steps:"
+echo "  1. Configure validators:  PYTHONPATH=$LOPE_DIR python3 -m lope configure"
+echo "  2. Check status:          PYTHONPATH=$LOPE_DIR python3 -m lope status"
+echo "  3. Alias for convenience: alias lope='PYTHONPATH=$LOPE_DIR python3 -m lope'"
+echo ""

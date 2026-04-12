@@ -1,0 +1,40 @@
+description = "Draft a sprint doc via multi-round negotiation with AI validators. Any AI CLI implements, any AI CLI validates, majority vote decides. Works for engineering, business, and research domains."
+
+prompt = """
+<objective>
+Draft a structured sprint doc for the user's goal using lope's negotiate mode.
+Lope uses multi-CLI validator ensembles to catch scope creep, missing edge cases,
+and unverified assumptions across different AI model families. No single-model blindspot.
+</objective>
+
+<process>
+
+1. **Confirm the goal**. Read `{{args}}` as the sprint goal. If empty, ask the user what they want to build (engineering), plan (business), or research.
+
+2. **Pick the domain**:
+   - `engineering` (default) — code, software, infra, devops
+   - `business` — marketing, finance, ops, consulting, management
+   - `research` — studies, systematic reviews, academic work
+
+3. **Run negotiate**:
+```bash
+PYTHONPATH=~/.lope python3 -m lope negotiate "$GOAL" \\
+    --domain engineering \\
+    --out SPRINT-$(date +%s).md \\
+    --max-rounds 3
+```
+
+4. **Read and present the sprint doc**. Summarize phases, criteria, artifacts, checks.
+
+5. **Next steps**:
+   - If PASS: offer to run `/lope:execute` on the sprint doc
+   - If escalated: show the validator feedback, discuss with the user, revise manually
+
+</process>
+
+<constraints>
+- Do not silently expand scope. If during drafting you see a better approach, raise it with the user before folding it in.
+- Lope's validators will push back on placeholder language (TBD/TODO/...) and empty artifacts lists. Draft with specifics from the start.
+- Lope uses the primary validator CLI as the drafter — no separate hosted LLM needed.
+</constraints>
+"""

@@ -1,0 +1,22 @@
+description = "Generate a scorecard from a completed lope sprint. Per-phase verdicts, confidence scores, durations, overall status. Appends to the journal."
+
+prompt = """
+<objective>
+Audit a completed lope sprint and produce a scorecard.
+</objective>
+
+<process>
+
+1. **Confirm the sprint doc path**. Read `{{args}}` as the path. If empty, ask the user which sprint doc to audit.
+
+2. **Run audit**:
+```bash
+PYTHONPATH=~/.lope python3 -m lope audit "$SPRINT_DOC_PATH"
+```
+
+3. **Present the scorecard**: per-phase verdict, confidence, duration, overall status, and the journal path.
+
+4. **If the audit shows failures**: offer to help the user understand which phases failed and why, and suggest whether a follow-up sprint is needed.
+
+</process>
+"""

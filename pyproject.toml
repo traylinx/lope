@@ -1,0 +1,30 @@
+[project]
+name = "lope-agent"
+version = "0.3.0"
+description = "Autonomous sprint runner with multi-CLI validator ensemble. Any AI CLI implements, any AI CLI validates."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [
+    { name = "Sebastian Schkudlara" },
+]
+keywords = ["ai", "agent", "sprint", "validation", "ensemble", "cli", "claude", "gemini", "codex", "opencode"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = []
+
+[project.scripts]
+lope = "lope.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/traylinx/lope"
+Repository = "https://github.com/traylinx/lope"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

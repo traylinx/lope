@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Lope SessionStart hook — injects a brief "lope is available" context
+# into the agent's session. Works for Claude Code, Cursor, and any host
+# that reads hookSpecificOutput.additionalContext or additional_context.
+#
+# Respects LOPE_HOOK=off to disable the briefing entirely.
+# Bash 3.2 compatible (stock macOS).
+
+set -euo pipefail
+
+# Opt-out
+if [ "${LOPE_HOOK:-}" = "off" ]; then
+  printf '{}\n'
+  exit 0
+fi
+
+# The brief we inject. Deliberately short (~180 tokens). Specific about
+# when to use lope and when NOT to, so it doesn't spam agents on trivial
+# tasks.
+read -r -d '' _LOPE_BRIEF <<'EOF' || true
+<lope-available>
+Lope is installed. Lope is a multi-CLI validator ensemble sprint runner. Any AI CLI implements, any AI CLI validates, majority vote decides. Three modes: /lope-negotiate, /lope-execute, /lope-audit. Also /lope for the umbrella.
+
+TWO WAYS THE USER WILL INVOKE LOPE:
+
+1. Explicit slash command. They type /lope-negotiate "goal". Route to that skill.
+
+2. Natural language. They describe multi-phase work in prose ("plan the auth refactor", "scope the data ingestion rewrite", "draft 3 blog posts for launch", "negotiate the Q4 campaign carefully"). You recognize the shape and invoke lope yourself. Extract the goal from their prose as the sprint goal string. Pick --domain engineering (code) / business (marketing, finance, ops) / research (studies, reviews). Run `lope negotiate "goal" --domain X`.
+
+TRIGGER WORDS for natural-language path: plan, negotiate, scope, draft, roll out, work through, "carefully", "don't break things", "needs to be right".
+
+DO NOT TRIGGER on: single-edit tasks (rename, typo, one-line fix), pure conversation ("what does this do?"), trivial operations (add a print, remove a comment), urgent fire-fighting.
+
+DO NOT WRITE WRAPPER SCRIPTS AROUND LOPE. Lope is already a CLI. Never create lope_runner.py, generate_blog_posts.py, or any Python/bash scaffold that imports or wraps lope. Just run `lope <mode> <args>` directly in a shell. Lope is the harness.
+
+DO NOT INVENT FLAGS. `lope negotiate` takes --domain, --out, --max-rounds, --context. That is the complete list. No --host, no --title, no --validators on negotiate.
+
+Default voice for internal lope work: intelligent caveman mode (terse, token-efficient, code/paths stay exact). Auto-disabled for external writing (emails, published content).
+
+Samples: $HOME/.lope/docs/samples.md
+Umbrella skill: $HOME/.lope/skills/lope/SKILL.md
+Auto-trigger skill: $HOME/.lope/skills/using-lope/SKILL.md
+</lope-available>
+EOF
+
+# Escape for JSON embedding using parameter substitution (fast, no jq dep).
+escape_for_json() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+_LOPE_BRIEF_ESCAPED="$(escape_for_json "$_LOPE_BRIEF")"
+
+# Emit the right JSON shape for the host that invoked this hook.
+#   - Cursor sets CURSOR_PLUGIN_ROOT → wants additional_context (snake_case)
+#   - Claude Code sets CLAUDE_PLUGIN_ROOT → wants hookSpecificOutput.additionalContext
+#   - Others default to additional_context (SDK standard)
+if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
+  printf '{"additional_context":"%s"}\n' "$_LOPE_BRIEF_ESCAPED"
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  printf '{"hookSpecificOutput":{"additionalContext":"%s"}}\n' "$_LOPE_BRIEF_ESCAPED"
+else
+  printf '{"additional_context":"%s"}\n' "$_LOPE_BRIEF_ESCAPED"
+fi

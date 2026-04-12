@@ -1,0 +1,36 @@
+description = "Run a lope sprint doc phase by phase with validator-in-the-loop retry. Each phase is validated by the ensemble before advancing. Up to 3 retry attempts per phase with specific fix instructions."
+
+prompt = """
+<objective>
+Execute a lope sprint doc in order, phase by phase, with validator-in-the-loop review after each phase.
+</objective>
+
+<process>
+
+1. **Confirm the sprint doc path**. Read `{{args}}` as the path. If empty, ask the user which sprint doc to execute (they should have one from `/lope:negotiate`).
+
+2. **Read the sprint doc** so you understand the phases, goals, artifacts, and checks.
+
+3. **Run execute**:
+```bash
+PYTHONPATH=~/.lope python3 -m lope execute "$SPRINT_DOC_PATH"
+```
+
+4. **Per-phase flow**:
+   - Lope will print each phase's goal and criteria
+   - You (the CLI agent) implement the phase — edit files, run tests, whatever the phase requires
+   - Press Enter when the phase is ready for validation
+   - Lope's validator ensemble votes: PASS / NEEDS_FIX / FAIL
+   - On NEEDS_FIX, apply the specific fixes and press Enter again
+   - On PASS, the phase advances
+   - Up to 3 retry rounds per phase before escalation
+
+5. **After all phases pass**, suggest `/lope:audit` to generate the scorecard.
+
+</process>
+
+<constraints>
+- Do not skip the validation step even if you think the phase is obviously done — the validators may catch something.
+- Do not silently expand a phase's scope. If the phase should include something extra, raise it with the user first.
+</constraints>
+"""
