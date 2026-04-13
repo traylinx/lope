@@ -127,7 +127,7 @@ def _safe_read(path: str, retries: int = 1) -> Optional[Dict[str, Any]]:
                 return None
             with open(path) as f:
                 return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError) as e:
+        except (FileNotFoundError, json.JSONDecodeError):
             if attempt >= retries:
                 return None
             attempt += 1
@@ -174,9 +174,16 @@ def _env_bool(name: str) -> Optional[bool]:
 
 def load_layered(
     cwd: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
     cli_overrides: Optional[Dict[str, Any]] = None,
 ) -> LopeCfg:
     """Load config with 5-layer precedence, highest-wins per field.
+
+    Args:
+      cwd: Working directory for per-project config lookup. Defaults to os.getcwd().
+      env: Environment mapping for the env-var layer. Defaults to os.environ.
+           Pass a custom dict in tests without monkeypatching os.environ.
+      cli_overrides: Argparse-derived dict with keys validators/primary/timeout/parallel.
 
     Layers, from lowest to highest precedence:
       1. Built-in defaults (empty validators, 480s timeout, parallel=True)
@@ -192,6 +199,9 @@ def load_layered(
     Returns a LopeCfg with the merged result. Never writes anything; callers
     that want to persist must call save() explicitly.
     """
+    # Use os.environ by default. Tests may pass a custom dict.
+    if env is None:
+        env = os.environ
     # Layer 1: built-in defaults
     merged: Dict[str, Any] = {
         "validators": [],
@@ -213,39 +223,46 @@ def load_layered(
         merged["learned_adapters"] = dict(global_cfg.learned_adapters)
 
     # Layer 3: per-project (./.lope/config.json in cwd)
-    proj_cfg = load(project_path(cwd))
-    if proj_cfg is not None:
-        # Only override fields that are explicitly set in the project file —
-        # we detect "explicitly set" by checking the raw JSON, since LopeCfg
-        # always has default values.
-        raw = _safe_read(project_path(cwd)) or {}
-        if isinstance(raw.get("validators"), list):
-            merged["validators"] = list(proj_cfg.validators)
-        if isinstance(raw.get("primary"), str):
-            merged["primary"] = proj_cfg.primary
-        if isinstance(raw.get("timeout"), int):
-            merged["timeout"] = proj_cfg.timeout
-        if isinstance(raw.get("parallel"), bool):
-            merged["parallel"] = proj_cfg.parallel
-        if isinstance(raw.get("providers"), list) and raw["providers"]:
-            merged["providers"] = list(proj_cfg.providers)
-        # learned_adapters intentionally NOT inherited from project config —
-        # those are always user-global.
+    # Read raw JSON once — avoids a double _safe_read and lets us apply a
+    # relaxed version policy: absent `version` key = partial override (accept);
+    # only reject on explicit version mismatch with the current schema.
+    proj_raw = _safe_read(project_path(cwd)) or {}
+    if proj_raw:
+        proj_version = proj_raw.get("version")
+        if proj_version is None or proj_version == VERSION:
+            if isinstance(proj_raw.get("validators"), list):
+                merged["validators"] = [
+                    s for s in proj_raw["validators"] if isinstance(s, str)
+                ]
+            if isinstance(proj_raw.get("primary"), str):
+                merged["primary"] = proj_raw["primary"]
+            if isinstance(proj_raw.get("timeout"), int):
+                merged["timeout"] = proj_raw["timeout"]
+            if isinstance(proj_raw.get("parallel"), bool):
+                merged["parallel"] = proj_raw["parallel"]
+            if isinstance(proj_raw.get("providers"), list) and proj_raw["providers"]:
+                merged["providers"] = list(proj_raw["providers"])
+            # learned_adapters intentionally NOT inherited from project config —
+            # those are always user-global.
 
-    # Layer 4: environment variables
-    env_validators = _env_list("LOPE_VALIDATORS")
-    if env_validators is not None:
-        merged["validators"] = env_validators
-    env_primary = os.environ.get("LOPE_PRIMARY")
-    if env_primary:
-        merged["primary"] = env_primary
-    env_timeout = _env_int("LOPE_TIMEOUT")
-    if env_timeout is not None:
-        merged["timeout"] = env_timeout
-    env_parallel = _env_bool("LOPE_PARALLEL")
-    if env_parallel is not None:
-        merged["parallel"] = env_parallel
-    if _env_bool("LOPE_SEQUENTIAL"):
+    # Layer 4: environment variables (read from the `env` mapping arg)
+    raw_validators = env.get("LOPE_VALIDATORS")
+    if raw_validators:
+        merged["validators"] = [s.strip() for s in raw_validators.split(",") if s.strip()]
+    raw_primary = env.get("LOPE_PRIMARY")
+    if raw_primary:
+        merged["primary"] = raw_primary
+    raw_timeout = env.get("LOPE_TIMEOUT")
+    if raw_timeout:
+        try:
+            merged["timeout"] = int(raw_timeout)
+        except ValueError:
+            pass
+    raw_parallel = env.get("LOPE_PARALLEL")
+    if raw_parallel is not None:
+        merged["parallel"] = raw_parallel.lower() in ("1", "true", "yes", "on")
+    raw_sequential = env.get("LOPE_SEQUENTIAL", "")
+    if raw_sequential.lower() in ("1", "true", "yes", "on"):
         merged["parallel"] = False
 
     # Layer 5: CLI overrides (from argparse in cli.py)

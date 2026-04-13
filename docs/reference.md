@@ -44,6 +44,8 @@ Draft a sprint doc via multi-round validator review.
 Usage: lope negotiate [-h] [--out OUT] [--max-rounds MAX_ROUNDS]
                      [--context CONTEXT]
                      [--domain {engineering,business,research}]
+                     [--validators VALIDATORS] [--primary PRIMARY]
+                     [--timeout TIMEOUT] [--parallel | --sequential]
                      goal
 
 Positional:
@@ -54,22 +56,34 @@ Flags:
   --max-rounds MAX_ROUNDS     Max negotiation rounds before escalation (default: 3).
   --context CONTEXT           Additional context string or file path (e.g., --context @CLIENT-BRIEF.md).
   --domain DOMAIN             engineering (default) / business / research.
+  --validators VALIDATORS     Comma-separated validator list, e.g. opencode,gemini (overrides config).
+  --primary PRIMARY           Primary validator name (must be in --validators or global config).
+  --timeout TIMEOUT           Per-validator timeout in seconds (overrides config).
+  --parallel / --sequential   Force parallel or sequential ensemble execution (overrides config).
 ```
 
-**That is the complete flag list.** There is no `--host`, no `--title`, no `--validators` on negotiate. Never invent flags.
+**There is no `--host`, no `--title`, no `--output-format` on negotiate.** Run `lope negotiate --help` if unsure.
 
 ### `lope execute <sprint_doc>`
 
 Run sprint phases with validator-in-the-loop retry.
 
 ```
-Usage: lope execute [-h] [--phase PHASE] sprint_doc
+Usage: lope execute [-h] [--phase PHASE] [--manual]
+                   [--validators VALIDATORS] [--primary PRIMARY]
+                   [--timeout TIMEOUT] [--parallel | --sequential]
+                   sprint_doc
 
 Positional:
   sprint_doc                  Path to the sprint doc produced by `lope negotiate`.
 
 Flags:
   --phase PHASE               Run only the named phase instead of the full sprint.
+  --manual                    Human-in-the-loop mode: wait for Enter between phases.
+  --validators VALIDATORS     Comma-separated validator list (overrides config, not persisted).
+  --primary PRIMARY           Primary validator name (overrides config, not persisted).
+  --timeout TIMEOUT           Per-validator timeout in seconds (overrides config, not persisted).
+  --parallel / --sequential   Force parallel or sequential ensemble execution.
 ```
 
 ### `lope audit <sprint_doc>`
@@ -77,10 +91,17 @@ Flags:
 Generate a scorecard from execution results.
 
 ```
-Usage: lope audit [-h] [--out OUT] sprint_doc
+Usage: lope audit [-h] [--no-journal]
+                 [--validators VALIDATORS] [--primary PRIMARY]
+                 [--timeout TIMEOUT] [--parallel | --sequential]
+                 sprint_doc
 
 Flags:
-  --out OUT                   Where to write the scorecard (default: <sprint_doc>.audit.md).
+  --no-journal                Skip journal write.
+  --validators VALIDATORS     Comma-separated validator list (for future re-runs).
+  --primary PRIMARY           Primary validator name.
+  --timeout TIMEOUT           Per-validator timeout in seconds.
+  --parallel / --sequential   Force parallel or sequential ensemble execution.
 ```
 
 ### `lope status`
@@ -326,7 +347,7 @@ alias lope='PYTHONPATH=~/.lope python3 -m lope'
 
 ## Hard rules for agents invoking lope
 
-1. **Do not invent flags.** `lope negotiate` flags are exactly: `--out`, `--max-rounds`, `--context`, `--domain`. No `--host`, no `--title`, no `--validators`. Run `lope <mode> --help` if unsure.
+1. **Do not invent flags.** `lope negotiate` flags are exactly: `--out`, `--max-rounds`, `--context`, `--domain`, `--validators`, `--primary`, `--timeout`, `--parallel`, `--sequential`. No `--host`, no `--title`, no `--output-format`. Run `lope <mode> --help` if unsure.
 
 2. **Do not write a wrapper script around lope.** Lope is already a CLI. Never create `lope_runner.py`, `generate_with_lope.sh`, or any Python/bash scaffold that imports or wraps lope. Invoke `lope <mode> <args>` directly in a shell.
 

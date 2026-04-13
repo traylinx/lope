@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.4.4 — Meta-dogfood fruit: autonomous tests + spec drift fix
+
+The v0.4.3 meta-dogfood with **claude as primary** (via `LOPE_PRIMARY=claude LOPE_VALIDATORS=claude,opencode`, in-memory only — `~/.lope/config.json` mtime unchanged, verifying the v0.4.0 config scoping) ran for **28 minutes**, three full autonomous rounds of implementation → two-stage validator review → NEEDS_FIX retry. Phase 1 escalated on attempt 3 when the opencode reviewer caught a genuine spec-vs-code API drift.
+
+This is lope working exactly as designed. A single-model loop would have shipped the drift. The ensemble caught it.
+
+### The spec drift
+
+Sprint doc Phase 1 **Files:** said:
+
+> `lope/config.py` — add `load_layered(cwd, env, cli_overrides)` that merges all four layers with clear precedence.
+
+My v0.4.0 implementation had signature `load_layered(cwd, cli_overrides)` — no explicit `env` parameter. Env vars were read from `os.environ` directly inside the function. This shipped and worked for the common case, but:
+
+- Made unit testing harder (monkeypatch required instead of passing a dict)
+- Diverged from the documented API
+- Opencode's 3 review rounds flagged `config.py:175 — load_layered signature is (cwd, cli_ov...` as a spec deviation
+
+### Fix in v0.4.4
+
+- **`load_layered(cwd=None, env=None, cli_overrides=None)`** — added explicit `env: Optional[Dict[str, str]]` parameter. Defaults to `os.environ` when None. Tests can now pass a custom dict without touching global state.
+- **Internal env var reads** in `load_layered` now use the `env` mapping arg (not `os.environ` directly). Backwards-compatible: all existing callers work without changes because `env=None` defaults to `os.environ`.
+- **Matches sprint doc.** Validator escalation resolved by making code match spec, not spec match code.
+
+### Autonomous-written test suite (`tests/test_config_layered.py`, 437 lines, 10 tests)
+
+Claude, running as the primary implementer in the meta-dogfood, **wrote the entire Phase 1 test file autonomously** across the 3 rounds. This is the first lope release where part of the code was written by the autonomous loop lope runs. Tests added:
+
+- `test_load_layered_full_precedence` — the 4-layer precedence chain with all layers set (CLI > env > project > global). The acceptance criterion from Phase 1 of the v0.4.0 sprint doc.
+- `test_load_layered_global_only_matches_load` — regression: `load_layered()` with only global config equals `load()`.
+- `test_lope_validators_env_parsed` — `LOPE_VALIDATORS="claude,gemini"` parses to `["claude", "gemini"]`.
+- `test_lope_validators_env_strips_whitespace` — trims whitespace in comma-separated values.
+- `test_cli_validators_flag_does_not_mutate_global` — **the critical integration test**: running `lope negotiate --validators opencode,gemini` does not touch `~/.lope/config.json` mtime. This is the v0.4.0 concurrent-session-safety promise verified automatically.
+- `test_project_config_overrides_global_primary` — per-project `.lope/config.json` overrides global primary without mutating the global file.
+- `test_configure_writes_to_global_path` — regression: `lope configure` still writes to `~/.lope/config.json` (the one explicit-save path that DOES touch global).
+- `test_project_config_no_version_accepted` — new relaxed version policy: per-project configs with absent `version` key are accepted as partial overrides.
+- `test_lope_sequential_forces_sequential` — `LOPE_SEQUENTIAL=1` flips the default parallel ensemble to sequential.
+- `test_learned_adapters_not_inherited_from_project` — per-project configs cannot override the user-global `learned_adapters` (intentional: healer state is always user-global).
+
+All 10 tests pass on first run against v0.4.4 code: `pytest tests/test_config_layered.py` → **10 passed in 3.45s**.
+
+### Quality improvements also shipped (also claude-written during the meta-dogfood)
+
+- **`docs/reference.md`** — added the new `--validators` / `--primary` / `--timeout` / `--parallel` / `--sequential` flags to the documented usage blocks for all three subcommands (`negotiate`, `execute`, `audit`). Updated the "do not invent flags" hard rule to include the new flag list.
+- **`lope/config.py`** — relaxed per-project version policy: configs with absent `version` key are accepted (partial override). Only rejected on explicit version mismatch with the current schema. Dual `_safe_read` call for project config collapsed into one, cleaner.
+- **`lope/cli.py`** — cleaner `--parallel`/`--sequential` default pattern using `set_defaults(parallel=None)` instead of `default=None` on each add_argument, which was causing argparse to reject the combination.
+
+### Dogfood tally — 9 bugs caught in one session
+
+| # | Bug | Shipped in |
+|---|---|---|
+| 1 | v0.3.1 OpenCode path singular vs plural | v0.3.2 |
+| 2 | Zero-phase sprint false success | v0.4.0 |
+| 3 | `_cmd_execute` hardcoded `input()` | v0.4.0 |
+| 4 | Global config clobber / no pool flags | v0.4.0 |
+| 5 | `CodexValidator` hardcoded `--quiet` | v0.4.1 |
+| 6 | Self-heal validate-only (gap in generate path) | v0.4.1 |
+| 7 | `_phase_to_prompt` list/str crash on retry | v0.4.2 |
+| 8 | `CodexValidator` stdin inheritance | v0.4.3 |
+| 9 | `load_layered` signature drift from spec | v0.4.4 |
+
+Plus one operational signal: codex account rate-limited, resolved by switching primary via env var (which is literally the feature v0.4.0 config scoping was designed for).
+
+### What's still open
+
+- **Phases 2-5 of the v0.4.0 sprint** never ran in the meta-dogfood — Phase 1 escalated on attempt 3 and the sprint stopped there. Phase 2 (atomic writes + fcntl.flock) is already implemented in v0.4.0 and covered by manual smoke tests, but not yet autonomously re-verified. Phases 3/4 (self-heal detection + execution) and Phase 5 (observability + docs) are implemented and smoke-tested (18 manual assertions) but not yet covered by the new pytest suite.
+- **Tests for phases 2-5** are the next natural step. Either hand-write them now or trigger another autonomous round with claude as primary (which is cheaper than the v0.4.3 run because Phase 1 is now green).
+
 ## 0.4.3 — Codex stdin inheritance fix
 
 Eighth bug caught by the v0.4.2 meta-dogfood retry. Codex 0.120.0 now reads from stdin whenever stdin is inherited (not a TTY) — it looks for additional input to append as a `<stdin>` block alongside the argv prompt. When run from a non-interactive subprocess with no stdin piped, codex blocks or errors with:

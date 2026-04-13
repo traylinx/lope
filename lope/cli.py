@@ -57,11 +57,12 @@ def main():
                        help="Name of the primary validator (must be in --validators)")
         p.add_argument("--timeout", type=int, default=None,
                        help="Per-validator timeout in seconds")
+        p.set_defaults(parallel=None)
         parallel_group = p.add_mutually_exclusive_group()
         parallel_group.add_argument("--parallel", dest="parallel", action="store_true",
-                                    default=None, help="Run validators in parallel")
+                                    help="Run validators in parallel")
         parallel_group.add_argument("--sequential", dest="parallel", action="store_false",
-                                    default=None, help="Run validators sequentially")
+                                    help="Run validators sequentially")
 
     # negotiate
     neg = sub.add_parser("negotiate", help="Draft a sprint doc via multi-round validation")
@@ -317,7 +318,7 @@ def _ensure_config(args=None):
         if not available:
             print("No AI CLIs detected. Install at least one of: claude, opencode, gemini, codex, aider")
             sys.exit(1)
-        if is_interactive() and load_config(default_path()) is None:
+        if is_interactive() and not os.path.exists(default_path()):
             cfg = run_selector(available)
             save_config(cfg, default_path())
         else:
