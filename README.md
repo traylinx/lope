@@ -516,6 +516,8 @@ PYTHONPATH=. python3 -m lope status
 
 Main areas: new validators, better prompts, sprint doc format, CI/CD integrations.
 
+**Cutting a release?** Follow [docs/RELEASING.md](docs/RELEASING.md). It has the full checklist, the SemVer rules lope uses, and the version-bumper script that keeps all 6 version strings in sync.
+
 ---
 
 ## License
