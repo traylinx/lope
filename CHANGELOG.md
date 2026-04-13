@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.3 — Codex stdin inheritance fix
+
+Eighth bug caught by the v0.4.2 meta-dogfood retry. Codex 0.120.0 now reads from stdin whenever stdin is inherited (not a TTY) — it looks for additional input to append as a `<stdin>` block alongside the argv prompt. When run from a non-interactive subprocess with no stdin piped, codex blocks or errors with:
+
+```
+Reading additional input from stdin...
+```
+
+and exits 1 before ever hitting the model.
+
+### Fix
+
+`CodexValidator.generate()` and `.validate()` both pass `input=""` to `subprocess.run()` now, explicitly piping an empty stdin so codex treats the argv prompt as the sole instructions. Before v0.4.3 the `stdin` kwarg was omitted, which inherited the parent's stdin — fine in a foreground TTY, broken in any non-TTY context (background tasks, CI, nested subprocesses like the autonomous execute loop).
+
+### Housekeeping
+
+- Removed broken symlink `~/.codex/skills/skill-creator → ../../.agents/skills/skill-creator` that was polluting codex's stderr on every run. Not a lope file, but it was a distraction when diagnosing this bug.
+
+### Dogfood tally (still climbing)
+
+- v0.4.0 → bugs 5+6 (codex `--quiet`, self-heal generate() gap)
+- v0.4.1 → bug 7 (fix_context list/str mismatch)
+- v0.4.2 → bug 8 (codex stdin inheritance)
+- v0.4.3 → meta-dogfood still blocked at this point because codex account is also **rate-limited** ("You've hit your usage limit"). Next step is to switch primary to claude via `LOPE_PRIMARY=claude` env var, which also dogfoods the v0.4.0 config-scoping feature (env var override without touching `~/.lope/config.json`).
+
 ## 0.4.2 — `_phase_to_prompt` handles list fix_context
 
 v0.4.1's meta-dogfood advanced one full retry round deeper than v0.4.0 before hitting the next bug. The autonomous implementer ran, codex returned 767 chars, validators reviewed, spec NEEDS_FIX with 7 required fixes, executor correctly started attempt 2 — then crashed:

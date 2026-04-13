@@ -1,6 +1,6 @@
 [project]
 name = "lope-agent"
-version = "0.4.2"
+version = "0.4.3"
 description = "Autonomous sprint runner with multi-CLI validator ensemble. Any AI CLI implements, any AI CLI validates."
 readme = "README.md"
 license = { text = "MIT" }

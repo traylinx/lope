@@ -1182,8 +1182,14 @@ class CodexValidator(Validator):
         if not self.available():
             raise RuntimeError(f"codex binary not found: {self._binary}")
         try:
+            # v0.4.3: codex 0.120.0 reads stdin when inherited. Pipe empty
+            # stdin so the CLI uses the argv prompt exclusively and doesn't
+            # block or error with "Reading additional input from stdin..."
+            # when run from a non-TTY subprocess (background tasks, tests,
+            # the autonomous execute loop).
             proc = subprocess.run(
                 [self._binary, "exec", prompt],
+                input="",
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -1209,8 +1215,10 @@ class CodexValidator(Validator):
 
         started = time.time()
         try:
+            # v0.4.3: pipe empty stdin (see generate() comment above)
             proc = subprocess.run(
-                [self._binary, "exec", self._build_prompt(prompt)],  # v0.4.1: --quiet removed upstream
+                [self._binary, "exec", self._build_prompt(prompt)],
+                input="",
                 capture_output=True,
                 text=True,
                 timeout=timeout,
