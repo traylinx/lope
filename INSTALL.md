@@ -1,12 +1,10 @@
 # Install Lope — any AI CLI, one prompt
 
-You (the AI agent reading this) are going to install lope for your user. Follow the steps below **in order**. Do not improvise. Do not skip the verification step.
+You (the AI agent reading this) are going to install lope for your user. **Do not improvise. Do not skip steps. Do not invent flags.**
 
 ## Context
 
-Lope is a multi-CLI validator ensemble sprint runner. Any AI CLI implements. Any AI CLI validates. Majority vote decides. Three modes: `/lope-negotiate`, `/lope-execute`, `/lope-audit`. Works on Claude Code, Codex, Gemini CLI, OpenCode, Cursor, GitHub Copilot CLI, and any other AI CLI that surfaces slash commands.
-
-Source of truth: https://github.com/traylinx/lope (MIT license, zero external Python deps, pure stdlib).
+Lope is a multi-CLI validator ensemble sprint runner. Any AI CLI implements. Any AI CLI validates. Majority vote decides. Three modes: `/lope-negotiate`, `/lope-execute`, `/lope-audit`. Source of truth: https://github.com/traylinx/lope (MIT, zero external Python deps, pure stdlib).
 
 ## Prerequisites
 
@@ -14,13 +12,9 @@ Source of truth: https://github.com/traylinx/lope (MIT license, zero external Py
 - `python3` >= 3.9 on `PATH`
 - `bash` 3.2+ (stock macOS works)
 
-Verify with:
+Verify with `git --version && python3 --version && bash --version | head -1`. If any are missing, stop and tell the user.
 
-```bash
-git --version && python3 --version && bash --version | head -1
-```
-
-If any of those are missing, stop and tell the user to install them before continuing. Do not try to work around missing prerequisites.
+---
 
 ## Step 1 — Clone or update lope to `~/.lope`
 
@@ -32,23 +26,139 @@ else
 fi
 ```
 
-## Step 2 — Run the installer
+---
+
+## Step 2 — Identify your host CLI and install
+
+You are running inside one specific AI CLI. **Figure out which one** (you know your own name) and jump to the matching section below. Execute the shell commands in that section. Each section is self-contained — only follow one.
+
+If you can't identify your host, fall back to **"Generic"** at the bottom.
+
+### If you are Claude Code
+
+Skills live at `~/.claude/skills/`. Each skill is a directory containing a `SKILL.md` with YAML frontmatter. Symlink the five lope skills in so updates propagate when `~/.lope` is pulled.
 
 ```bash
-"$HOME/.lope/install"
+mkdir -p "$HOME/.claude/skills"
+for skill in lope lope-negotiate lope-execute lope-audit using-lope; do
+  target="$HOME/.claude/skills/$skill"
+  [ -e "$target" ] || [ -L "$target" ] && rm -rf "$target"
+  ln -s "$HOME/.lope/skills/$skill" "$target"
+done
+ls -la "$HOME/.claude/skills/" | grep lope
 ```
 
-This script auto-detects which AI CLI hosts are present on the machine (Claude Code, Codex, Gemini CLI, OpenCode, Cursor) and writes lope's skills and commands into each host's **native** command directory using the format that host expects:
+Slash commands available after restart: `/lope`, `/lope-negotiate`, `/lope-execute`, `/lope-audit`.
 
-| Host | Path | Format |
-|---|---|---|
-| Claude Code | `~/.claude/skills/lope*/` | skill dirs with SKILL.md |
-| Codex | `~/.codex/skills/lope*/` | skill dirs with SKILL.md |
-| Gemini CLI | `~/.gemini/commands/lope/*.toml` | TOML commands |
-| OpenCode | `~/.config/opencode/command/lope*.md` | flat markdown |
-| Cursor | `~/.cursor/agents/lope*.md` | flat markdown |
+### If you are Codex (OpenAI Codex CLI)
 
-Hosts that are not installed on the machine are skipped silently.
+Skills live at `~/.codex/skills/`. Same format as Claude Code — directory per skill, each with a `SKILL.md`.
+
+```bash
+mkdir -p "$HOME/.codex/skills"
+for skill in lope lope-negotiate lope-execute lope-audit using-lope; do
+  target="$HOME/.codex/skills/$skill"
+  [ -e "$target" ] || [ -L "$target" ] && rm -rf "$target"
+  ln -s "$HOME/.lope/skills/$skill" "$target"
+done
+ls -la "$HOME/.codex/skills/" | grep lope
+```
+
+Slash commands available after restart: `/lope`, `/lope-negotiate`, `/lope-execute`, `/lope-audit`.
+
+### If you are Gemini CLI
+
+Gemini uses **namespaced TOML command files** at `~/.gemini/commands/<namespace>/<command>.toml`. Lope ships three pre-written TOML files at `~/.lope/commands/lope/*.toml` — symlink them in.
+
+```bash
+mkdir -p "$HOME/.gemini/commands/lope"
+for toml in negotiate.toml execute.toml audit.toml; do
+  target="$HOME/.gemini/commands/lope/$toml"
+  [ -e "$target" ] || [ -L "$target" ] && rm -f "$target"
+  ln -s "$HOME/.lope/commands/lope/$toml" "$target"
+done
+ls -la "$HOME/.gemini/commands/lope/"
+```
+
+Slash commands available after restart: `/lope:negotiate`, `/lope:execute`, `/lope:audit`. **Note: Gemini uses a colon, not a hyphen.** There is no plain `/lope` umbrella in Gemini because Gemini doesn't support bare-namespace commands.
+
+### If you are OpenCode
+
+OpenCode reads flat markdown files from `~/.config/opencode/command/` (singular "command"). Symlink one `.md` per skill pointing at each skill's `SKILL.md`.
+
+```bash
+mkdir -p "$HOME/.config/opencode/command"
+for skill in lope lope-negotiate lope-execute lope-audit using-lope; do
+  src="$HOME/.lope/skills/$skill/SKILL.md"
+  target="$HOME/.config/opencode/command/$skill.md"
+  [ -f "$src" ] || continue
+  [ -e "$target" ] || [ -L "$target" ] && rm -f "$target"
+  ln -s "$src" "$target"
+done
+ls -la "$HOME/.config/opencode/command/" | grep lope
+```
+
+Slash commands available after restart: `/lope`, `/lope-negotiate`, `/lope-execute`, `/lope-audit`.
+
+### If you are Cursor
+
+Cursor agents live at `~/.cursor/agents/` as flat markdown files.
+
+```bash
+mkdir -p "$HOME/.cursor/agents"
+for skill in lope lope-negotiate lope-execute lope-audit using-lope; do
+  src="$HOME/.lope/skills/$skill/SKILL.md"
+  target="$HOME/.cursor/agents/$skill.md"
+  [ -f "$src" ] || continue
+  [ -e "$target" ] || [ -L "$target" ] && rm -f "$target"
+  ln -s "$src" "$target"
+done
+ls -la "$HOME/.cursor/agents/" | grep lope
+```
+
+### If you are Mistral Vibe
+
+Vibe skills live at `~/.vibe/skills/`. Standard `SKILL.md` directory format — same as Claude Code.
+
+```bash
+mkdir -p "$HOME/.vibe/skills"
+for skill in lope lope-negotiate lope-execute lope-audit using-lope; do
+  target="$HOME/.vibe/skills/$skill"
+  [ -e "$target" ] || [ -L "$target" ] && rm -rf "$target"
+  ln -s "$HOME/.lope/skills/$skill" "$target"
+done
+ls -la "$HOME/.vibe/skills/" | grep lope
+```
+
+Slash commands available after Vibe restart: `/lope`, `/lope-negotiate`, `/lope-execute`, `/lope-audit`.
+
+### If you are GitHub Copilot CLI
+
+Copilot does not yet have a user-installable skill directory. Run the generic fallback below **and** tell the user that lope is callable via `lope negotiate "..."` from a terminal session but won't surface as a Copilot slash command until Copilot ships skill support.
+
+### If you are any other AI CLI (Generic)
+
+You know where your own skills or commands live. The five lope skills are in `~/.lope/skills/`, each with a standard `SKILL.md` YAML-frontmatter file.
+
+```
+$HOME/.lope/skills/lope/SKILL.md
+$HOME/.lope/skills/lope-negotiate/SKILL.md
+$HOME/.lope/skills/lope-execute/SKILL.md
+$HOME/.lope/skills/lope-audit/SKILL.md
+$HOME/.lope/skills/using-lope/SKILL.md
+```
+
+Do one of these, in order of preference:
+
+1. **Symlink** each skill directory into your host's native skill path (so `~/.lope` updates propagate automatically)
+2. **Copy** each skill directory if your host can't follow symlinks
+3. **Translate** each `SKILL.md` into your host's native command format (TOML, JSON, flat markdown, whatever) and write it where your host expects
+
+If your host uses a plugin manifest (package.json, manifest.toml, etc.), point it at `~/.lope` and let the host load everything.
+
+If you genuinely cannot figure out where to put skills for your host, stop and tell the user the host name so they can file an issue at https://github.com/traylinx/lope/issues.
+
+---
 
 ## Step 3 — Verify the engine
 
@@ -57,44 +167,45 @@ PYTHONPATH="$HOME/.lope" python3 -m lope version
 PYTHONPATH="$HOME/.lope" python3 -m lope status
 ```
 
-The first command should print the lope banner with a version number. The second should list detected AI CLIs on the machine and the current config. If either fails, stop and report the exact error to the user.
+`version` prints the banner. `status` lists detected AI CLIs and the current config. If either fails, stop and report the exact error.
 
 ## Step 4 — Suggest a shell alias
 
-Tell the user to add this to their shell rc (`~/.zshrc` or `~/.bashrc`) so they can type `lope` instead of the full `PYTHONPATH` incantation:
+Show the user this line and tell them to add it to their shell rc (`~/.zshrc` or `~/.bashrc`):
 
 ```bash
 alias lope='PYTHONPATH=~/.lope python3 -m lope'
 ```
 
-**Do not add this to the user's shell rc yourself without asking.** Show them the line and let them add it.
+**Do not edit the user's shell rc yourself without asking.**
 
-## Step 5 — Announce the slash commands
+## Step 5 — Tell the user to restart their CLI
 
-Tell the user that lope is now installed and these slash commands are available in their CLI session (they may need to restart the CLI for discovery to pick up the new skills):
+Slash command discovery is cached at CLI **session start** in every host. The commands you just installed will **not appear in the current session**. Tell the user explicitly:
 
-- `/lope` — umbrella explaining the three modes and when to use each
-- `/lope-negotiate <goal>` — draft a sprint doc with multi-round validator review
-- `/lope-execute <sprint_doc>` — run phases with validator-in-the-loop retry
-- `/lope-audit <sprint_doc>` — generate the scorecard
+> Lope is installed. **Quit this CLI and reopen it** — the `/lope-*` slash commands load at startup. You'll see them after the restart.
 
-On Gemini CLI the syntax is `/lope:negotiate`, `/lope:execute`, `/lope:audit` (Gemini uses namespace-scoped commands).
+## Step 6 — Smoke test
 
-## Step 6 — Test with a tiny sprint
-
-Suggest the user try:
+After the user restarts, suggest they try:
 
 ```bash
 lope negotiate --domain engineering --max-rounds 1 "rename a constant in one file"
 ```
 
-This is deliberately a tiny task — it will run end-to-end through the validator pool in under two minutes. If it completes cleanly (even if validators escalate), lope is installed and working. If it crashes with a Python traceback, report the exact error.
+A tiny task that runs end-to-end through the validator pool in under two minutes.
+
+---
 
 ## What lope needs to actually work
 
-Lope needs **at least two different AI CLIs installed on the machine** to form a real ensemble (otherwise there's nothing for the majority-vote logic to vote on). It auto-detects: Claude Code, OpenCode, Gemini CLI, Codex, Mistral Vibe, Aider, Ollama, Goose, Open Interpreter, llama.cpp, GitHub Copilot CLI, Amazon Q. If the user has only one, tell them to install one more — whichever they like — before running `lope negotiate`.
+Lope needs **at least two different AI CLIs installed on the machine** to form a real ensemble. It auto-detects 12 hosts: Claude Code, OpenCode, Gemini CLI, Codex, Mistral Vibe, Aider, Ollama, Goose, Open Interpreter, llama.cpp, GitHub Copilot CLI, Amazon Q. If the user has only one, tell them to install one more before running `lope negotiate`.
 
-Users can also add custom HTTP providers by editing `~/.lope/config.json` (see README for the schema). No Python required.
+## Hard rules — do not break these
+
+- **Do not invent flags.** `lope negotiate` takes `--domain`, `--out`, `--max-rounds`, `--context`. That is the complete list. No `--host`, no `--title`, no `--validators`.
+- **Do not write a wrapper script around lope.** Lope is already a CLI. If the user asks you to "use lope to do X", invoke `lope <mode> <args>` directly. Do not create `lope_runner.py`, `generate_with_lope.sh`, or any other scaffold.
+- **Do not commit lope state to the user's project git repo** unless they explicitly ask.
 
 ## Uninstall
 
@@ -102,33 +213,26 @@ Users can also add custom HTTP providers by editing `~/.lope/config.json` (see R
 rm -rf "$HOME/.lope" \
        "$HOME/.claude/skills/lope" "$HOME/.claude/skills/lope-"* "$HOME/.claude/skills/using-lope" \
        "$HOME/.codex/skills/lope" "$HOME/.codex/skills/lope-"* "$HOME/.codex/skills/using-lope" \
+       "$HOME/.vibe/skills/lope" "$HOME/.vibe/skills/lope-"* "$HOME/.vibe/skills/using-lope" \
        "$HOME/.gemini/commands/lope" \
        "$HOME/.config/opencode/command/lope"*.md "$HOME/.config/opencode/command/using-lope.md" \
        "$HOME/.cursor/agents/lope"*.md "$HOME/.cursor/agents/using-lope.md"
 ```
 
-That's a full clean removal of every file the installer wrote.
+## Troubleshooting
 
-## If something goes wrong
-
-- **`git clone` fails with 404 or auth error** → the repo may still be private; tell the user to check with the maintainer
-- **`python3` import fails** → the user's Python is not 3.9+; upgrade Python
-- **`lope status` shows 0 detected CLIs** → the user has no AI CLIs on `PATH`; tell them to install at least two of the 12 supported ones
-- **`lope negotiate` crashes with a traceback** → capture the full traceback and report it; do NOT try to patch lope's source as the "fix"
-- **Install script reports a host as "skipped — not detected"** → that host isn't on the machine; this is fine and expected
-
-Do not invent flags. Do not run `lope negotiate --host X` or `--title X` — those flags do not exist. Always run `lope <subcommand> --help` to see the real flag list for any subcommand.
-
-**Do not write a wrapper script around lope.** Lope is already a CLI. If the user asks you to "use lope to do X", you invoke `lope <mode> <args>` in a shell — you do NOT create a `lope_runner.py` or a `generate_with_lope.sh` or any other scaffolding. The entire point of the multi-CLI ensemble is that lope is the harness. One command, no wrapper.
+- **`git clone` fails** → check the repo is public and the user has network access
+- **`python3` version < 3.9** → upgrade Python; do not try to work around it
+- **`lope status` shows 0 detected CLIs** → the user has no AI CLIs on `PATH`; install at least two
+- **`/lope` doesn't autocomplete after install** → the user did not restart their CLI; tell them to quit and reopen
+- **Slash command works but `lope negotiate` crashes** → capture the full traceback and report it, do NOT patch lope's source
 
 ## You are done when
 
-All three of these are true:
-
 1. `lope version` prints a version banner
-2. `lope status` lists at least one detected CLI and a config file
-3. The slash commands (`/lope`, `/lope-negotiate`, etc.) show up in the user's CLI session after a restart
+2. `lope status` lists at least one detected CLI
+3. You told the user explicitly to **restart their CLI** before `/lope-*` will appear
 
-Report to the user:
+Final message to the user:
 
-> Lope is installed. Try `/lope-negotiate "your first goal"` to draft a sprint. Run `/lope` to see the umbrella skill that explains when to use each mode.
+> Lope is installed. Quit and reopen your CLI, then try `/lope-negotiate "your first goal"` to draft a sprint. Run `/lope` for the umbrella that explains when to use each mode.

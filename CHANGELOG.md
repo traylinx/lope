@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 — Install works everywhere
+
+- **`INSTALL.md` rewritten as a per-host router.** The agent reading the file identifies which CLI it runs inside and jumps to the matching section — Claude Code, Codex, Gemini CLI, OpenCode, Cursor, Mistral Vibe, GitHub Copilot CLI, or a generic fallback. Each section has exact shell commands for that host's native skill/command path. No guessing.
+- **Mistral Vibe support.** `~/.vibe/skills/` is now a first-class install target alongside Claude Code and Codex. Standard SKILL.md directory format — nothing special required.
+- **Explicit restart guidance.** Every host caches its skill list at session start, so freshly-installed `/lope-*` commands never appear mid-session. The installer and INSTALL.md both tell users to quit and reopen their CLI before slash commands show up.
+- **Bash installer updated** with a `vibe` host branch and `--host vibe` flag. `./install --host all` now writes to all 6 detected hosts.
+- **Generic fallback section** in INSTALL.md for any CLI we haven't explicitly branched on — tells the agent to symlink `~/.lope/skills/*/SKILL.md` into whatever path its host expects.
+
+No engine changes. Same validator pool, same two-stage review, same evidence gate, same lint as v0.3.0.
+
 ## 0.3.0 — Initial public release
 
 Lope is an autonomous sprint runner with a multi-CLI validator ensemble. Any AI CLI implements. Any AI CLI validates. Majority vote decides.

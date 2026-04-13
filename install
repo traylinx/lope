@@ -2,7 +2,7 @@
 # Lope installer — registers skills and commands in each AI CLI host's
 # native command/skill directory using the format that host expects.
 #
-# Usage: ./install [--host claude|codex|gemini|opencode|cursor|all]
+# Usage: ./install [--host claude|codex|gemini|opencode|cursor|vibe|all]
 # Compatible with bash 3.2+ (stock macOS).
 
 set -euo pipefail
@@ -29,7 +29,7 @@ for i in "${!ARGS[@]}"; do
         SKIP_NEXT=1
       fi
       ;;
-    claude|codex|gemini|opencode|cursor|all)
+    claude|codex|gemini|opencode|cursor|vibe|all)
       HOST="$arg"
       ;;
   esac
@@ -126,6 +126,22 @@ install_cursor() {
   done
 }
 
+# Mistral Vibe: ~/.vibe/skills/ with standard SKILL.md directory format.
+install_vibe() {
+  local dir="$HOME/.vibe/skills"
+  # Only install if vibe is actually on disk — never create ~/.vibe from scratch
+  [ -d "$HOME/.vibe" ] || { echo "  vibe:     (skipped — ~/.vibe not present)"; return 0; }
+  mkdir -p "$dir"
+  for skill in "$SKILLS_DIR"/lope "$SKILLS_DIR"/lope-*/ "$SKILLS_DIR"/using-lope; do
+    skill="${skill%/}"
+    [ -d "$skill" ] || continue
+    local target="$dir/$(basename "$skill")"
+    replace_target "$target"
+    ln -sf "$(cd "$skill" && pwd)" "$target"
+    echo "  vibe:     $target -> $skill"
+  done
+}
+
 install_host() {
   case "$1" in
     claude)   install_claude ;;
@@ -133,17 +149,18 @@ install_host() {
     gemini)   install_gemini ;;
     opencode) install_opencode ;;
     cursor)   install_cursor ;;
+    vibe)     install_vibe ;;
     *) echo "Unknown host: $1"; return 1 ;;
   esac
 }
 
 echo ""
-echo "Lope v0.2.1 — Installing skills and commands"
+echo "Lope v0.3.1 — Installing skills and commands"
 echo "─────────────────────────────────────────────"
 echo ""
 
 if [ "$HOST" = "all" ]; then
-  for h in claude codex gemini opencode cursor; do
+  for h in claude codex gemini opencode cursor vibe; do
     install_host "$h" 2>/dev/null || echo "  $h:      (skipped — not detected)"
   done
 else
@@ -165,6 +182,10 @@ echo "  Codex        /lope  /lope-negotiate  /lope-execute  /lope-audit"
 echo "  Gemini CLI   /lope:negotiate  /lope:execute  /lope:audit"
 echo "  OpenCode     /lope  /lope-negotiate  /lope-execute  /lope-audit"
 echo "  Cursor       /lope  /lope-negotiate  /lope-execute  /lope-audit"
+echo "  Vibe         /lope  /lope-negotiate  /lope-execute  /lope-audit"
+echo ""
+echo "IMPORTANT: Restart your CLI to pick up the new slash commands —"
+echo "every host caches its skill list at session start."
 echo ""
 echo "Next steps:"
 echo "  1. Configure validators:  PYTHONPATH=$LOPE_DIR python3 -m lope configure"
