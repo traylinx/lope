@@ -159,7 +159,7 @@ install_host() {
 }
 
 echo ""
-echo "Lope v0.4.5 — Installing skills and commands"
+echo "Lope v0.4.7 — Installing skills and commands"
 echo "─────────────────────────────────────────────"
 echo ""
 

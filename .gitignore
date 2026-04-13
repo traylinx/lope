@@ -33,3 +33,5 @@ htmlcov/
 
 # Lope state
 .lope/
+config.json
+run.lock

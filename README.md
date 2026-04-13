@@ -327,6 +327,9 @@ Generate scorecard. `--no-journal` skips writing to the journal file.
 | `LOPE_LLM_URL` | _(unset)_ | **Optional fallback** — hosted OpenAI-compatible endpoint, used only if the primary validator does not support drafting. Normally you do not need this. |
 | `LOPE_LLM_MODEL` | `gpt-4o-mini` | Model name when `LOPE_LLM_URL` fallback is used. |
 | `LOPE_LLM_API_KEY` | _(unset)_ | Bearer token for the fallback endpoint. Falls back to `OPENAI_API_KEY`. |
+| `LOPE_RUN_LOCK` | _(on)_ | Set to `off` to disable the run lock (CI, deliberate parallelism). |
+| `LOPE_RUN_LOCK_WAIT` | _(unset)_ | Seconds to block when another lope run holds the lock. `0` = wait forever. Default: fail fast. |
+| `LOPE_RUN_LOCK_PATH` | `$LOPE_HOME/run.lock` | Override the lockfile path (used by tests). |
 
 > **No separate LLM required.** Lope's premise is *any CLI implements, any CLI validates*. Drafting is just the primary CLI implementing. `lope negotiate` calls the primary validator (`claude`, `opencode`, `gemini-cli`, `codex`, or `aider`) as a subprocess to draft the sprint doc, then routes the draft to the other validators for review. You only need to set `LOPE_LLM_URL` if your primary validator cannot draft (e.g. a custom HTTP provider that only reviews).
 
@@ -335,6 +338,22 @@ Generate scorecard. `--no-journal` skips writing to the journal file.
 **Ensemble** (`parallel: true`, default): all validators run concurrently. Majority vote. Any FAIL vetoes. Ties resolve to NEEDS_FIX.
 
 **Fallback** (`parallel: false`): primary first, next on infra error. First PASS/NEEDS_FIX/FAIL halts chain.
+
+### Run lock (concurrent invocation safety)
+
+Lope holds a file lock (`$LOPE_HOME/run.lock`) for the lifetime of every `negotiate` and `execute` command. Without it, two parallel runs each spawn 3–4 validator CLIs, fight over the same auth tokens, and stall out with fake `INFRA_ERROR` timeouts.
+
+Default behavior: a second caller fails fast with exit 75 (`EX_TEMPFAIL`) and a clear message showing the holder's pid and command.
+
+```bash
+# Queue the second caller instead of failing — block up to 5 minutes
+LOPE_RUN_LOCK_WAIT=300 lope negotiate "second goal"
+
+# Disable the lock entirely (CI, tests, deliberate parallelism)
+LOPE_RUN_LOCK=off lope execute SPRINT.md
+```
+
+Read-only commands (`status`, `configure`, `audit`, `docs`, `version`, `install`) do not touch the lock.
 
 ### Token compression (caveman mode)
 

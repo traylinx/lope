@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.4.7 — Run lock (concurrent-run bottleneck fix)
+
+**Bug: two parallel `lope negotiate` or `lope execute` invocations trample each other.**
+
+Each lope run spawns 3–4 validator subprocesses (claude, gemini, vibe, opencode). Two concurrent runs means 6–8 CLIs fighting over the same auth tokens, rate limits, and scratchpad files. In practice this locks up: validators hit OAuth races, opencode times out, and lope escalates with a fake `INFRA_ERROR`.
+
+### Fix
+
+New module `lope/runlock.py` — a single-process file lock (`fcntl.flock` on `~/.lope/run.lock`) held for the lifetime of `lope negotiate` and `lope execute`. Same pattern the HARVEY memory subsystem uses. A second caller sees the holder pid + command, exits 75 (`EX_TEMPFAIL`), and prints exactly how to proceed.
+
+### Behavior
+
+- Default: second caller **fails fast** with a clear message pointing at the holder.
+- Opt-in queue: `LOPE_RUN_LOCK_WAIT=300` — block up to 5 minutes waiting for the first to finish.
+- Opt-in forever: `LOPE_RUN_LOCK_WAIT=0` — block indefinitely.
+- Escape hatch: `LOPE_RUN_LOCK=off` — disable locking entirely (CI, tests, deliberate parallelism).
+- Test override: `LOPE_RUN_LOCK_PATH=/tmp/foo.lock` — point at a different lockfile.
+
+Only `negotiate` and `execute` are locked. `audit`, `status`, `configure`, `install`, `docs`, `version` are read-only and do not touch the lock.
+
+### Why this matters
+
+Lope's premise is that the validator ensemble is the redundancy. But two users (or one user + one scheduled job) running lope at the same time collapsed the ensemble into a race condition, not a quorum. v0.4.7 enforces the invariant that the ensemble was designed around: one drafter and one review panel per active run.
+
+### Tests
+
+Seven new tests in `tests/test_runlock.py`:
+- Holder info written into the lockfile
+- Lockfile truncated on clean release
+- Sequential acquires succeed
+- `LOPE_RUN_LOCK=off` disables locking
+- Second caller fails fast (exit 75) when first holds the lock
+- Second caller waits and times out under `LOPE_RUN_LOCK_WAIT=<secs>`
+- Second caller succeeds after first releases within the wait window
+
+Full suite: **88 passing** (81 existing + 7 new), zero regressions.
+
+Smoke-tested live: child process held the lock, real `python3 -m lope negotiate` in parent exited 75 with the expected holder-pid error.
+
+---
+
 ## 0.4.6 — Drafter auto-fallback (Chernobyl fix)
 
 **Critical bug: single-point-of-failure in the drafter stage.**

@@ -147,11 +147,15 @@ def main():
         return
 
     if args.command == "negotiate":
-        _cmd_negotiate(args)
+        from .runlock import acquire as _runlock
+        with _runlock("negotiate"):
+            _cmd_negotiate(args)
         return
 
     if args.command == "execute":
-        _cmd_execute(args)
+        from .runlock import acquire as _runlock
+        with _runlock("execute"):
+            _cmd_execute(args)
         return
 
     if args.command == "audit":

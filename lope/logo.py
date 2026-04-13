@@ -90,7 +90,7 @@ def box(version: str = "") -> str:
     ])
 
 
-# ── MASCOT: pixel creature, Mistral-cat-inspired ───────────────
+# ── MASCOT: pixel creature with loop body ──────────────────────
 
 def mascot(line: str = "runs the validator loop") -> str:
     """Pixel mascot. Use for `lope configure` splash and random gimmicks."""
