@@ -5,7 +5,7 @@ Concrete validators (all share the ---VERDICT---...---END--- block contract):
   - OpencodeValidator: `opencode run --format json` subprocess wrapper
   - GeminiCliValidator: `gemini --prompt ... --output-format json`
   - ClaudeCodeValidator: `claude --print "<prompt>"`
-  - CodexValidator: `codex exec --quiet "<prompt>"`
+  - CodexValidator: `codex exec "<prompt>"` (--quiet removed upstream in 2026)
   - AiderValidator: `aider --message "<prompt>" --no-git --no-auto-commits --yes`
   - StubValidator: deterministic canned response, for tests
 
@@ -1153,7 +1153,7 @@ class ClaudeCodeValidator(Validator):
 
 
 class CodexValidator(Validator):
-    """Wraps `codex exec --quiet "<prompt>"` for validated review."""
+    """Wraps `codex exec "<prompt>"` for validated review."""
 
     def __init__(self, binary: str = None):
         import shutil
@@ -1183,7 +1183,7 @@ class CodexValidator(Validator):
             raise RuntimeError(f"codex binary not found: {self._binary}")
         try:
             proc = subprocess.run(
-                [self._binary, "exec", "--quiet", prompt],
+                [self._binary, "exec", prompt],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -1210,7 +1210,7 @@ class CodexValidator(Validator):
         started = time.time()
         try:
             proc = subprocess.run(
-                [self._binary, "exec", "--quiet", self._build_prompt(prompt)],
+                [self._binary, "exec", self._build_prompt(prompt)],  # v0.4.1: --quiet removed upstream
                 capture_output=True,
                 text=True,
                 timeout=timeout,

@@ -516,6 +516,7 @@ def _cmd_execute(args):
 
         def implementation_fn(phase, fix_context=None):
             from .executor import ImplementationResult
+            from .validators import _is_flag_error
 
             phase_blurb = _phase_to_prompt(phase, doc, fix_context)
             print(f"\n>>> Phase {phase.index}: {phase.name}")
@@ -528,15 +529,48 @@ def _cmd_execute(args):
                     ok=False,
                     summary=(
                         f"{primary.name} does not support autonomous implementation "
-                        f"via .generate() in v0.4.0. Re-run with --manual or pick "
+                        f"via .generate() in v0.4.1. Re-run with --manual or pick "
                         f"a different primary (claude, opencode, gemini-cli, codex, aider)."
                     ),
                 )
             except Exception as e:
-                return ImplementationResult(
-                    ok=False,
-                    summary=f"{primary.name} subprocess failed: {type(e).__name__}: {e}",
-                )
+                # v0.4.1: detect flag-surface errors from the generate() path
+                # and route through the SelfHealer if LOPE_SELF_HEAL=1. Same
+                # detection logic as the validate() path (_infra_error), now
+                # extended to cover implementation failures too.
+                err_msg = f"{type(e).__name__}: {e}"
+                if _is_flag_error(err_msg):
+                    healed = _try_self_heal_from_generate(
+                        primary, err_msg, pool, cfg.timeout,
+                    )
+                    if healed:
+                        print(f">>> self-heal succeeded, retrying phase "
+                              f"{phase.index} with learned adapter")
+                        try:
+                            output = primary.generate(phase_blurb, timeout=cfg.timeout)
+                        except Exception as e2:
+                            return ImplementationResult(
+                                ok=False,
+                                summary=(
+                                    f"{primary.name} still failing after self-heal: "
+                                    f"{type(e2).__name__}: {e2}"
+                                ),
+                            )
+                    else:
+                        return ImplementationResult(
+                            ok=False,
+                            summary=(
+                                f"{primary.name} failed with a flag-surface error "
+                                f"(upstream CLI likely renamed a flag):\n  {err_msg[:400]}\n"
+                                f"Set LOPE_SELF_HEAL=1 and re-run to attempt "
+                                f"automatic adapter repair."
+                            ),
+                        )
+                else:
+                    return ImplementationResult(
+                        ok=False,
+                        summary=f"{primary.name} subprocess failed: {err_msg[:400]}",
+                    )
 
             # The primary writes files directly via its own tools. What comes
             # back in stdout is a free-form summary — pass it through to the
@@ -566,6 +600,49 @@ def _cmd_execute(args):
     else:
         print(f"\nEscalation: {report.error}")
         sys.exit(1)
+
+
+def _try_self_heal_from_generate(primary, err_msg: str, pool, timeout: int):
+    """v0.4.1: route generate()-path flag errors through SelfHealer.
+
+    The validator.generate() path bypasses _infra_error (which is
+    validate()-path only), so without this helper the v0.4.0 self-heal
+    never fires when a CLI flag break happens during implementation.
+
+    Returns a LearnedAdapter on success, None otherwise. Never raises.
+    """
+    from .healer import SelfHealer
+
+    # Need at least one reviewer that is NOT the failing CLI
+    reviewers = [v for v in pool.reviewers() if v.name != primary.name]
+    if not reviewers:
+        print(f">>> self-heal skipped: no reviewer available "
+              f"(pool has only {primary.name})")
+        return None
+
+    healer = SelfHealer()
+    if not healer.should_attempt(primary.name, reviewer_available=True):
+        print(f">>> self-heal skipped: set LOPE_SELF_HEAL=1 to enable "
+              f"automatic adapter repair on flag breaks")
+        return None
+
+    # Reconstruct the failing argv as best we can — the exception message
+    # doesn't carry it cleanly, so we pass a placeholder. The healer
+    # prompts the reviewer with stderr + help output, which is usually
+    # enough for the reviewer to propose a corrected invocation without
+    # needing the exact old argv.
+    binary = getattr(primary, "_binary", primary.name)
+    old_argv = [binary, "<unknown>", "{prompt}"]
+
+    print(f">>> flag-surface error detected, attempting self-heal...")
+    print(f">>> reviewer: {reviewers[0].name}  ·  target: {primary.name}")
+    return healer.attempt(
+        cli_name=primary.name,
+        cli_binary=binary,
+        old_argv=old_argv,
+        stderr=err_msg,
+        reviewer=reviewers[0],
+    )
 
 
 def _phase_to_prompt(phase, doc, fix_context=None) -> str:

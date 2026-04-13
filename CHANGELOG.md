@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.1 — Codex `--quiet` flag break + self-heal on generate() path
+
+The v0.4.0 meta-dogfood — running v0.4.0 lope against its own sprint doc — surfaced the *exact* self-heal scenario v0.4.0 was built to fix:
+
+**Codex upstream removed `--quiet`.** `CodexValidator` had `codex exec --quiet <prompt>` hardcoded in both `validate()` and `generate()`. The new codex binary rejects the flag with `error: unexpected argument '--quiet' found / Usage: codex exec [OPTIONS]`. Every autonomous run with codex as primary failed before v0.4.0 even reached the validators.
+
+**v0.4.0 self-heal only covered `validate()`, not `generate()`.** The heal detection was wired into `_infra_error()`, which is called on the `validate()` failure path. But `Validator.generate()` bypasses `_infra_error` and raises `RuntimeError` directly. So when a flag break happened during *implementation* (the generate() call in the new autonomous `_cmd_execute`), the error flowed up as a generic `Exception`, my implementation_fn caught it, returned `ok=False, summary="unknown"`, and the executor escalated. SelfHealer was never invoked.
+
+### Fixes
+
+- **`CodexValidator.validate()` and `.generate()`** — dropped `--quiet` from both argv templates. Smoke test: `codex.generate("Reply with the single word OK")` returns `"OK\n"` in under 60s.
+- **Generate-path flag-error detection** — `_cmd_execute`'s implementation_fn now calls `_is_flag_error(err_msg)` on any exception from `primary.generate()`. When matched, it routes through a new `_try_self_heal_from_generate()` helper which:
+  1. Finds a reviewer in the pool that is not the failing CLI
+  2. Calls `SelfHealer.should_attempt()` to check `LOPE_SELF_HEAL=1` and session state
+  3. Invokes `SelfHealer.attempt()` with the error message as stderr (sufficient context for the reviewer to propose a corrected invocation)
+  4. On success, retries the phase with the learned adapter; on failure, escalates with a clear "set LOPE_SELF_HEAL=1" hint
+- **Escalation message upgrade** — v0.4.0 reported `implementation_fn failed: unknown` on any exception. v0.4.1 surfaces the full error type, first 400 chars of the message, and a hint about `LOPE_SELF_HEAL=1`.
+
+### Why this is a patch release, not a new feature
+
+The v0.4.0 self-heal architecture was correct; the wiring was incomplete. v0.4.1 extends the same detection logic (`_is_flag_error`) and the same `SelfHealer` class to a path v0.4.0 missed. No schema changes, no new env vars, no new dependencies. Users on v0.4.0 should upgrade — v0.4.0 is broken for any autonomous run where codex is primary.
+
+### Dogfood notes
+
+- Found via the meta-dogfood run: `cd ~/Projects/lope && lope execute ~/HARVEY/development/sprints/lope/SPRINT-LOPE-V0.4.0-ADAPTER-RESILIENCE.md`. Escalated in 0.4s with a non-descriptive error. Direct test of `codex.generate()` surfaced the `--quiet` flag break.
+- Codex is the 2nd validator in the lope repo's default pool (`primary: codex, validators: [codex, opencode]`). Other default pools (e.g. `primary: claude`) were unaffected. Still, the bug would have bitten any user whose primary is codex — which is every Harvey-OS user by default.
+- The lesson scales: **self-heal has to cover every codepath that calls a validator subprocess**, not just validate(). Any future validator method (draft/review/impl/audit) must be routed through `_infra_error` or an equivalent helper that attaches `flag_error_hint`.
+
 ## 0.4.0 — Adapter resilience: autonomous execute, config scoping, self-heal
 
 Fixes three silent bombs caught by dogfooding v0.3.x on itself and ships the first real adapter-layer resilience primitives. This is the "final working version" release that v0.3.0's marketing copy was always about.
