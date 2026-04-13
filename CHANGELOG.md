@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.4.5 — Full test coverage: 10 → 81 tests
+
+v0.4.4 shipped with 10 passing tests (Phase 1 of the v0.4.0 sprint — `load_layered` precedence chain, autonomously written by claude during the meta-dogfood). v0.4.5 brings the remaining four phases under pytest:
+
+- **Phase 2 — atomic + locked writes** (`tests/test_atomic_writes.py`, 11 tests): save/load round-trip including learned_adapters, version field is schema version, no tmp files leftover after a clean save, save overwrites cleanly, `_safe_read` handles missing / malformed / valid files, 10 parallel processes all call `save()` with distinct payloads and the final file parses cleanly as exactly one writer's state (no torn merge), `load` rejects wrong schema version.
+- **Phase 3 — self-heal detection** (`tests/test_self_heal.py` sections): `_is_flag_error` parametrized across 8 real flag-break patterns (unrecognized arguments, unknown option, no such option, invalid option, usage: header) and 8 non-flag failures (rate limit, connection error, timeout, permission denied, content policy), `AdapterFlagError` carries + copies argv context, `_infra_error` attaches `flag_error_hint` on match and omits it on non-flag failure.
+- **Phase 4 — self-heal execution** (rest of `tests/test_self_heal.py`): `SelfHealer.should_attempt` gate under 5 scenarios (env unset, env set, truthy env values, session state, reviewer availability, empty cli_name), `_parse_heal_response` handles fenced JSON / bare JSON / malformed / missing argv / non-list argv, `_build_heal_prompt` includes old argv + stderr + help + schema + placeholder docs and truncates long help, `_fill_template` expands `{prompt}` and `{binary}`, `is_adapter_expired` TTL (old / fresh / legacy-zero), full `SelfHealer.attempt` end-to-end with mocked reviewer + mocked subprocess across 5 paths (success, reviewer garbage, smoke test fail, help capture fail, reviewer exception).
+- **Phase 5 — observability** (`tests/test_journal.py`, 10 tests): `journal_path` respects `LOPE_HOME`, `append_event` writes one JSONL line per call with timestamp, multiple calls append, timestamps are monotonic nondecreasing, `append_event` creates parent directory, `read_recent` returns empty / all / limit-newest-last / skips malformed lines, **`append_event` swallows disk errors** (best-effort observability never propagates exceptions), `read_recent` on missing file returns empty list.
+
+### The numbers
+
+```
+$ pytest tests/ -v
+tests/test_config_layered.py  10 passed  (v0.4.4 — claude's autonomous test suite)
+tests/test_atomic_writes.py   11 passed  (v0.4.5 — Phase 2)
+tests/test_journal.py         10 passed  (v0.4.5 — Phase 5)
+tests/test_self_heal.py       50 passed  (v0.4.5 — Phases 3 + 4, parametrized)
+
+81 passed in 2.00s
+```
+
+From zero tests at v0.3.0 to 81 tests at v0.4.5 in one session. Ten of those were written autonomously by the lope ensemble itself during the v0.4.3 meta-dogfood; seventy-one were hand-written for this release after the v0.4.4 meta-dogfood-on-negotiate spin escalated on prose-ellipsis lint friction (claude's drafter style couldn't converge).
+
+### Dogfood lesson
+
+The lope-on-lope meta-dogfood shines for **implementation review** — it caught the `load_layered` spec drift that a single-model loop would have shipped. But the meta-dogfood **struggled on pure-test-writing negotiation** — 2 rounds of negotiate spin on nothing more than "write 20 tests, no prose ellipses" because claude's paragraph-shaping style kept injecting `...` into phase rationales and v0.3.0's strict lint kept rejecting. The right wedge: use lope-on-lope for code implementation with validator ensemble review, hand-write for test suites where the scope is crisp and the value of ensemble review is marginal.
+
+### Not yet covered
+
+- `_cmd_execute` autonomous-execute path end-to-end (would need a fake `Validator` subclass with deterministic `.generate()` — deferred to v0.4.6)
+- `_cmd_negotiate` happy path (same reason)
+- Two parallel `lope negotiate` invocations with different env vars (the concurrent-session-safety promise) — requires real subprocess harness; deferred
+
+### Upgrade path
+
+v0.4.5 is a pure additive release — no API changes, no schema changes, no config file format changes. Users on v0.4.4 can upgrade with a simple `git pull && git reset --hard v0.4.5`. No migration required.
+
 ## 0.4.4 — Meta-dogfood fruit: autonomous tests + spec drift fix
 
 The v0.4.3 meta-dogfood with **claude as primary** (via `LOPE_PRIMARY=claude LOPE_VALIDATORS=claude,opencode`, in-memory only — `~/.lope/config.json` mtime unchanged, verifying the v0.4.0 config scoping) ran for **28 minutes**, three full autonomous rounds of implementation → two-stage validator review → NEEDS_FIX retry. Phase 1 escalated on attempt 3 when the opencode reviewer caught a genuine spec-vs-code API drift.
