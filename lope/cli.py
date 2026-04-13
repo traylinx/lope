@@ -410,21 +410,43 @@ def _cmd_negotiate(args):
 
     def llm_call(system: str, user: str) -> str:
         combined = f"{system}\n\n{user}"
-        try:
-            return primary.generate(combined, timeout=timeout)
-        except NotImplementedError as e:
-            # Primary validator doesn't support drafting yet.
-            # Optional fallback: LOPE_LLM_URL if user opted in.
-            llm_url = os.environ.get("LOPE_LLM_URL")
-            if not llm_url:
-                raise RuntimeError(
-                    f"{primary.name} does not support drafting, and no "
-                    f"LOPE_LLM_URL fallback is set.\n"
-                    f"  Fix: pick a different primary in ~/.lope/config.json "
-                    f"(claude, opencode, gemini-cli, codex, aider support drafting),\n"
-                    f"       or set LOPE_LLM_URL / LOPE_LLM_API_KEY to a hosted endpoint."
-                ) from None
-            return _http_llm_fallback(system, user, llm_url)
+        # Build drafter fallback chain: primary first, then all other
+        # validators in pool order. This mirrors ValidatorPool's
+        # INFRA_ERROR fallback but for the drafter stage.
+        # Build drafter fallback chain from the pool. EnsemblePool uses
+        # `_validators`, ValidatorPool uses `_ordered`. Try both for safety.
+        all_validators = getattr(pool, '_validators', None) or getattr(pool, '_ordered', [primary])
+        drafter_chain = [primary] + [v for v in all_validators if v is not primary]
+        errors = []
+        for idx, drafter in enumerate(drafter_chain):
+            try:
+                if idx > 0:
+                    print(f"[drafter fallback] {primary.name} failed, trying {drafter.name}...")
+                return drafter.generate(combined, timeout=timeout)
+            except NotImplementedError:
+                errors.append(f"{drafter.name}: does not support drafting")
+                continue
+            except (RuntimeError, OSError, Exception) as e:
+                msg = str(e).splitlines()[0] if str(e) else type(e).__name__
+                errors.append(f"{drafter.name}: {msg[:120]}")
+                continue
+        # All drafters failed — try HTTP fallback if user opted in.
+        llm_url = os.environ.get("LOPE_LLM_URL")
+        if llm_url:
+            try:
+                return _http_llm_fallback(system, user, llm_url)
+            except Exception as e:
+                errors.append(f"HTTP fallback ({llm_url}): {str(e).splitlines()[0][:120]}")
+        # Complete failure — give the user actionable next steps.
+        error_summary = "\n".join(f"    - {e}" for e in errors)
+        raise RuntimeError(
+            f"All {len(drafter_chain)} drafters in the pool failed:\n"
+            f"{error_summary}\n"
+            f"\n  Diagnose: run `lope status` to see your validator pool\n"
+            f"  Fix: edit ~/.lope/config.json — set 'primary' to a CLI that works\n"
+            f"        (try: claude, opencode, or vibe if available)\n"
+            f"  Or: set LOPE_LLM_URL + LOPE_LLM_API_KEY to a hosted endpoint"
+        ) from None
 
     negotiator = Negotiator(
         llm_call=llm_call,

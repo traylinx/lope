@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.6 — Drafter auto-fallback (Chernobyl fix)
+
+**Critical bug: single-point-of-failure in the drafter stage.**
+
+`ValidatorPool` already fell back on `INFRA_ERROR` during the REVIEW stage (primary → next → next). The DRAFT stage did not — `_cmd_negotiate` caught only `NotImplementedError` from `primary.generate()` and let every other exception propagate. If a user's primary CLI crashed for ANY reason (stale model config, broken binary, expired auth, subprocess stdin weirdness), `lope negotiate` bricked with a cryptic subprocess error before a single validator saw the draft.
+
+This is exactly the bug that bit the public campaign on launch day: a config pointing at `codex` with a nonexistent `gpt-5.4` model → codex exits 1 → lope dies → marketing copy never got validated.
+
+### Fix
+
+`_cmd_negotiate` now builds a drafter fallback chain from the full validator pool (primary first, then all others). On any exception from `drafter.generate()`, it logs `[drafter fallback] <name> failed, trying <next>...` and continues. Only fails when EVERY validator in the pool has been tried. Error message upgraded: references `lope status`, suggests known-good primaries, points at `LOPE_LLM_URL` as last resort.
+
+### Why this matters
+
+Lope's whole premise is "any CLI implements, any CLI validates." A broken single primary should not defeat the ensemble — the ensemble IS the redundancy. v0.4.6 makes the drafter stage honor that premise the same way the reviewer stage already did.
+
+Tested against a config deliberately pointing at a broken `codex` primary with `opencode` and `vibe` in the pool: lope logged the fallback, drafted via opencode, ran the reviewer ensemble, and returned a real verdict instead of crashing.
+
 ## 0.4.5 — Full test coverage: 10 → 81 tests
 
 v0.4.4 shipped with 10 passing tests (Phase 1 of the v0.4.0 sprint — `load_layered` precedence chain, autonomously written by claude during the meta-dogfood). v0.4.5 brings the remaining four phases under pytest:
