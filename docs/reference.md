@@ -144,6 +144,50 @@ Custom providers via `~/.lope/config.json` — subprocess or HTTP. Schema in the
 | `LOPE_LLM_API_KEY` | Bearer token for `LOPE_LLM_URL`. |
 | `LOPE_WORKDIR` | Working directory for validator subprocesses. |
 | `LOPE_TIMEOUT` | Validator timeout in seconds (default 480). |
+| **v0.4.0 pool scoping** | |
+| `LOPE_VALIDATORS` | Comma-separated validator list, e.g. `opencode,gemini`. Overrides global config without mutating it. |
+| `LOPE_PRIMARY` | Primary validator name. Must be in `LOPE_VALIDATORS` (or the global config's list). |
+| `LOPE_PARALLEL` | `1`/`true` to force parallel ensemble, `0`/`false` for sequential. |
+| `LOPE_SEQUENTIAL` | `1` to force sequential (shortcut for `LOPE_PARALLEL=0`). |
+| **v0.4.0 self-heal** | |
+| `LOPE_SELF_HEAL` | `1` to opt into adapter self-healing on flag-break detection. Default off in v0.4.0. |
+| `LOPE_HOME` | Override `~/.lope` for the global config directory. Useful for sandboxed test runs. |
+
+## Config precedence (v0.4.0)
+
+Lope loads config with a 5-layer precedence chain, highest-wins per field:
+
+1. **Command-line flags** — `--validators opencode,gemini --primary opencode --timeout 240`. Highest precedence. Zero persistence.
+2. **Environment variables** — `LOPE_VALIDATORS=opencode,gemini LOPE_PRIMARY=opencode`. Per-shell-session scope. Each terminal sets once, all `lope` calls in that shell inherit without touching any file.
+3. **Per-project config** — `./.lope/config.json` in the current working directory. Repo-scoped defaults. Fields not in the project file fall through to layer 4.
+4. **User global config** — `~/.lope/config.json`. Written by `lope configure`. Read-only for every other command.
+5. **Built-in defaults** — empty validators, 480s timeout, parallel=True. Only visible when the user has never configured lope.
+
+Each layer overrides the previous one **field-by-field**, not whole-object. You can set `LOPE_VALIDATORS` in your shell rc while still inheriting `timeout` and `providers` from the global file. You can have `--validators opencode,gemini` on the command line while env vars set the `primary`.
+
+**Why this matters:** v0.3.x had only one config file. Running two `lope negotiate` invocations from two terminals with different validator pools was impossible — whichever wrote last silently clobbered the other. v0.4.0 makes each terminal/each invocation self-contained: only `lope configure` touches the global file.
+
+## Self-healing adapters (v0.4.0)
+
+Each `Validator` subclass in `lope/validators.py` hardcodes the subprocess invocation for its host CLI (e.g. `claude --print <prompt>`, `opencode run --format json`). When a CLI vendor renames a flag in a future release, lope detects the failure and can automatically repair itself.
+
+**How it works:**
+
+1. A validator subprocess fails with `unrecognized argument`, `unknown option`, or similar flag-surface error in stderr.
+2. Lope's `_is_flag_error()` heuristic matches the stderr pattern and the pool attaches a `flag_error_hint` to the validator result.
+3. If `LOPE_SELF_HEAL=1` is set, the `SelfHealer` runs `<cli> --help`, asks the primary reviewer in the pool to propose a corrected argv template (JSON object with `argv_template`, `stdin_mode`, `stdout_parser`, `confidence`, `rationale`), and validates the proposal.
+4. The healer smoke-tests the proposal with a fixed prompt: *"Reply with the single word OK and nothing else."* If the response contains "OK", the learned adapter is atomically persisted to `~/.lope/config.json` under `learned_adapters.<cli_name>`.
+5. Future calls to that CLI use the learned invocation. A 90-day TTL triggers re-verification.
+
+**Opt-in for v0.4.0.** Set `LOPE_SELF_HEAL=1` to enable. Default-off until telemetry confirms low false-positive rate; will flip to default-on in v0.5.0.
+
+**Guardrails:**
+
+- **One heal attempt per CLI per session.** Prevents infinite heal loops.
+- **Skipped when no reviewer is available.** If the pool has only one validator (the failing one), heal cannot proceed and lope escalates.
+- **Journaled to `~/.lope/journal.jsonl`.** Every `heal_attempt`, `heal_success`, `heal_failure`, and `heal_skipped` event is appended with timestamp, CLI name, old argv, proposed argv, and rationale. Run `lope status` to see recent heal events inline.
+- **Smoke-test gated.** Nothing persists until the proposed invocation actually produces "OK" for the smoke prompt.
+- **Out of scope for healer:** HTTP providers (different failure modes), custom subprocess providers from `providers` array (handled by their own schema), and entirely new CLIs that don't have a `Validator` subclass yet.
 
 ---
 

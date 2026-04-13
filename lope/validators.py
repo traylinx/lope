@@ -957,12 +957,70 @@ def _reorder_primary_first(
 # ─── Infra error helper ────────────────────────────────────────
 
 
+# ─── Flag-error detection (v0.4.0 self-heal primitive) ─────────
+
+# Patterns that indicate a CLI vendor changed its flag surface.
+# When we see one of these in stderr from a non-zero exit, the subprocess
+# failure is most likely a flag break, not a network/content problem.
+# The healer can respond by running `<cli> --help`, asking a reviewer for
+# the corrected invocation, smoke-testing it, and persisting the learned
+# adapter to ~/.lope/config.json.
+_FLAG_ERROR_PATTERNS = [
+    re.compile(r"\bunrecognized\s+arguments?\b", re.IGNORECASE),
+    re.compile(r"\bunknown\s+(?:option|argument|flag)\b", re.IGNORECASE),
+    re.compile(r"\bunexpected\s+argument\b", re.IGNORECASE),
+    re.compile(r"\bno\s+such\s+option\b", re.IGNORECASE),
+    re.compile(r"\binvalid\s+(?:option|flag|argument)\b", re.IGNORECASE),
+    re.compile(r"^usage:\s", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"\berror:\s+(?:unrecognized|unknown)\b", re.IGNORECASE),
+]
+
+
+def _is_flag_error(stderr: str) -> bool:
+    """True if stderr looks like a CLI flag-surface change.
+
+    Matches a short whitelist of patterns common to argparse, Cobra, Click,
+    clap, and most other CLI libraries. Does NOT match network errors,
+    rate-limit responses, or genuine content failures.
+    """
+    if not stderr:
+        return False
+    head = stderr[:2000]  # enough for usage banners without parsing the world
+    return any(rx.search(head) for rx in _FLAG_ERROR_PATTERNS)
+
+
+class AdapterFlagError(Exception):
+    """Raised or returned when a validator fails with a flag-surface error.
+
+    Carries the context SelfHealer needs to propose + test a corrected
+    invocation: the CLI name, the old argv template, and the raw stderr.
+    The executor/negotiator catches this at the pool boundary and decides
+    whether to attempt a heal (LOPE_SELF_HEAL=1) or escalate.
+    """
+
+    def __init__(self, cli_name: str, old_argv: List[str], stderr: str):
+        self.cli_name = cli_name
+        self.old_argv = list(old_argv)
+        self.stderr = stderr or ""
+        super().__init__(
+            f"{cli_name} flag break: {self.stderr[:200]!r}"
+        )
+
+
 def _infra_error(
     validator_name: str,
     message: str,
     duration: float = 0.0,
 ) -> ValidatorResult:
-    """Build a ValidatorResult representing an infra-layer failure."""
+    """Build a ValidatorResult representing an infra-layer failure.
+
+    v0.4.0: if `message` matches a flag-break pattern, attach a
+    `flag_error_hint` so the pool boundary can route the failure through
+    the self-heal machinery instead of a plain escalation.
+    """
+    flag_hint = ""
+    if _is_flag_error(message):
+        flag_hint = message[:2000]
     return ValidatorResult(
         validator_name=validator_name,
         verdict=PhaseVerdict(
@@ -973,6 +1031,7 @@ def _infra_error(
         ),
         raw_response="",
         error=message,
+        flag_error_hint=flag_hint,
     )
 
 

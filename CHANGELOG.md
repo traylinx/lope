@@ -1,5 +1,87 @@
 # Changelog
 
+## 0.4.0 — Adapter resilience: autonomous execute, config scoping, self-heal
+
+Fixes three silent bombs caught by dogfooding v0.3.x on itself and ships the first real adapter-layer resilience primitives. This is the "final working version" release that v0.3.0's marketing copy was always about.
+
+### The three bugs that triggered this release
+
+1. **`lope execute` was not actually autonomous.** The `_cmd_execute` hook at `cli.py` hardcoded `input()` as the implementation callback — it waited for a **human** to manually implement each phase and press Enter, then validators reviewed the human's work. Every blog post, LinkedIn post, and README line about "autonomous sprint runner" was overstated. v0.4.0 replaces the `input()` with `primary.generate(build_impl_prompt(phase, fix_context))`, using the primary validator's existing `generate()` method (added in v0.2.1 for negotiate drafting). The primary CLI runs as a subprocess in the current working directory and writes files directly. Legacy human-in-the-loop mode is still available via `lope execute --manual`.
+
+2. **`lope execute` reported "All phases passed!" on zero-phase sprints.** If the sprint doc had the wrong heading level (level-2 `## Phase` instead of level-3 `### Phase`), the phase parser returned an empty list and lope printed the victory mascot. Shipped as a clean PASS. v0.4.0 fails loudly with a clear error pointing at the heading format.
+
+3. **Every "switch which validators to use" rewrote `~/.lope/config.json`.** There were no `--validators`/`--primary` CLI flags and no `LOPE_VALIDATORS` env var. Running two `lope negotiate` invocations from two terminals with different validator pools was impossible — whichever wrote last silently clobbered the other mid-flight. v0.4.0 introduces a 5-layer config precedence chain (below) so each invocation is self-contained.
+
+### Config precedence (new)
+
+5 layers, highest wins per field:
+
+1. **CLI flags** — `--validators opencode,gemini --primary opencode --timeout 240 --parallel/--sequential`. Added to `negotiate`, `execute`, and `audit` subcommands. Zero persistence.
+2. **Env vars** — `LOPE_VALIDATORS`, `LOPE_PRIMARY`, `LOPE_TIMEOUT`, `LOPE_PARALLEL`, `LOPE_SEQUENTIAL`. Per-shell-session scope.
+3. **Per-project config** — `./.lope/config.json` in cwd. Repo-scoped defaults.
+4. **User global config** — `~/.lope/config.json`. Only `lope configure` writes here.
+5. **Built-in defaults** — empty validators, 480s timeout, parallel=True.
+
+Each layer overrides field-by-field, not whole-object. See `docs/reference.md` section "Config precedence" for the full semantics.
+
+### Atomic + locked writes on `~/.lope/config.json`
+
+`config.py` `save()` now acquires an `fcntl.flock(LOCK_EX)` on a sidecar `.lock` file before writing. Concurrent `save()` calls from different processes serialize via the lock; readers never see partial state because the rename is atomic. Also adds `_safe_read()` that tolerates the open-vs-rename race with a 50ms retry backoff. Platforms without `flock` (Windows without POSIX emulation) fall through to best-effort without the lock.
+
+### Self-healing validator adapters (opt-in)
+
+New `lope/healer.py` module with `SelfHealer` class:
+
+- **Detection** — `_is_flag_error()` in `validators.py` matches stderr patterns like `unrecognized argument`, `unknown option`, `no such option`, `usage:` header followed by a non-zero exit. When `_infra_error()` builds a failure result, it attaches a `flag_error_hint` to `ValidatorResult` so the pool boundary can route the failure through the healer.
+
+- **Heal sequence** — captures `<cli> --help` with a 10-second timeout, builds a reviewer prompt that includes the old argv, stderr, and help output, asks the primary reviewer for a corrected JSON proposal (schema: `argv_template`, `stdin_mode`, `stdout_parser`, `confidence`, `rationale`), and smoke-tests the proposal with a fixed prompt *"Reply with the single word OK and nothing else."* On smoke-test pass, persists a `LearnedAdapter` to `~/.lope/config.json` under `learned_adapters.<cli_name>` via the atomic+locked Phase 2 save.
+
+- **Guardrails** — one heal attempt per CLI per session (process-local set, no infinite loops), skipped when no reviewer is available, gated by `LOPE_SELF_HEAL=1` for v0.4.0 (will default-on in v0.5.0 once telemetry is clean), 90-day TTL on learned adapters before re-verification.
+
+- **Journaled** — every `heal_attempt`, `heal_success`, `heal_failure`, `heal_skipped` event lands in `~/.lope/journal.jsonl` via the new `lope/journal.py` module. `lope status` surfaces recent heal events inline.
+
+### New `LearnedAdapter` schema
+
+`LopeCfg` gains a `learned_adapters: Dict[str, LearnedAdapter]` field. Backwards-compatible — missing means empty dict. Schema: `argv_template` (list of str with `{prompt}` placeholder), `stdin_mode` ("none"|"pipe"), `stdout_parser` ("plaintext"|"json:dot.path"), `timestamp` (unix seconds), `source_cli` (which reviewer proposed it), `confidence` (0.0-1.0).
+
+### `lope status` (expanded)
+
+Now prints two new blocks when applicable:
+
+- **Learned adapters** — each healed CLI with its age in days, source reviewer, confidence score, and warning flags for adapters nearing the 90-day TTL (`[aging — re-verify soon]` at 60 days, `[EXPIRED]` past 90).
+- **Recent heal events** — the last 5 heal events from the journal with type, CLI name, and minutes-ago timestamp.
+
+### `docs/reference.md` expanded
+
+Two new sections:
+- **Config precedence** — the 5-layer hierarchy explained with examples.
+- **Self-healing adapters** — full description of the heal sequence, guardrails, and opt-in flag.
+
+### New files
+
+- `lope/healer.py` (~290 lines) — `SelfHealer` class, `_build_heal_prompt`, `_parse_heal_response`, `_fill_template`, `is_adapter_expired`, TTL + smoke-prompt constants.
+- `lope/journal.py` (~65 lines) — `append_event`, `read_recent`, `journal_path`.
+
+### Modified files
+
+- `lope/config.py` — `load_layered`, `_safe_read`, `fcntl.flock` in `save`, `LearnedAdapter` dataclass, `_hydrate_cfg` picks up the new field, `project_path` helper for `./.lope/config.json`.
+- `lope/cli.py` — `_add_pool_flags` attached to negotiate/execute/audit, `_ensure_config(args)` takes CLI overrides, `_cmd_execute` autonomous implementation via primary validator (fixes the `input()` bug), zero-phase sprint fail-loud, `_phase_to_prompt` helper for the implementer prompt, `lope status` shows learned adapters + heal events.
+- `lope/validators.py` — `_is_flag_error` helper, `AdapterFlagError` class, `_infra_error` now attaches `flag_error_hint` to results that look like flag breaks.
+- `lope/models.py` — `ValidatorResult.flag_error_hint` field.
+- `docs/reference.md` — new sections on config precedence + self-healing.
+
+### Dogfood notes
+
+- Shipped using the `scripts/bump-version.sh` + `scripts/check-version.sh` tooling added in v0.3.1/v0.3.2. All 6 version strings stayed in sync on first try — zero manual bumps.
+- The three bugs above were found by running `lope execute` against itself during the v0.4.0 sprint and watching it no-op, false-succeed, and EOFError on first phase. "Dogfood before publish" (the v0.2.0 auth-header incident's lesson) scales — every release needs its own dogfood pass.
+
+### Not shipped in v0.4.0 (next)
+
+- Retrofitting each `Validator` subclass to surface `AdapterFlagError` directly is not strictly needed since `_infra_error` picks up the pattern for every subclass already. Individual subclass retrofits are opt-in refinement for v0.4.1.
+- `tests/` directory (the public repo has no test suite — tests live internally). Adding a pytest-based suite to the public repo is v0.4.1+.
+- Default-on self-heal — remains opt-in behind `LOPE_SELF_HEAL=1` until v0.5.0.
+- Learned adapters for HTTP providers — subprocess only for v0.4.0.
+
 ## 0.3.2 — Honest per-host matrix + `lope docs` + `/lope-help`
 
 Fixes v0.3.1's over-promise of "install works everywhere." After live-testing the install flow in multiple CLIs and asking each host directly whether it supports user slash commands, the honest state turned out to be:

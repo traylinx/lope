@@ -77,6 +77,10 @@ class ValidatorResult:
     verdict: PhaseVerdict
     raw_response: str = ""
     error: str = ""  # set when validator itself crashed (subprocess died, etc)
+    # v0.4.0 — set when the infra failure looks like a CLI flag break
+    # (e.g. upstream renamed --prompt to --input). Non-empty hint triggers
+    # the SelfHealer at the pool boundary when LOPE_SELF_HEAL=1.
+    flag_error_hint: str = ""
 
     def ok(self) -> bool:
         return not self.error and self.verdict.status != VerdictStatus.INFRA_ERROR

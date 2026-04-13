@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any, Dict
 
 from . import (
     Auditor,
@@ -44,6 +45,24 @@ def main():
     )
     sub = parser.add_subparsers(dest="command")
 
+    # Shared pool-override flags — added to every subcommand that loads a
+    # validator pool. CLI flags take precedence over env vars (LOPE_VALIDATORS,
+    # LOPE_PRIMARY, LOPE_TIMEOUT, LOPE_PARALLEL), which take precedence over
+    # per-project ./.lope/config.json, which takes precedence over the user
+    # global ~/.lope/config.json. See docs/reference.md "Config precedence".
+    def _add_pool_flags(p):
+        p.add_argument("--validators", default=None,
+                       help="Comma-separated validator list, e.g. opencode,gemini")
+        p.add_argument("--primary", default=None,
+                       help="Name of the primary validator (must be in --validators)")
+        p.add_argument("--timeout", type=int, default=None,
+                       help="Per-validator timeout in seconds")
+        parallel_group = p.add_mutually_exclusive_group()
+        parallel_group.add_argument("--parallel", dest="parallel", action="store_true",
+                                    default=None, help="Run validators in parallel")
+        parallel_group.add_argument("--sequential", dest="parallel", action="store_false",
+                                    default=None, help="Run validators sequentially")
+
     # negotiate
     neg = sub.add_parser("negotiate", help="Draft a sprint doc via multi-round validation")
     neg.add_argument("goal", help="Sprint goal description")
@@ -53,16 +72,23 @@ def main():
     neg.add_argument("--domain", default="engineering",
                      choices=["engineering", "business", "research"],
                      help="Domain: engineering (default), business, or research")
+    _add_pool_flags(neg)
 
     # execute
     exe = sub.add_parser("execute", help="Run sprint phases with validator-in-the-loop")
     exe.add_argument("sprint_doc", help="Path to sprint doc markdown")
     exe.add_argument("--phase", type=int, default=None, help="Run specific phase only")
+    exe.add_argument("--manual", action="store_true",
+                     help="Human-in-the-loop mode: wait for Enter between phases "
+                          "(legacy pre-v0.4.0 behavior). Default is autonomous "
+                          "via primary validator's generate() method.")
+    _add_pool_flags(exe)
 
     # audit
     aud = sub.add_parser("audit", help="Generate scorecard from sprint results")
     aud.add_argument("sprint_doc", help="Path to sprint doc markdown")
     aud.add_argument("--no-journal", action="store_true", help="Skip journal write")
+    _add_pool_flags(aud)
 
     # status
     sub.add_parser("status", help="Show available validators and config")
@@ -180,6 +206,35 @@ def _cmd_status():
         print(f"  Primary: {cfg.primary}")
         print(f"  Parallel: {cfg.parallel}")
         print(f"  Timeout: {cfg.timeout}s")
+
+        # v0.4.0: show learned adapters (self-healed CLI invocations)
+        if cfg.learned_adapters:
+            import time as _t
+            from .healer import is_adapter_expired, LEARNED_ADAPTER_TTL_SECONDS
+            print(f"\nLearned adapters ({len(cfg.learned_adapters)}):")
+            now = _t.time()
+            for cli_name, adapter in cfg.learned_adapters.items():
+                age_days = int((now - adapter.timestamp) / 86400) if adapter.timestamp > 0 else -1
+                warn = ""
+                if is_adapter_expired(adapter, now):
+                    warn = " [EXPIRED — will re-verify on next run]"
+                elif age_days >= 60:
+                    warn = " [aging — re-verify soon]"
+                src = adapter.source_cli or "?"
+                conf = f"{adapter.confidence:.2f}" if adapter.confidence > 0 else "?"
+                print(f"  {cli_name:<20} from {src}, {age_days}d ago, "
+                      f"conf={conf}{warn}")
+
+        # v0.4.0: show recent heal events from the journal
+        from .journal import read_recent
+        recent = read_recent(limit=5)
+        heal_events = [e for e in recent if str(e.get("event", "")).startswith("heal_")]
+        if heal_events:
+            print(f"\nRecent heal events ({len(heal_events)}):")
+            for evt in heal_events[-5:]:
+                ts = evt.get("timestamp", 0)
+                age = int((__import__("time").time() - ts) / 60) if ts else -1
+                print(f"  {evt.get('event', '?'):<16} {evt.get('cli', '?'):<16} {age}m ago")
     else:
         print(f"\nNo config found. Run: lope configure")
     print()
@@ -227,15 +282,42 @@ def _cmd_install(host: str):
     subprocess.run(args, check=False)
 
 
-def _ensure_config():
-    """Load or create config. Returns (cfg, pool)."""
-    cfg = load_config(default_path())
-    if cfg is None:
+def _ensure_config(args=None):
+    """Load or create config using the v0.4.0 layered precedence chain.
+
+    Precedence (lowest → highest): built-in defaults < user global <
+    per-project < env vars < CLI flags. Never mutates the global file
+    unless the user has zero validators configured and runs `lope configure`.
+    """
+    from .config import load_layered
+
+    # Extract CLI overrides from args (negotiate/execute/audit all carry
+    # these via _add_pool_flags).
+    cli_overrides: Dict[str, Any] = {}
+    if args is not None:
+        if getattr(args, "validators", None):
+            cli_overrides["validators"] = [
+                s.strip() for s in args.validators.split(",") if s.strip()
+            ]
+        if getattr(args, "primary", None):
+            cli_overrides["primary"] = args.primary
+        if getattr(args, "timeout", None) is not None:
+            cli_overrides["timeout"] = args.timeout
+        if getattr(args, "parallel", None) is not None:
+            cli_overrides["parallel"] = args.parallel
+
+    cfg = load_layered(cli_overrides=cli_overrides)
+
+    # If no validators are configured anywhere, fall back to the legacy
+    # first-run UX: interactive picker if stdin is a TTY, auto-pick defaults
+    # otherwise. This path only fires when the user has literally never
+    # configured lope and has not passed any CLI flags or env vars.
+    if not cfg.validators:
         available = discover()
         if not available:
             print("No AI CLIs detected. Install at least one of: claude, opencode, gemini, codex, aider")
             sys.exit(1)
-        if is_interactive():
+        if is_interactive() and load_config(default_path()) is None:
             cfg = run_selector(available)
             save_config(cfg, default_path())
         else:
@@ -243,9 +325,12 @@ def _ensure_config():
             cfg = LopeCfg(
                 validators=[c.name for c in defs],
                 primary=defs[0].name if defs else "",
-                timeout=480,
-                parallel=True,
+                timeout=cfg.timeout,
+                parallel=cfg.parallel,
+                providers=cfg.providers,
+                learned_adapters=cfg.learned_adapters,
             )
+
     pool = build_validator_pool(cfg)
     return cfg, pool
 
@@ -311,14 +396,14 @@ def _http_llm_fallback(system: str, user: str, llm_url: str) -> str:
 
 def _cmd_negotiate(args):
     print(f"\nLope negotiate: {args.goal}\n")
-    cfg, pool = _ensure_config()
+    cfg, pool = _ensure_config(args)
 
     # Drafter = the primary validator in the pool. Lope's core premise:
     # any CLI implements, any CLI validates. So drafting a proposal is
     # just the primary CLI implementing; reviewers then vote on it.
     # No separate hosted LLM endpoint required.
     primary = pool.primary_validator()
-    timeout = int(os.environ.get("LOPE_TIMEOUT", "480"))
+    timeout = cfg.timeout
     print(f"Drafter: {primary.name}  ·  Reviewers: {', '.join(v.name for v in pool.reviewers()) or '(none — need at least 2 validators for real ensemble review)'}")
     print()
 
@@ -376,21 +461,92 @@ def _cmd_execute(args):
     doc = SprintDoc.from_markdown(
         Path(args.sprint_doc).read_text(), path=args.sprint_doc
     )
-    print(f"\nLope execute: {doc.title} ({len(doc.phases)} phases)\n")
-    cfg, pool = _ensure_config()
 
-    def implementation_fn(phase, fix_context=None):
-        # In standalone mode, print what needs to be done and wait
-        from .executor import ImplementationResult
-        print(f"\n{'='*50}")
-        print(f"Phase {phase.index}: {phase.name}")
-        print(f"Goal: {phase.goal}")
-        if fix_context:
-            print(f"Fixes to apply: {fix_context}")
-        print(f"{'='*50}")
-        print("\nImplement this phase, then press Enter to validate...")
-        input()
-        return ImplementationResult(ok=True, summary="implemented by operator")
+    # v0.4.0: fail loudly on zero-phase sprints instead of silently reporting
+    # "All phases passed!" The old behavior was a false-success hazard — a
+    # sprint doc with the wrong heading level (`##` instead of `###`) parsed
+    # as zero phases and shipped as a clean PASS.
+    if not doc.phases:
+        print(
+            f"\nERROR: sprint doc at {args.sprint_doc} contains 0 phases.\n"
+            f"  Each phase must start with a level-3 heading: `### Phase N: <name>`\n"
+            f"  Each phase must have non-empty **Files:** / **Artifacts:** /\n"
+            f"  **Deliverables:** and **Tests:** / **Checks:** / **Success Metrics:** lists.\n"
+            f"  Run `lope docs` or `lope negotiate --help` for the sprint doc format.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    print(f"\nLope execute: {doc.title} ({len(doc.phases)} phases)\n")
+    cfg, pool = _ensure_config(args)
+
+    # v0.4.0: autonomous implementation via primary validator's generate()
+    # method. The primary CLI runs as a subprocess in the current working
+    # directory and writes files directly (claude, codex, opencode, aider,
+    # gemini-cli all have their own filesystem tools). Lope's role is to
+    # orchestrate the prompt, capture the summary, and hand the result to
+    # the validator ensemble for review.
+    #
+    # Opt out with --manual for legacy human-in-the-loop flow.
+    primary = pool.primary_validator()
+
+    if args.manual:
+        def implementation_fn(phase, fix_context=None):
+            from .executor import ImplementationResult
+            print(f"\n{'='*50}")
+            print(f"Phase {phase.index}: {phase.name}")
+            print(f"Goal: {phase.goal}")
+            if fix_context:
+                print(f"Fixes to apply: {fix_context}")
+            print(f"{'='*50}")
+            print("\nManual mode: implement this phase, then press Enter to validate...")
+            try:
+                input()
+            except EOFError:
+                print("\nERROR: --manual mode requires an interactive stdin. "
+                      "Drop --manual to run autonomously via the primary validator.",
+                      file=sys.stderr)
+                sys.exit(3)
+            return ImplementationResult(ok=True, summary="implemented by operator")
+    else:
+        print(f"Implementer: {primary.name}  ·  Reviewers: "
+              f"{', '.join(v.name for v in pool.reviewers()) or '(none)'}")
+        print(f"Timeout: {cfg.timeout}s  ·  Mode: autonomous (use --manual for human-in-loop)")
+        print()
+
+        def implementation_fn(phase, fix_context=None):
+            from .executor import ImplementationResult
+
+            phase_blurb = _phase_to_prompt(phase, doc, fix_context)
+            print(f"\n>>> Phase {phase.index}: {phase.name}")
+            print(f">>> Delegating to {primary.name} ({cfg.timeout}s timeout)...")
+
+            try:
+                output = primary.generate(phase_blurb, timeout=cfg.timeout)
+            except NotImplementedError:
+                return ImplementationResult(
+                    ok=False,
+                    summary=(
+                        f"{primary.name} does not support autonomous implementation "
+                        f"via .generate() in v0.4.0. Re-run with --manual or pick "
+                        f"a different primary (claude, opencode, gemini-cli, codex, aider)."
+                    ),
+                )
+            except Exception as e:
+                return ImplementationResult(
+                    ok=False,
+                    summary=f"{primary.name} subprocess failed: {type(e).__name__}: {e}",
+                )
+
+            # The primary writes files directly via its own tools. What comes
+            # back in stdout is a free-form summary — pass it through to the
+            # validators so they can see what the primary *claims* it did,
+            # alongside the actual file diffs they'll read themselves.
+            summary = (output or "").strip()[:2000]
+            if not summary:
+                summary = f"{primary.name} completed phase {phase.index} (no stdout summary)"
+            print(f">>> {primary.name} returned {len(output or '')} chars")
+            return ImplementationResult(ok=True, summary=summary)
 
     executor = PhaseExecutor(
         validator_pool=pool,
@@ -402,7 +558,7 @@ def _cmd_execute(args):
     auditor = Auditor()
     print(f"\n{auditor.scorecard(report)}")
 
-    if report.ok:
+    if report.ok and report.sprint_doc.phases:
         print("\nAll phases passed!")
         from .logo import mascot
         print()
@@ -412,11 +568,51 @@ def _cmd_execute(args):
         sys.exit(1)
 
 
+def _phase_to_prompt(phase, doc, fix_context=None) -> str:
+    """Build the implementer prompt for a sprint phase.
+
+    The prompt tells the primary CLI what phase we're on, what the files
+    and tests should look like, the sprint context, and any validator
+    fix instructions from a previous NEEDS_FIX round.
+    """
+    parts = [
+        f"You are implementing phase {phase.index} of a lope sprint.",
+        f"Sprint: {doc.title}",
+        "",
+        f"## Phase {phase.index}: {phase.name}",
+        "",
+        f"Goal: {phase.goal}",
+        "",
+    ]
+    if phase.artifacts:
+        parts.append("## Files / Artifacts / Deliverables to produce or modify")
+        parts.extend(f"- {a}" for a in phase.artifacts)
+        parts.append("")
+    if phase.checks:
+        parts.append("## Tests / Checks / Success Metrics")
+        parts.extend(f"- {c}" for c in phase.checks)
+        parts.append("")
+    if fix_context:
+        parts.append("## Fixes to apply from prior validator review")
+        parts.append(fix_context)
+        parts.append("")
+    parts.append(
+        "Implement the phase completely. Write the files directly using "
+        "your own filesystem tools. When you are done, return a short "
+        "(1-3 sentence) summary of what you changed — the validator "
+        "ensemble will read the actual file diffs, so the summary is "
+        "just for humans skimming the run log."
+    )
+    return "\n".join(parts)
+
+
 def _cmd_audit(args):
     doc = SprintDoc.from_markdown(
         Path(args.sprint_doc).read_text(), path=args.sprint_doc
     )
-    # Load existing verdicts if available
+    # Load existing verdicts if available. Accept pool-override flags even
+    # though audit doesn't currently re-run validators — the args shape stays
+    # consistent so _ensure_config accepts them.
     auditor = Auditor()
     from .models import ExecutionReport
     report = ExecutionReport(sprint_doc=doc)
