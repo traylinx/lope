@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.2 — `_phase_to_prompt` handles list fix_context
+
+v0.4.1's meta-dogfood advanced one full retry round deeper than v0.4.0 before hitting the next bug. The autonomous implementer ran, codex returned 767 chars, validators reviewed, spec NEEDS_FIX with 7 required fixes, executor correctly started attempt 2 — then crashed:
+
+```
+File "/Users/sebastian/Projects/lope/lope/cli.py", line 683, in _phase_to_prompt
+    return "\n".join(parts)
+TypeError: sequence item 22: expected str instance, list found
+```
+
+`_phase_to_prompt(phase, doc, fix_context)` assumed `fix_context` is a string. The executor's actual call shape is `fix_context: Optional[list]` — specifically `list(phase.verdict.required_fixes)` — so attempt 2 always crashed when validators returned NEEDS_FIX with any fixes. v0.4.1 worked only for the happy path where attempt 1 passed immediately.
+
+### Fix
+
+- `_phase_to_prompt` now handles `list`, `tuple`, `str`, and `None` shapes for `fix_context`. List items render as bulleted lines (`- <fix>`), matching the rest of the sprint prompt format.
+- Smoke test: 3 shapes (str / list / None) verified programmatically.
+
+### Why this matters
+
+The NEEDS_FIX retry loop is the whole point of multi-round validator review. Without it lope is no better than a single-shot code generator. v0.4.1 shipped with retry loops that worked in theory but crashed on the first real retry because the CLI frontend made an assumption about the callback contract that the executor doesn't guarantee.
+
+### Dogfood tally
+
+v0.4.0 → 1 bug (codex --quiet hardcoded + self-heal generate() gap). v0.4.1 → 1 bug (fix_context list/str mismatch). Each release fixes one layer of the onion and surfaces the next. v0.4.2 is the first release where the meta-dogfood should actually reach Phase 2 of the sprint.
+
 ## 0.4.1 — Codex `--quiet` flag break + self-heal on generate() path
 
 The v0.4.0 meta-dogfood — running v0.4.0 lope against its own sprint doc — surfaced the *exact* self-heal scenario v0.4.0 was built to fix:

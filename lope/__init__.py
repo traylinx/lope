@@ -1,6 +1,6 @@
 """Lope — autonomous sprint runner with multi-CLI validator ensemble."""
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 from .models import (
     ExecutionReport,

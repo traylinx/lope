@@ -671,7 +671,13 @@ def _phase_to_prompt(phase, doc, fix_context=None) -> str:
         parts.append("")
     if fix_context:
         parts.append("## Fixes to apply from prior validator review")
-        parts.append(fix_context)
+        # fix_context is List[str] from executor.py (phase.verdict.required_fixes),
+        # but we also tolerate a plain string for future/test callers.
+        if isinstance(fix_context, (list, tuple)):
+            for fix in fix_context:
+                parts.append(f"- {fix}")
+        else:
+            parts.append(str(fix_context))
         parts.append("")
     parts.append(
         "Implement the phase completely. Write the files directly using "

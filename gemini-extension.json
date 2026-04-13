@@ -1,6 +1,6 @@
 {
   "name": "lope",
   "description": "Multi-CLI validator ensemble sprint runner. Any AI CLI implements, any AI CLI validates, majority vote decides. Use /lope:negotiate, /lope:execute, /lope:audit.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "contextFileName": "GEMINI.md"
 }
