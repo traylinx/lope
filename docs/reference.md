@@ -1,0 +1,307 @@
+# Lope — Complete Reference
+
+This is the authoritative reference for lope. It's the single source of truth read by:
+
+- `lope docs` subcommand (prints this file)
+- `/lope-help` slash command (skills/lope-help/SKILL.md — delegates to `lope docs`)
+- `/lope:help` slash command (Gemini CLI, via commands/lope/help.toml)
+
+If you are an AI agent reading this because the user asked about lope, load it into your context and answer from it. Do not read other lope source files unless this doc points you to them.
+
+---
+
+## What lope is
+
+Lope is a **multi-CLI validator ensemble sprint runner**. Any AI CLI implements. Any AI CLI validates. Majority vote decides if a phase ships. No single-model blindspot.
+
+Lope is not a library. It's not a framework. It's a CLI harness that runs **other** AI CLIs as validators. You don't embed lope in Python code — you invoke `lope <mode> <args>` from a shell, and lope orchestrates subprocess calls to Claude Code, OpenCode, Gemini CLI, Codex, etc.
+
+Works for **three domains**: `engineering` (default), `business`, `research`. Same loop, different validator role prompt and artifact labels.
+
+Repo: https://github.com/traylinx/lope · MIT · Zero Python dependencies (pure stdlib).
+
+---
+
+## The three modes
+
+| Mode | CLI | Slash command (where supported) | What it does |
+|---|---|---|---|
+| **Negotiate** | `lope negotiate <goal>` | `/lope-negotiate` | Primary CLI drafts a structured sprint doc. Other CLIs independently review. Majority vote. Iterates until consensus or escalation. Writes the sprint doc to disk. |
+| **Execute** | `lope execute <sprint_doc>` | `/lope-execute` | Runs the sprint phase by phase. Each phase: primary implements, then two-stage validator review (spec compliance, then code quality). NEEDS_FIX retries with fix instructions (3 attempts). PASS advances. FAIL escalates. |
+| **Audit** | `lope audit <sprint_doc>` | `/lope-audit` | Generates a scorecard from executed sprint results — per-phase verdicts, confidence scores, duration, overall status. Appends to lope's journal. |
+
+Default flow: **negotiate → execute → audit**. Users usually run negotiate, hand-review the sprint doc, then run execute.
+
+---
+
+## CLI reference
+
+### `lope negotiate <goal>`
+
+Draft a sprint doc via multi-round validator review.
+
+```
+Usage: lope negotiate [-h] [--out OUT] [--max-rounds MAX_ROUNDS]
+                     [--context CONTEXT]
+                     [--domain {engineering,business,research}]
+                     goal
+
+Positional:
+  goal                        Sprint goal description (one sentence to one paragraph).
+
+Flags:
+  --out OUT                   Output path for sprint doc (default: ./SPRINT-<slug>.md).
+  --max-rounds MAX_ROUNDS     Max negotiation rounds before escalation (default: 3).
+  --context CONTEXT           Additional context string or file path (e.g., --context @CLIENT-BRIEF.md).
+  --domain DOMAIN             engineering (default) / business / research.
+```
+
+**That is the complete flag list.** There is no `--host`, no `--title`, no `--validators` on negotiate. Never invent flags.
+
+### `lope execute <sprint_doc>`
+
+Run sprint phases with validator-in-the-loop retry.
+
+```
+Usage: lope execute [-h] [--phase PHASE] sprint_doc
+
+Positional:
+  sprint_doc                  Path to the sprint doc produced by `lope negotiate`.
+
+Flags:
+  --phase PHASE               Run only the named phase instead of the full sprint.
+```
+
+### `lope audit <sprint_doc>`
+
+Generate a scorecard from execution results.
+
+```
+Usage: lope audit [-h] [--out OUT] sprint_doc
+
+Flags:
+  --out OUT                   Where to write the scorecard (default: <sprint_doc>.audit.md).
+```
+
+### `lope status`
+
+Show detected validators on this machine and the active config. Run this first if lope is acting up.
+
+### `lope configure`
+
+Interactive validator picker. Writes to `~/.lope/config.json`.
+
+### `lope install`
+
+Engine-level installer pointer. Prefer the top-level `./install` bash script or the paste-a-prompt flow (see below).
+
+### `lope version`
+
+Prints the version banner.
+
+### `lope docs`
+
+Prints this reference document to stdout. Pipe into `less` or redirect to a file.
+
+---
+
+## Domains
+
+Pass `--domain <name>` on negotiate to switch validator role prompt and artifact labels.
+
+| Domain | For | Artifacts / Files | Success Criteria / Tests |
+|---|---|---|---|
+| `engineering` (default) | code, software, infra, devops | Files | Tests |
+| `business` | marketing campaigns, budgets, ops, consulting, finance, legal | Deliverables | Success Metrics |
+| `research` | academic work, systematic reviews, studies, replication | Artifacts | Validation Criteria |
+
+The ensemble checks the same thing across all three domains: specific plan, measurable criteria, complete scope, poke-a-hole review. The role prompt and labels swap to match the domain's vocabulary.
+
+---
+
+## Supported validators
+
+12 built-in CLI adapters, auto-detected on `$PATH`:
+
+Claude Code · OpenCode · Gemini CLI · Codex · Mistral Vibe · Aider · Ollama · Goose · Open Interpreter · llama.cpp · GitHub Copilot CLI · Amazon Q
+
+**You need at least two different validators for the ensemble to have signal.** A pool of one is not an ensemble.
+
+Custom providers via `~/.lope/config.json` — subprocess or HTTP. Schema in the README.
+
+---
+
+## Environment variables
+
+| Var | Effect |
+|---|---|
+| `LOPE_CAVEMAN` | `full` (default) / `lite` / `off`. Caveman mode token compression on validator prompts. |
+| `LOPE_LINT` | `off` to skip no-placeholder lint on drafts. |
+| `LOPE_EVIDENCE_GATE` | `off` to skip the PASS-needs-evidence downgrade. |
+| `LOPE_SINGLE_STAGE` | `1` to revert execute mode to legacy single-pass validation. |
+| `LOPE_HOOK` | `off` to suppress the SessionStart briefing. |
+| `LOPE_LLM_URL` | Optional hosted LLM fallback when primary validator can't draft. |
+| `LOPE_LLM_API_KEY` | Bearer token for `LOPE_LLM_URL`. |
+| `LOPE_WORKDIR` | Working directory for validator subprocesses. |
+| `LOPE_TIMEOUT` | Validator timeout in seconds (default 480). |
+
+---
+
+## How you invoke lope
+
+There are **two invocation paths**, and the user will probably use #2.
+
+### 1. Explicit slash command (Claude Code, OpenCode, Gemini CLI, Cursor)
+
+```
+/lope-negotiate "Add JWT auth with refresh tokens"
+/lope-execute SPRINT-JWT-AUTH.md
+/lope-audit SPRINT-JWT-AUTH.md
+/lope              # umbrella explaining the three modes
+/lope-help         # prints this reference into your context
+```
+
+Gemini CLI uses namespaced syntax: `/lope:negotiate`, `/lope:execute`, `/lope:audit`, `/lope:help`.
+
+### 2. Natural language (any CLI, including Codex and Vibe)
+
+Most users will describe multi-phase work in prose — *"plan the auth refactor"*, *"scope the data migration"*, *"negotiate the Q4 campaign, needs to be right"*. Your job as the host agent is to **recognize the shape** and invoke lope on the user's behalf by running `lope <mode> <args>` in a shell.
+
+**Trigger words** for the natural-language path: *plan, negotiate, scope, draft, roll out, work through, carefully, don't break things, needs to be right.*
+
+When you recognize one of those + multi-phase work, construct the goal string from the user's prose and run `lope negotiate "<goal>" --domain <engineering|business|research>` directly. Do not wait for the user to type a slash command.
+
+**Do not** trigger on: single-edit tasks (rename a var, fix a typo), pure Q&A ("what does this do?"), trivial operations (add a print statement), urgent fire-fighting.
+
+---
+
+## Per-host support matrix
+
+Different CLIs have different slash-command mechanisms (or lack thereof). This is the honest state as of lope v0.3.2:
+
+| Host | Slash commands | Natural language | Install path |
+|---|---|---|---|
+| **Claude Code** | ✅ `/lope`, `/lope-negotiate`, `/lope-execute`, `/lope-audit`, `/lope-help`, `/using-lope` | ✅ | `~/.claude/skills/lope*/` (symlinks) |
+| **Codex** | ❌ does not register `/name` from SKILL.md (confirmed by asking Codex directly) | ✅ — skill content loaded, agent invokes via bash | `~/.codex/skills/lope*/` (content only) |
+| **Gemini CLI** | ✅ `/lope:negotiate`, `/lope:execute`, `/lope:audit`, `/lope:help` (namespaced, colon not hyphen) | ✅ | `~/.gemini/commands/lope/*.toml` |
+| **OpenCode** | ✅ `/lope-*` | ✅ | `~/.config/opencode/commands/*.md` (PLURAL "commands") |
+| **Cursor** | ⚠️ unverified — uses `.cursor/skills/` format; test before relying | ✅ | `.cursor/skills/` (project-local) |
+| **Mistral Vibe** | ❌ no user slash commands (confirmed by Vibe directly) | ✅ — skill content loaded, agent invokes via bash | `~/.vibe/skills/lope*/` (content only) |
+| **GitHub Copilot CLI** | ❌ no user skill dir yet | ✅ — agent invokes via bash | none |
+
+**Takeaway:** If your CLI is in the ❌ slash-command column, `lope` still works perfectly from a terminal and the agent still knows about it. Just describe your task in prose and the agent will run `lope <mode> <args>` for you. Do not wait for an autocomplete that won't come.
+
+---
+
+## Two-stage validator review (v0.3.0+)
+
+Each execute phase gets validated twice per retry attempt:
+
+1. **Spec compliance pass** — *"does this output match the phase goal?"*
+   - Spec NEEDS_FIX → short-circuits the quality pass, retries with fix instructions
+   - Spec FAIL → escalates immediately
+2. **Code quality pass** — *"is this well-built?"*
+   - Only runs if spec PASS
+   - NEEDS_FIX or FAIL feed back into the retry loop
+
+Separates "clever slop that misses the requirement" from "meets spec but rough around the edges." Disable by setting `LOPE_SINGLE_STAGE=1`.
+
+---
+
+## Verification-before-completion evidence gate (v0.3.0+)
+
+Any validator that returns PASS with a rationale that lacks **evidence** — no `file:line` reference, no test output, no code fence, no explicit verification phrase ("tests passed", "verified", etc.) — gets auto-downgraded to NEEDS_FIX with a synthesized "provide evidence" fix instruction.
+
+Kills rubber-stamping at the framework level. You don't have to trust validators to be rigorous; lope enforces it structurally. Disable by setting `LOPE_EVIDENCE_GATE=off`.
+
+---
+
+## No-placeholder lint on drafts (v0.3.0+)
+
+If the negotiator produces a sprint doc containing any of:
+
+- `TBD`, `TODO`, `XXX`, `FIXME`
+- `<placeholder>` or `[insert X]` tokens
+- Bare prose ellipsis (`...`) outside code fences
+- Phases with empty Artifacts / Files / Deliverables
+- Phases with empty Checks / Tests / Success Metrics
+
+…the drafter loops back with specific fix instructions **before** any validator round. Much cheaper than paying validators to say "you forgot to fill in phase 3." Disable with `LOPE_LINT=off`.
+
+---
+
+## Intelligent caveman mode
+
+On by default. Compresses validator prompts by dropping articles, filler, and hedging, while keeping code, paths, line numbers, and error messages **exact**. Roughly 50-65% token savings per validator round in internal measurements.
+
+Adapted from [JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman) (MIT). Lope's contribution is integrating the rules into the validator prompt injection pipeline.
+
+Modes via `LOPE_CAVEMAN` env var:
+
+- `full` (default) — maximum compression
+- `lite` — drops filler and hedging only, keeps full sentences
+- `off` — disable entirely (use for external writing / published content)
+
+---
+
+## Install
+
+**Preferred (paste-a-prompt):** Paste one line into any AI agent you already use:
+
+```
+Read https://raw.githubusercontent.com/traylinx/lope/main/INSTALL.md and follow the instructions to install lope on this machine natively.
+```
+
+Your agent fetches `INSTALL.md`, identifies which CLI it's running inside, and follows the matching section. Auto-detects the host, writes skills/commands to that host's native directory in the format that host expects.
+
+**Manual:** Clone and run the bash installer.
+
+```bash
+git clone --depth 1 https://github.com/traylinx/lope.git ~/.lope
+~/.lope/install
+alias lope='PYTHONPATH=~/.lope python3 -m lope'
+```
+
+**Restart your CLI after install.** Every host caches its skill list at session start — freshly-installed commands won't appear until you quit and reopen the CLI.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `/lope*` doesn't autocomplete after install | Host caches skill list at session start | Quit and reopen the CLI |
+| `/lope*` doesn't autocomplete after restart in Claude Code | Skills were installed to the wrong path | Check `ls ~/.claude/skills/ \| grep lope` — should list 6 lope* dirs |
+| `/lope*` doesn't appear in Vibe or Codex | Vibe/Codex don't support user slash commands (by design) | Invoke via natural language: *"use lope to negotiate the auth refactor"* |
+| `lope status` shows 0 detected CLIs | No AI CLIs on `$PATH` | Install at least 2 of the 12 supported CLIs |
+| `lope negotiate` crashes with a traceback | Engine bug | Capture the full traceback and open an issue — do NOT patch lope source as the fix |
+| `LOPE_LLM_URL` returns 401 | `LOPE_LLM_API_KEY` not set | `export LOPE_LLM_API_KEY=sk-...` |
+| Negotiate escalates on round 1 | Validator pool disagreement, or lint caught a placeholder | Read the escalation message — it names the issue |
+
+---
+
+## Hard rules for agents invoking lope
+
+1. **Do not invent flags.** `lope negotiate` flags are exactly: `--out`, `--max-rounds`, `--context`, `--domain`. No `--host`, no `--title`, no `--validators`. Run `lope <mode> --help` if unsure.
+
+2. **Do not write a wrapper script around lope.** Lope is already a CLI. Never create `lope_runner.py`, `generate_with_lope.sh`, or any Python/bash scaffold that imports or wraps lope. Invoke `lope <mode> <args>` directly in a shell.
+
+3. **Do not commit lope state to the user's project git repo** unless they explicitly ask.
+
+4. **Do not trigger lope on single-edit tasks, typo fixes, trivial edits, or pure Q&A.** Lope is for multi-phase work with a plan and success criteria.
+
+5. **For external writing** (emails, board memos, published content), set `LOPE_CAVEMAN=off` before running so validator prose stays polished. Default `full` mode is for internal terse work.
+
+---
+
+## Where to read more
+
+- `lope --help` / `lope <mode> --help` — authoritative flag surface
+- `lope docs` — this document
+- `/lope-help` — this document, injected as a slash command
+- `~/.lope/docs/samples.md` — 8 end-to-end conversation walkthroughs across all 3 domains
+- `~/.lope/README.md` — marketing/overview version
+- `~/.lope/CHANGELOG.md` — release notes
+- https://github.com/traylinx/lope — source of truth
+
+Built by Sebastian Schkudlara (Traylinx). MIT licensed. Caveman mode core rules adapted from JuliusBrussee/caveman.

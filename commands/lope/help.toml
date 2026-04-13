@@ -1,0 +1,21 @@
+description = "Print the complete lope reference — all modes, flags, domains, env vars, slash command vs natural-language invocation, troubleshooting, hard rules. Run whenever the user asks how lope works or what flags it supports."
+
+prompt = """
+<objective>
+Inject the authoritative lope reference into the current session and answer the user's question from it.
+</objective>
+
+<steps>
+1. Run `lope docs` in a shell (or `PYTHONPATH=~/.lope python3 -m lope docs` if `lope` is not on PATH). The output is the complete structured reference — modes, flags, domains, env vars, per-host support matrix, troubleshooting.
+
+2. Read the entire output carefully. Do NOT answer from memory of lope — memory drifts across versions and you will make up flags that do not exist.
+
+3. Answer the user's question from the reference. Quote specific sections when helpful. If the user's question is not covered in the reference, say so explicitly and point them at `lope <mode> --help` or https://github.com/traylinx/lope/issues.
+</steps>
+
+<do_not>
+- Paraphrase from memory and skip running `lope docs`. The output is compact and always fresh. Always pull it.
+- Use this command to invoke lope. Use `/lope:negotiate`, `/lope:execute`, `/lope:audit` for invocation. This command is read-only documentation.
+- Write wrapper scripts around lope. The reference says so; read it.
+</do_not>
+"""

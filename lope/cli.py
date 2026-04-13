@@ -77,6 +77,9 @@ def main():
     # version
     sub.add_parser("version", help="Show version")
 
+    # docs — prints the complete lope reference
+    sub.add_parser("docs", help="Print the complete lope reference to stdout")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -98,6 +101,10 @@ def main():
         print()
         print(box(f"v{_v}"))
         print()
+        return
+
+    if args.command == "docs":
+        _cmd_docs()
         return
 
     if args.command == "status":
@@ -123,6 +130,26 @@ def main():
     if args.command == "audit":
         _cmd_audit(args)
         return
+
+
+def _cmd_docs():
+    """Print the complete lope reference (docs/reference.md) to stdout."""
+    from pathlib import Path
+    here = Path(__file__).resolve().parent.parent  # lope/ -> repo root
+    ref = here / "docs" / "reference.md"
+    if not ref.is_file():
+        # Fallback: try ~/.lope if we're imported from a non-repo install
+        home_ref = Path.home() / ".lope" / "docs" / "reference.md"
+        if home_ref.is_file():
+            ref = home_ref
+        else:
+            print(
+                f"ERROR: lope reference not found at {ref} or {home_ref}.\n"
+                f"Reinstall lope: https://github.com/traylinx/lope",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    print(ref.read_text(encoding="utf-8"))
 
 
 def _cmd_status():

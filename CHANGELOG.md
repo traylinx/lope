@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.2 — Honest per-host matrix + `lope docs` + `/lope-help`
+
+Fixes v0.3.1's over-promise of "install works everywhere." After live-testing the install flow in multiple CLIs and asking each host directly whether it supports user slash commands, the honest state turned out to be:
+
+| Host | Slash commands | Natural language | Status |
+|---|---|---|---|
+| Claude Code | ✅ | ✅ | works |
+| Gemini CLI | ✅ (namespaced) | ✅ | works |
+| OpenCode | ✅ | ✅ | works (path was wrong in v0.3.1) |
+| Codex | ❌ (confirmed by Codex) | ✅ | content-only |
+| Mistral Vibe | ❌ (confirmed by Vibe) | ✅ | content-only |
+| Cursor | ⚠️ unverified | ✅ | best-effort |
+
+### What's new
+
+- **`lope docs` subcommand** — prints the complete authoritative reference (all modes, all flags, all domains, env vars, per-host support matrix, troubleshooting, hard rules) from a single source file at `docs/reference.md`. Single source of truth for agents that need to know how lope works.
+- **New `/lope-help` slash command** (`/lope:help` in Gemini) — thin skill that instructs the host agent to run `lope docs` and load the output into context, then answer the user's question from the reference. Memorize nothing; pull fresh every time.
+- **New `skills/lope-help/SKILL.md`** — installed alongside the other lope skills on every host that supports slash commands.
+- **`docs/reference.md`** — the canonical reference document, shared by `lope docs` and the `lope-help` skill body.
+
+### Install fixes
+
+- **OpenCode path corrected** from `~/.config/opencode/command/` (singular) to `~/.config/opencode/commands/` (plural). v0.3.1 shipped with the wrong path; v0.3.2 cleans up the old dir automatically on install.
+- **OpenCode command files now carry the required `agent: build` YAML frontmatter.** v0.3.1 symlinked raw SKILL.md files which OpenCode rejected. v0.3.2 ships pre-authored wrapper files at `commands/opencode/*.md` with the correct frontmatter shape, each delegating to `lope <mode>` via bash in its body.
+- **INSTALL.md rewritten with an honest per-host support matrix** at the top, so agents read which section applies before copying commands. Codex and Vibe sections now tell agents explicitly that those hosts don't register user slash commands and to invoke lope via natural language instead.
+- **Installer output rewritten** — instead of claiming all 6 hosts get slash commands, it now prints two tables: "slash commands by host" for the 3 hosts that actually work, and "content-only hosts" for Codex + Vibe.
+
+### Internals
+
+- `lope/cli.py` gains `_cmd_docs()` — reads `docs/reference.md` from either the repo root or `~/.lope`, falls back cleanly if the file is missing.
+- Bash installer uses the new `commands/opencode/*.md` wrapper files (generated once, symlinked in) instead of constructing wrappers at install time. Zero drift, zero installer logic for frontmatter.
+
+No engine changes. Same validator pool, two-stage review, evidence gate, placeholder lint as v0.3.0/v0.3.1.
+
 ## 0.3.1 — Install works everywhere
 
 - **`INSTALL.md` rewritten as a per-host router.** The agent reading the file identifies which CLI it runs inside and jumps to the matching section — Claude Code, Codex, Gemini CLI, OpenCode, Cursor, Mistral Vibe, GitHub Copilot CLI, or a generic fallback. Each section has exact shell commands for that host's native skill/command path. No guessing.

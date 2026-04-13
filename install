@@ -90,22 +90,26 @@ install_gemini() {
   done
 }
 
-# OpenCode: ~/.config/opencode/command/ (singular "command") with flat
-# markdown files. We generate one .md per skill pointing at the SKILL.md
-# content, plus a lope.md umbrella.
+# OpenCode: ~/.config/opencode/commands/ (PLURAL — singular "command" is wrong)
+# with flat markdown files that MUST have YAML frontmatter including `agent:`.
+# We ship pre-authored wrapper files at commands/opencode/*.md that have the
+# right frontmatter shape and delegate to `lope <mode>` via bash in their body.
 install_opencode() {
-  local dir="$HOME/.config/opencode/command"
+  local dir="$HOME/.config/opencode/commands"
   mkdir -p "$dir"
-  for skill in "$SKILLS_DIR"/lope "$SKILLS_DIR"/lope-*/ "$SKILLS_DIR"/using-lope; do
-    skill="${skill%/}"
-    [ -d "$skill" ] || continue
-    local name="$(basename "$skill")"
-    local src="$skill/SKILL.md"
-    local target="$dir/$name.md"
-    [ -f "$src" ] || continue
+  # Clean up v0.3.1 mistake (singular "command" dir) if it exists
+  local stale="$HOME/.config/opencode/command"
+  if [ -d "$stale" ]; then
+    for f in "$stale"/lope*.md "$stale"/using-lope.md; do
+      [ -e "$f" ] && rm -f "$f"
+    done
+  fi
+  for md in "$COMMANDS_DIR"/opencode/*.md; do
+    [ -f "$md" ] || continue
+    local target="$dir/$(basename "$md")"
     replace_target "$target"
-    ln -sf "$src" "$target"
-    echo "  opencode: $target -> $src"
+    ln -sf "$(cd "$(dirname "$md")" && pwd)/$(basename "$md")" "$target"
+    echo "  opencode: $target -> $md"
   done
 }
 
@@ -155,7 +159,7 @@ install_host() {
 }
 
 echo ""
-echo "Lope v0.3.1 — Installing skills and commands"
+echo "Lope v0.3.2 — Installing skills and commands"
 echo "─────────────────────────────────────────────"
 echo ""
 
@@ -176,13 +180,18 @@ else
   echo "  Make sure Python 3.9+ is installed: python3 --version"
 fi
 echo ""
-echo "Slash commands registered:"
-echo "  Claude Code  /lope  /lope-negotiate  /lope-execute  /lope-audit"
-echo "  Codex        /lope  /lope-negotiate  /lope-execute  /lope-audit"
-echo "  Gemini CLI   /lope:negotiate  /lope:execute  /lope:audit"
-echo "  OpenCode     /lope  /lope-negotiate  /lope-execute  /lope-audit"
-echo "  Cursor       /lope  /lope-negotiate  /lope-execute  /lope-audit"
-echo "  Vibe         /lope  /lope-negotiate  /lope-execute  /lope-audit"
+echo "Slash commands by host (honest state — not every host supports user slash commands):"
+echo "  Claude Code  /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help"
+echo "  Gemini CLI   /lope:negotiate  /lope:execute  /lope:audit  /lope:help"
+echo "  OpenCode     /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help"
+echo "  Cursor       (unverified — skills written to ~/.cursor/agents/)"
+echo ""
+echo "Content-only hosts (skills loaded as context, invoke lope via natural language):"
+echo "  Codex        skills at ~/.codex/skills/ — agent runs 'lope <mode>' via bash"
+echo "  Vibe         skills at ~/.vibe/skills/  — agent runs 'lope <mode>' via bash"
+echo ""
+echo "For any host, 'lope docs' prints the complete reference — all flags, all domains,"
+echo "troubleshooting, hard rules. Also available as /lope-help where slash commands work."
 echo ""
 echo "IMPORTANT: Restart your CLI to pick up the new slash commands —"
 echo "every host caches its skill list at session start."
