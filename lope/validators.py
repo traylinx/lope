@@ -1587,6 +1587,16 @@ def build_validator_pool(cfg: "LopeCfg") -> "ValidatorPool":
                 "command": list(cli.generic_command),
             }
 
+    # Makakoo OS adapters registered at ~/.makakoo/adapters/registered/*.toml
+    # — fourth resolution tier, opt-out via LOPE_MAKAKOO_ADAPTERS=0.
+    makakoo_adapter_names: set = set()
+    if os.environ.get("LOPE_MAKAKOO_ADAPTERS") != "0":
+        try:
+            from .makakoo_adapter import enumerate_registered_adapters
+            makakoo_adapter_names = set(enumerate_registered_adapters())
+        except Exception as e:
+            log.debug(f"Makakoo adapter enumeration skipped: {e}")
+
     validators = []
     primary = None
     for name in cfg.validators:
@@ -1610,6 +1620,14 @@ def build_validator_pool(cfg: "LopeCfg") -> "ValidatorPool":
                 v = build_provider(auto_map[name])
             except Exception as e:
                 log.warning(f"Failed to auto-provision {name!r}: {e}")
+                continue
+        # Makakoo OS adapter fourth (universal bridge, zero-config)
+        elif name in makakoo_adapter_names:
+            try:
+                from .makakoo_adapter import MakakooAdapterValidator
+                v = MakakooAdapterValidator(adapter_name=name)
+            except Exception as e:
+                log.warning(f"Failed to build Makakoo adapter {name!r}: {e}")
                 continue
         else:
             log.warning(f"Unknown validator: {name}")
