@@ -15,9 +15,9 @@
      any cli implements  ·  any cli validates
 ```
 
-**Autonomous sprint runner with multi-CLI validator ensemble.**
+**Multi-CLI validator ensemble for AI work.**
 
-One AI CLI implements. Others review. Majority vote. No single-model blindspot.
+One AI CLI drafts. Others validate. No single-model blindspot. Works for multi-phase sprints (negotiate → execute → audit) **and** for single-shot multi-model tasks: ask a question to N CLIs, review a file across models, vote on options, A/B-compare two files, or pipe stdin to every validator.
 
 > **Not just for code.** Lope works for **engineering, business (marketing, finance, ops, consulting), and research (systematic reviews, protocols, academic work)**. The same validator loop that catches bugs in code also catches gaps in budgets, timeline assumptions, methodology rigor, and audience targeting. See [Use cases](#use-cases) for 9 worked examples across all three domains.
 
@@ -85,11 +85,19 @@ Agent:  [recognizes multi-phase work → invokes /lope-negotiate]
 | "Plan the Q4 marketing campaign carefully" | `lope negotiate "Q4 marketing campaign" --domain business` |
 | "Scope the data ingestion rewrite" | `lope negotiate "Data ingestion pipeline rewrite" --domain engineering` |
 | "Systematic review of post-training RL papers" | `lope negotiate "Systematic review of post-training RL" --domain research` |
-| "Work out a GDPR compliance audit plan" | `lope negotiate "GDPR compliance audit" --domain business` |
+| "What do gemini and claude say about this approach?" | `lope ask "<the question>"` |
+| "Get a second opinion across models on X" | `lope ask "<question about X>"` |
+| "Review auth.py across models for security" | `lope review auth.py --focus security` |
+| "Multi-model review of my PR diff" | `lope review <diff path>` |
+| "Yes/no from all the CLIs — is this safe?" | `lope vote "Is this safe?" --options yes,no` |
+| "Pick 3.12 or 3.13 for the new project" | `lope vote "Python version" --options 3.12,3.13` |
+| "Which file is better — old or new?" | `lope compare old.py new.py --criteria "correctness and readability"` |
+| "Before/after bake-off for security" | `lope compare before.py after.py --criteria security` |
+| "Pipe this diff into every model" | `gh pr diff \| lope pipe` |
 
-The trigger words your agent watches for: **plan**, **negotiate**, **scope**, **draft**, **roll out**, **work through**, **"carefully"**, **"needs to be right"**, **"don't break things"**. The agent pairs those with a multi-phase task shape (3+ steps, multiple files, cross-model-verification value) and invokes `lope negotiate` without you having to remember the slash command.
+The trigger words your agent watches for: **plan / negotiate / scope / draft / roll out** → `negotiate`; **ask / what do the CLIs think / second opinion** → `ask`; **review / critique / audit this file** → `review`; **yes-no / A-B-C / pick one** → `vote`; **which is better / compare / bake-off** → `compare`; **pipe / send output / `cmd | lope`** → `pipe`. The agent maps the shape of your request to the right verb without you having to remember slash syntax.
 
-Explicit slash commands (`/lope-negotiate`, `/lope-execute`, `/lope-audit`) still work — they're the precise path when you want to control the exact arguments. Natural language is the lazy path when you just want to plan something.
+Explicit slash commands still work — `/lope-negotiate`, `/lope-execute`, `/lope-audit`, `/lope-ask`, `/lope-review`, `/lope-vote`, `/lope-compare`, `/lope-pipe` (Gemini uses `/lope:negotiate`, etc.). Natural language is the lazy path when you just want to do something multi-model.
 
 ### What happens under the hood
 
@@ -118,10 +126,13 @@ That's it. Your agent fetches a single markdown file, follows six short steps, a
 | Claude Code | `~/.claude/skills/lope*/` | skill dirs |
 | Codex | `~/.codex/skills/lope*/` | skill dirs |
 | Gemini CLI | `~/.gemini/commands/lope/*.toml` | TOML commands |
-| OpenCode | `~/.config/opencode/command/lope*.md` | flat markdown |
+| OpenCode | `~/.config/opencode/commands/lope*.md` | flat markdown |
 | Cursor | `~/.cursor/agents/lope*.md` | flat markdown |
+| Mistral Vibe | `~/.vibe/skills/lope*/` | skill dirs |
+| Qwen Code | `~/.qwen/skills/lope*/` | skill dirs |
+| pi (Traylinx) | `~/.agents/skills/lope*/` | skill dirs (shared `@agents` tree) |
 
-Hosts you don't have installed are skipped silently.
+Hosts you don't have installed are skipped silently. Eight hosts are supported today.
 
 ### Manual install (for the 1% who prefer to read bash)
 
@@ -159,6 +170,10 @@ lope configure
 
 ## How it works
 
+Lope has two shapes: **structured sprint mode** (negotiate → execute → audit, with phase retry) and **single-shot verbs** (ask, review, vote, compare, pipe — one prompt, N responses, done).
+
+### Sprint mode — planned work with phase retries
+
 ```
   NEGOTIATE              VALIDATE              EXECUTE              AUDIT
   ─────────              ────────              ───────              ─────
@@ -176,7 +191,21 @@ lope configure
 
 **Audit:** Scorecard with per-phase verdicts, confidence scores, duration, and overall status.
 
-Three modes: `lope negotiate`, `lope execute`, `lope audit`.
+### Single-shot verbs — one prompt, N responses
+
+```
+  ASK / REVIEW / VOTE / COMPARE / PIPE
+  ────────────────────────────────────
+        ┌──────────────────────┐
+  You ──>│ fan-out to every     │─────> N raw responses
+         │ configured validator │        (one section per CLI)
+        │ in parallel threads   │        or tally + winner (vote/compare)
+        └──────────────────────┘
+```
+
+Each verb shares the same parallel fan-out primitive (`EnsemblePool.validate`). No sprint doc, no phase retries, no majority-vote on verdicts. You get each model's actual response; synthesis is your call (or optional with `--json`).
+
+**Eight modes in total:** `negotiate`, `execute`, `audit`, `ask`, `review`, `vote`, `compare`, `pipe`.
 
 ---
 
@@ -198,6 +227,8 @@ Three modes: `lope negotiate`, `lope execute`, `lope audit`.
 | llama.cpp | `llama-cli` | fastest local inference |
 | GitHub Copilot CLI | `gh copilot` | `gh copilot suggest` |
 | Amazon Q | `q` | `q chat` |
+| pi (Traylinx) | `pi` | `pi -p "{prompt}"` |
+| Qwen Code | `qwen` | `qwen -p "{prompt}"` |
 
 You need at least one. Install whatever you already use.
 
@@ -276,13 +307,19 @@ pool = ValidatorPool(
 
 ## Slash commands
 
-After install, these work in any supported CLI host:
+After install, these work in any supported CLI host (Gemini uses the `/lope:<verb>` namespaced form):
 
 | Command | What it does |
 |---------|-------------|
 | `/lope-negotiate` | Draft a sprint doc with multi-round validator review |
 | `/lope-execute` | Run sprint phases with validator-in-the-loop retry |
 | `/lope-audit` | Generate scorecard from sprint results |
+| `/lope-ask` | Fan out one question to every validator; collect N raw answers |
+| `/lope-review` | Fan out a file review to every validator; collect N critiques |
+| `/lope-vote` | Each validator picks from `--options`; tally + winner |
+| `/lope-compare` | Each validator picks between two files given `--criteria`; tally + winner |
+| `/lope-pipe` | Read stdin as the prompt; fan out; per-validator sections |
+| `/lope-help` | Print the full reference into the current session |
 
 ---
 
@@ -311,6 +348,62 @@ lope execute SPRINT-RATE-LIMIT.md
 
 ### `lope audit <sprint_doc>`
 Generate scorecard. `--no-journal` skips writing to the journal file.
+
+### `lope ask "<question>"`
+Fan out one question to every configured validator; collect raw answers. No VERDICT parsing, no phase retry.
+
+```bash
+lope ask "What's the cleanest way to retry idempotently across models?"
+lope ask "<q>" --validators claude,gemini   # restrict the pool
+lope ask "<q>" --context "We use asyncio."  # shared context prepended
+lope ask "<q>" --json                       # machine-readable
+```
+
+### `lope review <file>`
+Send a file to every validator with a review prompt; collect N critiques.
+
+```bash
+lope review auth.py                                     # default review focus
+lope review auth.py --focus security
+lope review auth.py --focus "test coverage, edge cases"
+lope review auth.py --validators claude,opencode
+```
+
+Focus text is injected explicitly into the prompt — "better" is never model-invented.
+
+### `lope vote "<prompt>" --options A,B,C`
+Each validator picks exactly one option label. Tally + winner.
+
+```bash
+lope vote "Should we ship today?" --options "ship,hold,escalate"
+lope vote "Python 3.12 or 3.13?" --options 3.12,3.13
+lope vote "<q>" --options "A,B,C" --json                # structured tally
+```
+
+Option parsing is whole-token strict: `A` won't match inside `ALGORITHM`. Longest-first resolution handles overlaps (`3.13` beats `3.1`).
+
+### `lope compare <file_a> <file_b>`
+Each validator picks which file wins against explicit `--criteria`.
+
+```bash
+lope compare old_auth.py new_auth.py
+lope compare before.md after.md --criteria security
+lope compare a.py b.py --criteria "correctness, performance, ergonomics"
+```
+
+Default criteria: `"correctness and clarity"`. Criteria are named explicitly in every validator's prompt so the comparison dimensions are never model-invented.
+
+### `lope pipe`
+Read stdin as the prompt; fan out; per-validator sections.
+
+```bash
+cat plan.md | lope pipe
+gh pr diff | lope pipe --validators claude,gemini
+jq '.' events.json | lope pipe --timeout 60
+echo "<prompt>" | lope pipe --require-all       # exit 1 if any validator errors
+```
+
+Default is per-validator isolation — one timeout doesn't kill the others. `--require-all` opts in to strict failure for CI.
 
 ---
 

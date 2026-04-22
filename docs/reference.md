@@ -12,25 +12,32 @@ If you are an AI agent reading this because the user asked about lope, load it i
 
 ## What lope is
 
-Lope is a **multi-CLI validator ensemble sprint runner**. Any AI CLI implements. Any AI CLI validates. Majority vote decides if a phase ships. No single-model blindspot.
+Lope is a **multi-CLI validator ensemble for AI work**. One AI CLI drafts; others validate. Works for multi-phase sprints (negotiate → execute → audit with validator-in-the-loop retry) **and** for single-shot multi-model tasks (ask, review, vote, compare, pipe). No single-model blindspot.
 
-Lope is not a library. It's not a framework. It's a CLI harness that runs **other** AI CLIs as validators. You don't embed lope in Python code — you invoke `lope <mode> <args>` from a shell, and lope orchestrates subprocess calls to Claude Code, OpenCode, Gemini CLI, Codex, etc.
+Lope is primarily a CLI harness that runs **other** AI CLIs as validators. You invoke `lope <verb> <args>` from a shell and lope orchestrates subprocess calls to Claude Code, OpenCode, Gemini CLI, Codex, pi, Qwen, etc. As of v0.5.0, the parallel fan-out primitive (`EnsemblePool`) is also importable as a library — see [Library usage](#library-usage).
 
-Works for **three domains**: `engineering` (default), `business`, `research`. Same loop, different validator role prompt and artifact labels.
+Works for **three domains**: `engineering` (default), `business`, `research`. Same loop, different validator role prompt and artifact labels. The domain knob applies to `negotiate`; single-shot verbs are domain-agnostic.
 
 Repo: https://github.com/traylinx/lope · MIT · Zero Python dependencies (pure stdlib).
 
 ---
 
-## The three modes
+## The eight modes
+
+Three structured sprint modes + five single-shot verbs. Pick the mode that fits the shape of the work — don't force everything through `negotiate`.
 
 | Mode | CLI | Slash command (where supported) | What it does |
 |---|---|---|---|
 | **Negotiate** | `lope negotiate <goal>` | `/lope-negotiate` | Primary CLI drafts a structured sprint doc. Other CLIs independently review. Majority vote. Iterates until consensus or escalation. Writes the sprint doc to disk. |
 | **Execute** | `lope execute <sprint_doc>` | `/lope-execute` | Runs the sprint phase by phase. Each phase: primary implements, then two-stage validator review (spec compliance, then code quality). NEEDS_FIX retries with fix instructions (3 attempts). PASS advances. FAIL escalates. |
 | **Audit** | `lope audit <sprint_doc>` | `/lope-audit` | Generates a scorecard from executed sprint results — per-phase verdicts, confidence scores, duration, overall status. Appends to lope's journal. |
+| **Ask** | `lope ask "<question>"` | `/lope-ask` | Fan out one question to every validator; collect N raw answers (one per model). No VERDICT parsing, no phase retry. |
+| **Review** | `lope review <file>` | `/lope-review` | Send a file + optional `--focus` to every validator; collect N critiques. |
+| **Vote** | `lope vote "<q>" --options A,B,C` | `/lope-vote` | Each validator picks exactly one option label. Tally + winner. Whole-token strict parsing. |
+| **Compare** | `lope compare <a> <b>` | `/lope-compare` | Each validator picks between two files against explicit `--criteria`. Tally + winner. |
+| **Pipe** | `<cmd> \| lope pipe` | `/lope-pipe` | Read stdin as the prompt; fan out; per-validator sections. Default per-validator isolation; `--require-all` for strict. |
 
-Default flow: **negotiate → execute → audit**. Users usually run negotiate, hand-review the sprint doc, then run execute.
+Default flow for multi-phase work: **negotiate → execute → audit**. For single-prompt / single-file / piped work, the single-shot verbs run in one pass without a sprint doc.
 
 ---
 
@@ -104,6 +111,118 @@ Flags:
   --parallel / --sequential   Force parallel or sequential ensemble execution.
 ```
 
+### `lope ask "<question>"`
+
+Fan out one question to every configured validator; print raw answers in `━━━ <name> ━━━` sections. No VERDICT block, no phase retry, no majority vote.
+
+```
+Usage: lope ask [-h] [--json] [--context CONTEXT]
+                [--validators VALIDATORS] [--primary PRIMARY]
+                [--timeout TIMEOUT] [--parallel | --sequential]
+                question
+
+Positional:
+  question                    The question to fan out (quoted).
+
+Flags:
+  --context CONTEXT           Optional context prepended to every validator's prompt.
+  --json                      Emit JSON `[{"validator": ..., "answer": ..., "error": ...}]`.
+  --validators VALIDATORS     Comma-separated validator list (overrides config).
+  --primary PRIMARY           Not used by ask, accepted for symmetry with the other verbs.
+  --timeout TIMEOUT           Per-validator timeout in seconds.
+```
+
+Errors are per-validator: one timeout shows `[ERROR]` in that section and the rest continue. Exit code 0 unless no validators were available.
+
+### `lope review <file>`
+
+Send a file's content to every validator with a review prompt.
+
+```
+Usage: lope review [-h] [--focus FOCUS] [--json]
+                  [--validators VALIDATORS] [--primary PRIMARY]
+                  [--timeout TIMEOUT] [--parallel | --sequential]
+                  file
+
+Positional:
+  file                        Path to the file to review (plain text only).
+
+Flags:
+  --focus FOCUS               Focus area — 'security', 'perf', 'tests', etc.
+                              Default: "bugs, code-smells, design issues,
+                              improvements with line references".
+  --json                      Emit JSON `[{"validator": ..., "review": ..., "error": ...}]`.
+```
+
+The full file content is embedded in every validator's prompt — large files multiply tokens. Binary, PDF, and image files are not supported (use `harvey_describe_*` tools for those).
+
+### `lope vote "<prompt>" --options A,B,C`
+
+Each validator picks exactly one of the provided options. Tally + winner.
+
+```
+Usage: lope vote [-h] --options OPTIONS [--json] [--context CONTEXT]
+                 [--validators VALIDATORS] [--primary PRIMARY]
+                 [--timeout TIMEOUT] [--parallel | --sequential]
+                 prompt
+
+Positional:
+  prompt                      The question / proposal to vote on.
+
+Flags:
+  --options OPTIONS           REQUIRED. Comma-separated option labels.
+                              Min 2. Must be unique (case-insensitive).
+  --context CONTEXT           Optional context prepended to the prompt.
+  --json                      Emit JSON with per-voter picks + tally.
+```
+
+**Option drift prevention.** Every validator sees the IDENTICAL option list inside one prompt block. Reply shape is pinned ("reply with ONLY the label"). Parsing is whole-token strict (`A` won't match inside `ALGORITHM`). Longest-first resolution for overlapping labels (`3.13` beats `3.1`).
+
+**Tie handling.** If two or more options tie for most votes, output says "No winner — tie" and the user decides. `[UNPARSEABLE]` entries (replies that didn't match any label) and `[ERROR]` entries do not count toward the tally.
+
+### `lope compare <file_a> <file_b>`
+
+Each validator picks which of two files is better against explicit criteria.
+
+```
+Usage: lope compare [-h] [--criteria CRITERIA] [--json]
+                    [--validators VALIDATORS] [--primary PRIMARY]
+                    [--timeout TIMEOUT] [--parallel | --sequential]
+                    file_a file_b
+
+Positional:
+  file_a                      First file path (labelled 'A' in voting).
+  file_b                      Second file path (labelled 'B').
+
+Flags:
+  --criteria CRITERIA         Comma-separated evaluation dimensions.
+                              Default: "correctness and clarity".
+  --json                      Emit JSON with per-voter picks + tally.
+```
+
+**Criteria opacity fix.** `--criteria` is injected into every validator's prompt explicitly so "better" is bound to real dimensions, never model-invented. Always pass it if the user had specific dimensions in mind (security, performance, ergonomics, readability…).
+
+**File size caveat.** Both files ride inline in the prompt. Large files multiply tokens and can exceed context windows — affected validators surface as `[UNPARSEABLE]`, the rest still vote.
+
+### `lope pipe`
+
+Read stdin as the prompt; fan out to every validator; print per-validator sections. The composable shell verb.
+
+```
+Usage: lope pipe [-h] [--require-all] [--json]
+                 [--validators VALIDATORS] [--primary PRIMARY]
+                 [--timeout TIMEOUT] [--parallel | --sequential]
+
+Flags:
+  --require-all               Exit non-zero if ANY validator errors.
+                              Default: fire-and-forget (exit 0, errors in sections).
+  --json                      Emit JSON instead of human sections.
+```
+
+**Partial-failure semantics.** The default is per-validator isolation — one timeout does not kill the others; `[ERROR]` appears only in that validator's section. `--require-all` opts in to strict exit-non-zero for CI pipelines or workflows where you need all-N assurance.
+
+**Stdin validation.** If stdin is a TTY (no pipe), lope pipe exits 2 with a usage hint. If stdin is empty, exits 2.
+
 ### `lope status`
 
 Show detected validators on this machine and the active config. Run this first if lope is acting up.
@@ -142,11 +261,13 @@ The ensemble checks the same thing across all three domains: specific plan, meas
 
 ## Supported validators
 
-12 built-in CLI adapters, auto-detected on `$PATH`:
+14 built-in CLI adapters, auto-detected on `$PATH`:
 
-Claude Code · OpenCode · Gemini CLI · Codex · Mistral Vibe · Aider · Ollama · Goose · Open Interpreter · llama.cpp · GitHub Copilot CLI · Amazon Q
+Claude Code · OpenCode · Gemini CLI · Codex · Mistral Vibe · Aider · Ollama · Goose · Open Interpreter · llama.cpp · GitHub Copilot CLI · Amazon Q · **pi (Traylinx)** · **Qwen Code**
 
-**You need at least two different validators for the ensemble to have signal.** A pool of one is not an ensemble.
+pi and Qwen were added in v0.5.0 as first-class built-in validators via the generic subprocess path (`pi -p "{prompt}"`, `qwen -p "{prompt}"`). They now appear in `lope status` automatically when the binaries are on PATH — no config.json hack needed.
+
+**You need at least two different validators for the ensemble to have signal.** A pool of one is not an ensemble. For `ask` / `review` / `vote` / `compare` / `pipe` a single validator still works (fan-out of 1), but the whole point is multi-model perspective.
 
 Custom providers via `~/.lope/config.json` — subprocess or HTTP. Schema in the README.
 
@@ -336,9 +457,9 @@ alias lope='PYTHONPATH=~/.lope python3 -m lope'
 | Symptom | Cause | Fix |
 |---|---|---|
 | `/lope*` doesn't autocomplete after install | Host caches skill list at session start | Quit and reopen the CLI |
-| `/lope*` doesn't autocomplete after restart in Claude Code | Skills were installed to the wrong path | Check `ls ~/.claude/skills/ \| grep lope` — should list 6 lope* dirs |
+| `/lope*` doesn't autocomplete after restart in Claude Code | Skills were installed to the wrong path | Check `ls ~/.claude/skills/ \| grep lope` — should list 10 lope* dirs (v0.5.0) |
 | `/lope*` doesn't appear in Vibe or Codex | Vibe/Codex don't support user slash commands (by design) | Invoke via natural language: *"use lope to negotiate the auth refactor"* |
-| `lope status` shows 0 detected CLIs | No AI CLIs on `$PATH` | Install at least 2 of the 12 supported CLIs |
+| `lope status` shows 0 detected CLIs | No AI CLIs on `$PATH` | Install at least 2 of the 14 supported CLIs |
 | `lope negotiate` crashes with a traceback | Engine bug | Capture the full traceback and open an issue — do NOT patch lope source as the fix |
 | `LOPE_LLM_URL` returns 401 | `LOPE_LLM_API_KEY` not set | `export LOPE_LLM_API_KEY=sk-...` |
 | Negotiate escalates on round 1 | Validator pool disagreement, or lint caught a placeholder | Read the escalation message — it names the issue |
@@ -347,15 +468,57 @@ alias lope='PYTHONPATH=~/.lope python3 -m lope'
 
 ## Hard rules for agents invoking lope
 
-1. **Do not invent flags.** `lope negotiate` flags are exactly: `--out`, `--max-rounds`, `--context`, `--domain`, `--validators`, `--primary`, `--timeout`, `--parallel`, `--sequential`. No `--host`, no `--title`, no `--output-format`. Run `lope <mode> --help` if unsure.
+1. **Do not invent flags.** Each verb has a fixed flag surface:
+   - `negotiate`: `--out`, `--max-rounds`, `--context`, `--domain`, `--validators`, `--primary`, `--timeout`, `--parallel`, `--sequential`
+   - `execute`: `--phase`, `--manual`, plus the shared pool flags
+   - `audit`: `--no-journal`, plus the shared pool flags
+   - `ask`: `--context`, `--json`, plus the shared pool flags
+   - `review`: `--focus`, `--json`, plus the shared pool flags
+   - `vote`: `--options` (required), `--json`, `--context`, plus the shared pool flags
+   - `compare`: `--criteria`, `--json`, plus the shared pool flags
+   - `pipe`: `--require-all`, `--json`, plus the shared pool flags
+   Run `lope <verb> --help` if unsure.
 
-2. **Do not write a wrapper script around lope.** Lope is already a CLI. Never create `lope_runner.py`, `generate_with_lope.sh`, or any Python/bash scaffold that imports or wraps lope. Invoke `lope <mode> <args>` directly in a shell.
+2. **Do not write a wrapper script around lope.** Lope is already a CLI. Never create `lope_runner.py`, `generate_with_lope.sh`, or any Python/bash scaffold that imports or wraps lope. Invoke `lope <verb> <args>` directly in a shell. The one exception: legitimate library use of `EnsemblePool` (see [Library usage](#library-usage)).
 
 3. **Do not commit lope state to the user's project git repo** unless they explicitly ask.
 
-4. **Do not trigger lope on single-edit tasks, typo fixes, trivial edits, or pure Q&A.** Lope is for multi-phase work with a plan and success criteria.
+4. **Pick the right verb.** Don't force everything into `negotiate`. Questions go to `ask`; file critiques go to `review`; choices-from-a-list go to `vote`; A/B file comparisons go to `compare`; stdin-fed fan-out goes to `pipe`. `negotiate/execute/audit` is only the right shape for genuinely multi-phase planned work.
 
 5. **For external writing** (emails, board memos, published content), set `LOPE_CAVEMAN=off` before running so validator prose stays polished. Default `full` mode is for internal terse work.
+
+---
+
+## Library usage
+
+As of v0.5.0, the parallel fan-out primitive is importable as a Python library:
+
+```python
+from lope.ensemble import EnsemblePool, synthesize
+from lope.validators import build_validator_pool
+from lope.config import load_layered
+
+cfg = load_layered()
+pool = build_validator_pool(cfg)  # returns EnsemblePool or ValidatorPool
+
+# Parallel ensemble — fan out, return a synthesized majority-vote verdict.
+result = pool.validate("<your review prompt here>", timeout=60)
+print(result.verdict.status, result.verdict.confidence)
+```
+
+Three public primitives:
+
+| Import | Purpose |
+|---|---|
+| `lope.ensemble.EnsemblePool` | Parallel validator fan-out with ThreadPoolExecutor; majority-vote synthesis. |
+| `lope.ensemble.synthesize` | Pure function — aggregate a list of `ValidatorResult`s into one. Useful when the results came from somewhere other than a live ThreadPool (cached run, HTTP API, etc.). |
+| `lope.validators.build_validator_pool(cfg)` | The same config-driven pool builder used by the CLI. Returns `EnsemblePool` when `cfg.parallel=True`, `ValidatorPool` (sequential fallback chain) otherwise. |
+
+Back-compat: `from lope.validators import EnsemblePool` still resolves (re-export). `from lope import EnsemblePool` also works via the package root.
+
+**Use this path when:** you want fan-out but not the CLI harness (you're building a library on top), you want to call the synthesis logic on results from a non-subprocess source, or you're writing a programmatic smoke test for a custom provider.
+
+**Do not use this path when:** you want lope's end-to-end behaviour (sprint negotiation, phase retry, journal) — that belongs in the CLI surface. Library use is for the narrow fan-out primitive, not the full orchestration.
 
 ---
 
