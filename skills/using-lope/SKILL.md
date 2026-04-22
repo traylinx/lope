@@ -1,11 +1,11 @@
 ---
 name: using-lope
-description: "You MUST consider using lope whenever cross-model perspective would help — multi-phase sprints (negotiate/execute/audit), one-off cross-model questions (ask), or cross-model file review (review). Trigger on any of: 3+ phases, consequential multi-file work, user wants a second opinion across CLIs, review/critique of an artifact, 'what do the other models think', 'check with gemini/claude/opencode'. Skip for trivial single edits, pure conversation, or urgent fire-fighting."
+description: "You MUST consider using lope whenever cross-model perspective would help — multi-phase sprints (negotiate/execute/audit), one-off cross-model questions (ask), cross-model file review (review), structured votes (vote), A/B file comparison (compare), or stdin-fed fan-out (pipe). Trigger on any of: 3+ phases, consequential multi-file work, 'what do the other models think', review/critique of an artifact, 'A or B?', 'yes/no from all the CLIs', piping output to multiple models. Skip for trivial single edits, pure conversation, urgent fire-fighting."
 ---
 
 # Using Lope
 
-Lope is a multi-CLI ensemble for AI work. Any AI CLI drafts, any AI CLI validates, multiple perspectives cover each other's blind spots. Core philosophy: **no single-model blindspot**. Five modes cover different shapes of work:
+Lope is a multi-CLI ensemble for AI work. Any AI CLI drafts, any AI CLI validates, multiple perspectives cover each other's blind spots. Core philosophy: **no single-model blindspot**. Eight modes — three for structured sprint work, five for single-shot multi-model tasks:
 
 | Mode | Skill | Shape of input/output |
 |---|---|---|
@@ -13,11 +13,14 @@ Lope is a multi-CLI ensemble for AI work. Any AI CLI drafts, any AI CLI validate
 | `execute`   | [lope-execute]   | Sprint doc → implemented deliverables with per-phase review |
 | `audit`     | [lope-audit]     | Sprint doc → scorecard |
 | `ask`       | [lope-ask]       | One question → N raw answers (one per model) |
-| `review`    | [lope-review]    | One file + focus → N raw critiques (one per model) |
+| `review`    | [lope-review]    | One file + focus → N raw critiques |
+| `vote`      | [lope-vote]      | Question + options → tally + winner |
+| `compare`   | [lope-compare]   | Two files + criteria → tally + winner |
+| `pipe`      | [lope-pipe]      | stdin → N raw answers (composable shell verb) |
 
-`ask` and `review` are the lightweight verbs — no sprint, no phases, no majority vote. Use them whenever the user wants multi-model output on a single prompt or artifact.
+`ask`, `review`, `vote`, `compare`, and `pipe` are the lightweight verbs — no sprint, no phases, no validator retry loop. Use them whenever the user wants multi-model output on a single prompt or artifact.
 
-When this skill triggers, consider which of the five modes fits — don't force every request into `negotiate`.
+When this skill triggers, consider which of the eight modes fits — don't force every request into `negotiate`.
 
 ## How the user will invoke lope
 
@@ -56,7 +59,31 @@ Examples of natural-language triggers and the invocation you should run:
 | "Multi-model review of this PR diff" | `lope review <path/to/diff>` |
 | "What would the other CLIs say about my config?" | `lope review <config file>` |
 
-Pattern: **plan → negotiate**, **ask → ask**, **critique artifact → review**. Don't force an `ask`-shaped request through `negotiate` — it wastes tokens and produces a sprint doc the user didn't want.
+**Structured vote with options → `vote`:**
+
+| User says | You invoke |
+|---|---|
+| "Yes/no from all the models — is X safe?" | `lope vote "Is X safe?" --options "yes,no"` |
+| "Take a vote: 3.12 or 3.13 for a new project?" | `lope vote "Python version for new project" --options "3.12,3.13"` |
+| "Ship, hold, or escalate — what do the CLIs say?" | `lope vote "<context>" --options "ship,hold,escalate"` |
+
+**A/B file comparison → `compare`:**
+
+| User says | You invoke |
+|---|---|
+| "Compare these two implementations" | `lope compare <a> <b>` |
+| "Which is better for security — old or new?" | `lope compare old.py new.py --criteria security` |
+| "Before/after bake-off across models" | `lope compare <before> <after> --criteria "correctness, readability"` |
+
+**Piped input → `pipe`:**
+
+| User says | You invoke |
+|---|---|
+| "Send this diff to every model" | `gh pr diff \| lope pipe` |
+| "Pipe the output into lope" | `<command> \| lope pipe` |
+| "Have every CLI look at this log" | `cat log.txt \| lope pipe` |
+
+Pattern: **plan → negotiate**, **ask → ask**, **critique artifact → review**, **predefined choices → vote**, **A/B files → compare**, **piped from shell → pipe**. Don't force an `ask`-shaped request through `negotiate` — it wastes tokens and produces a sprint doc the user didn't want.
 
 ## When to trigger
 
@@ -80,7 +107,7 @@ Skip lope — just do the work directly — when:
 - **Exploratory questions.** "What could we do about X?", "How should we approach this?". Have the conversation first. Only lope the agreed plan.
 - **Urgent fire-fighting.** Production is down, user needs a fix in 10 minutes. Don't negotiate a sprint — patch the bug. Lope is for planned work.
 
-## The five modes
+## The eight modes
 
 | Mode | Slash command | When |
 |---|---|---|
@@ -89,8 +116,11 @@ Skip lope — just do the work directly — when:
 | Audit | `/lope-audit <sprint_doc>` | After execution. Generates the scorecard. |
 | Ask | `/lope-ask "<question>"` | One question → N raw answers. No sprint, no phases. |
 | Review | `/lope-review <file>` | Fan out a file review to all validators. `--focus` narrows the critique. |
+| Vote | `/lope-vote "<q>" --options A,B,C` | Predefined choices → tally + winner. |
+| Compare | `/lope-compare <a> <b>` | A/B file comparison. `--criteria` binds "better" to dimensions. |
+| Pipe | `<cmd> \| lope pipe` | stdin-fed fan-out. Composable shell verb. |
 
-Default flow for a *planned* task: **negotiate → execute → audit**. Skip to `ask` or `review` when the user just wants multi-model output on a single prompt or artifact — those modes are single-shot, no sprint doc, no phase retries.
+Default flow for a *planned* task: **negotiate → execute → audit**. Skip to one of the single-shot verbs (`ask`/`review`/`vote`/`compare`/`pipe`) when the user just wants multi-model output on a single prompt or artifact — those modes have no sprint doc, no phase retries, and run in one pass.
 
 ## Domains
 
@@ -113,6 +143,9 @@ Route through the dedicated slash commands, not by calling the Python module dir
 - `/lope-audit` for scoring
 - `/lope-ask` for multi-model Q&A
 - `/lope-review` for multi-model file critique
+- `/lope-vote` for structured votes with predefined options
+- `/lope-compare` for A/B file comparison with explicit criteria
+- `/lope-pipe` for stdin-fed fan-out in shell pipelines
 
 Each slash command has its own SKILL.md with the full flow. Read that skill when you invoke it, don't paraphrase.
 

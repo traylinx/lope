@@ -158,51 +158,86 @@ class GenericSubprocessValidator(Validator):
             return False
         return shutil.which(self._command[0]) is not None
 
-    def validate(self, prompt: str, timeout: int = 480) -> ValidatorResult:
+    def _run(self, prompt: str, timeout: int) -> tuple[int, str, str, float]:
+        """Execute the subprocess; return (returncode, stdout, stderr, duration).
+
+        Shared between validate() and generate(). Handles argv-substitution
+        vs. stdin modes, prompt wrapper, timeout override, and the common
+        error-to-infra-error translation at the caller site.
+        """
         started = time.time()
         if self._prompt_wrapper:
             prompt = self._prompt_wrapper.format(prompt=prompt)
-
         if self._stdin:
             cmd = list(self._command)
             stdin_data = prompt
         else:
             cmd = [arg.replace("{prompt}", prompt) for arg in self._command]
             stdin_data = None
-
         effective_timeout = self._timeout_override or timeout
-        try:
-            proc = subprocess.run(
-                cmd,
-                input=stdin_data,
-                capture_output=True,
-                text=True,
-                timeout=effective_timeout,
-                shell=False,
-            )
-        except subprocess.TimeoutExpired:
-            duration = time.time() - started
-            return self._infra_error(f"timeout after {effective_timeout}s", duration)
-        except FileNotFoundError:
-            return self._infra_error(f"binary not found: {cmd[0]}", time.time() - started)
-        except Exception as e:
-            return self._infra_error(f"subprocess error: {e}", time.time() - started)
+        proc = subprocess.run(
+            cmd,
+            input=stdin_data,
+            capture_output=True,
+            text=True,
+            timeout=effective_timeout,
+            shell=False,
+        )
+        return proc.returncode, proc.stdout or "", proc.stderr or "", time.time() - started
 
-        duration = time.time() - started
-        if proc.returncode != 0:
+    def validate(self, prompt: str, timeout: int = 480) -> ValidatorResult:
+        try:
+            rc, stdout, stderr, duration = self._run(prompt, timeout)
+        except subprocess.TimeoutExpired:
             return self._infra_error(
-                f"exit {proc.returncode}: {(proc.stderr or '')[:200]}", duration
+                f"timeout after {self._timeout_override or timeout}s", 0.0
+            )
+        except FileNotFoundError:
+            return self._infra_error(f"binary not found: {self._command[0]}", 0.0)
+        except Exception as e:
+            return self._infra_error(f"subprocess error: {e}", 0.0)
+
+        if rc != 0:
+            return self._infra_error(
+                f"exit {rc}: {(stderr or '')[:200]}", duration
             )
 
         verdict = parse_opencode_verdict(
-            proc.stdout, validator_name=self._name, fallback_duration=duration
+            stdout, validator_name=self._name, fallback_duration=duration
         )
         return ValidatorResult(
             validator_name=self._name,
             verdict=verdict,
-            raw_response=proc.stdout,
+            raw_response=stdout,
             error="",
         )
+
+    def generate(self, prompt: str, timeout: int = 480) -> str:
+        """Raw CLI invocation — no VERDICT parsing, returns stdout text.
+
+        Used by the `ask` / `review` / `vote` / `compare` / `pipe` verbs
+        where we want the model's natural response, not a validation
+        verdict. Raises RuntimeError on infra failure so callers can
+        per-validator-isolate errors (see `_fanout_generate` in cli.py).
+        """
+        try:
+            rc, stdout, stderr, _duration = self._run(prompt, timeout)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"{self._name} timed out after {self._timeout_override or timeout}s"
+            )
+        except FileNotFoundError:
+            raise RuntimeError(f"{self._name} binary not found: {self._command[0]}")
+        except Exception as e:
+            raise RuntimeError(f"{self._name} subprocess error: {e}")
+
+        if rc != 0:
+            raise RuntimeError(
+                f"{self._name} exited {rc}: {(stderr or '')[:300]}"
+            )
+        if not stdout.strip():
+            raise RuntimeError(f"{self._name} returned empty output")
+        return stdout
 
     def _infra_error(self, msg: str, duration: float) -> ValidatorResult:
         from .models import PhaseVerdict, VerdictStatus

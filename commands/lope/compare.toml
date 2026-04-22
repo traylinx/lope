@@ -1,0 +1,45 @@
+description = "Compare two files across every lope validator. Each model picks A or B against explicit criteria. Tally; print winner with rationale. For A/B review, before/after diff, migration decisions, bake-offs. Criteria is never model-invented — you pass --criteria explicitly."
+
+prompt = """
+<objective>
+Run an A/B comparison between two files. Both file contents + explicit --criteria go into every validator's prompt. Each picks A or B. Tally and winner printed.
+</objective>
+
+<process>
+
+1. **Confirm the two file paths and criteria**. `{{args}}` should contain two file paths. If the user hinted at criteria ("for security", "for readability"), pass `--criteria`. If not, the default "correctness and clarity" applies.
+
+2. **Run compare**:
+```bash
+lope compare "<file_a>" "<file_b>" --criteria "<dimensions>"
+```
+
+Useful flags:
+- `--criteria "security, performance"` — the most important knob. Always pass if the user had specific dimensions in mind.
+- `--validators claude,opencode` — restrict the pool.
+- `--timeout 120` — larger files need larger timeouts.
+- `--json` — structured output for scripts.
+
+3. **Read the output**. Each validator's pick (A or B) is in its own section. Tally shows `A=X B=Y`. Winner is named with the actual file path.
+
+4. **Surface dissent**. If validators split, call it out. If one picked for a specific reason (check the `--json` output for the raw answer), mention it. The user wants to see the spread.
+
+</process>
+
+<when_to_use>
+Use `/lope:compare` when the user has two files and wants multi-model A/B:
+- "Which file is better — old or new?"
+- "Compare these two implementations"
+- "Run a bake-off"
+- "Before/after review across models"
+
+Do NOT use for:
+- One file review → `/lope:review`
+- 3+ candidates → `/lope:vote` with `--options A,B,C`
+- Non-file comparisons → `/lope:ask` or `/lope:vote`
+</when_to_use>
+
+<design_notes>
+Criteria opacity was the top design concern from pi's v0.5.0 review. "Better" means nothing without dimensions, and models will each invent different ones if left implicit. Fixed by making `--criteria` mandatory in the prompt (not the flag — the flag has a default; the *prompt text sent to validators* always names criteria explicitly).
+</design_notes>
+"""

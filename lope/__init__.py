@@ -1,6 +1,12 @@
-"""Lope — autonomous sprint runner with multi-CLI validator ensemble."""
+"""Lope — multi-CLI validator ensemble for AI work.
 
-__version__ = "0.4.7"
+Three structured modes (`negotiate`, `execute`, `audit`) cover multi-phase
+sprints. Five single-shot modes (`ask`, `review`, `vote`, `compare`, `pipe`)
+cover cross-model Q&A, file critique, structured votes, A/B comparison,
+and stdin-fed fan-out. Any CLI implements; any CLI validates.
+"""
+
+__version__ = "0.5.0"
 
 from .models import (
     ExecutionReport,

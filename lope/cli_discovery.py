@@ -114,6 +114,22 @@ KNOWN_CLIS = [
         is_default=False,
         generic_command=["q", "chat", "{prompt}"],
     ),
+    CliInfo(
+        name="pi",
+        binary="pi",
+        display_name="pi (Traylinx)",
+        tier=2,
+        is_default=False,
+        generic_command=["pi", "-p", "{prompt}"],
+    ),
+    CliInfo(
+        name="qwen",
+        binary="qwen",
+        display_name="Qwen Code",
+        tier=2,
+        is_default=False,
+        generic_command=["qwen", "-p", "{prompt}"],
+    ),
 ]
 
 

@@ -1,0 +1,44 @@
+description = "Read stdin as the prompt, fan out to every lope validator, print per-model answers. Composable shell verb for pipelines — anything producing text on stdout can feed lope. Per-validator isolation by default; --require-all for strict-on-any-error."
+
+prompt = """
+<objective>
+Take whatever is on stdin, send it to every configured validator in parallel, print each one's response with per-model section headers. Same output shape as `lope ask`, different input source.
+</objective>
+
+<process>
+
+1. **Confirm the source.** `{{args}}` may be empty (the common case — stdin comes from the pipeline). If the user has a specific source command in mind, use it. Example: `gh pr diff | lope pipe`.
+
+2. **Run pipe**:
+```bash
+<source_command> | lope pipe
+```
+
+Useful flags:
+- `--require-all` — exit non-zero if any validator errors (default is fire-and-forget).
+- `--validators claude,gemini` — restrict the pool.
+- `--timeout 60` — per-validator timeout.
+- `--json` — structured output for scripts.
+
+3. **Read the output**. One `━━━ <validator> ━━━` section per model. Errors show per-section; the run continues unless `--require-all` was passed.
+
+4. **Route to the right verb if applicable**. If the user actually wants `review`, `ask`, or `vote`, prefer those — they have structured prompts and output shapes. `pipe` is for genuinely composable pipelines (CI, scripting, unusual inputs).
+
+</process>
+
+<when_to_use>
+Use `/lope:pipe` when the prompt is produced by another command:
+- `gh pr diff | lope pipe` — review a PR diff
+- `cat plan.md | lope pipe` — pipe in a file content
+- `jq '.' events.json | lope pipe` — pipe in structured data the model should interpret
+
+Do NOT use for:
+- Literal-string prompts → `/lope:ask "<prompt>"`
+- Reviewing a file → `/lope:review <file>` (it wraps the file in a review prompt automatically)
+- Vote/compare — those are structured, parsed commands
+</when_to_use>
+
+<design_notes>
+Partial-failure semantics were the top design concern from pi's v0.5.0 review. Default is per-validator isolation — one timeout does not kill the others. For CI or strict workflows, `--require-all` makes any error fatal. This is the same behaviour as `ask` and `review`; `pipe` exposes the flag explicitly because piped workflows are the most likely place a caller needs strict semantics.
+</design_notes>
+"""

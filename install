@@ -192,7 +192,7 @@ install_host() {
 }
 
 echo ""
-echo "Lope v0.4.7 — Installing skills and commands"
+echo "Lope v0.5.0 — Installing skills and commands"
 echo "─────────────────────────────────────────────"
 echo ""
 
@@ -214,11 +214,11 @@ else
 fi
 echo ""
 echo "Slash commands by host (honest state — not every host supports user slash commands):"
-echo "  Claude Code  /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review"
-echo "  Gemini CLI   /lope:negotiate  /lope:execute  /lope:audit  /lope:help  /lope:ask  /lope:review"
-echo "  OpenCode     /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review"
-echo "  pi           /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review"
-echo "  Qwen Code    /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review"
+echo "  Claude Code  /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe"
+echo "  Gemini CLI   /lope:negotiate  /lope:execute  /lope:audit  /lope:help  /lope:ask  /lope:review  /lope:vote  /lope:compare  /lope:pipe"
+echo "  OpenCode     /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe"
+echo "  pi           /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe"
+echo "  Qwen Code    /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe"
 echo "  Cursor       (unverified — skills written to ~/.cursor/agents/)"
 echo ""
 echo "Content-only hosts (skills loaded as context, invoke lope via natural language):"

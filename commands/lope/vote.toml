@@ -1,0 +1,43 @@
+description = "Send a question with a fixed list of options to every lope validator. Each replies with one option label. Tally; print winner. For decisions with predefined choices — 'ship X or Y?', 'yes/no/needs-more-info'. Per-validator isolation."
+
+prompt = """
+<objective>
+Collect a structured vote across every configured lope validator. Each validator sees the SAME prompt with the SAME option list and replies with one label. The tally and winner are printed after all responses come in.
+</objective>
+
+<process>
+
+1. **Confirm the prompt and options**. Read `{{args}}` as a freeform string. Expect the user to give you a question plus options like `Should we use 3.12 or 3.13? --options 3.12,3.13`. Parse accordingly; if options aren't present, ask the user for them — min 2 comma-separated.
+
+2. **Run vote**:
+```bash
+lope vote "<the question>" --options "<A>,<B>,<C>"
+```
+
+Useful flags:
+- `--validators claude,gemini` — restrict the pool.
+- `--timeout 60` — per-validator timeout.
+- `--json` — machine-readable tally.
+
+3. **Read the output**. Each validator's pick is on its own section. Tally block shows counts with bar chart. Winner is called out. `[UNPARSEABLE]` means the validator didn't reply with a matching label — that vote doesn't count. Ties show "No winner — tie".
+
+4. **Surface disagreements**. If the vote was close or one validator picked an outlier, call that out. Don't bury a 2-1 split under the "winner" headline.
+
+</process>
+
+<when_to_use>
+Use `/lope:vote` when the user wants multi-model consensus on a predefined set of choices:
+- "Take a vote across models on X"
+- "Yes/no from all the CLIs"
+- "Pick A, B, or C — which should we ship?"
+
+Do NOT use `/lope:vote` for:
+- Open-ended questions (no fixed options) → `/lope:ask`
+- A/B file comparison → `/lope:compare` (specialized)
+- Single-model answers
+</when_to_use>
+
+<design_notes>
+v0.5.0 pinned two invariants: option drift is prevented by giving every validator the IDENTICAL options block inside one prompt, and parsing is whole-token strict (no substring match). Pi design-reviewed this in advance.
+</design_notes>
+"""

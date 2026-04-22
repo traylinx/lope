@@ -116,6 +116,51 @@ def main():
                      help="Emit machine-readable JSON instead of human sections")
     _add_pool_flags(rev)
 
+    # vote — each validator picks one of the provided options; tally + print winner.
+    # Addresses "option drift" (pi design review 2026-04-22): every validator
+    # receives the IDENTICAL option list inside the same prompt so there's no
+    # post-hoc reconciliation of differently-interpreted options.
+    vote = sub.add_parser(
+        "vote",
+        help="Each validator picks one option; tally + print winner",
+    )
+    vote.add_argument("prompt", help="The question / proposal to vote on")
+    vote.add_argument("--options", required=True,
+                      help="Comma-separated option labels (e.g. 'A,B,C' or 'yes,no,maybe')")
+    vote.add_argument("--json", action="store_true",
+                      help="Emit JSON with per-voter picks + tallies")
+    _add_pool_flags(vote)
+
+    # compare — each validator picks the better of two files against explicit criteria.
+    # Addresses "criteria opacity" (pi design review 2026-04-22): `--criteria`
+    # is passed explicitly into every validator's prompt so "better" is defined,
+    # not invented per-model.
+    comp = sub.add_parser(
+        "compare",
+        help="Each validator picks the better of two files against explicit criteria",
+    )
+    comp.add_argument("file_a", help="First file path (labelled 'A' in voting)")
+    comp.add_argument("file_b", help="Second file path (labelled 'B' in voting)")
+    comp.add_argument("--criteria", default="correctness and clarity",
+                      help="Comma-separated evaluation dimensions (default: 'correctness and clarity')")
+    comp.add_argument("--json", action="store_true",
+                      help="Emit JSON with per-voter picks + tallies")
+    _add_pool_flags(comp)
+
+    # pipe — read stdin, fan out to validators, print responses.
+    # Addresses "partial failure" (pi design review 2026-04-22): default is
+    # fire-and-forget per-validator isolation; --require-all opt-in for strict
+    # (exit non-zero if ANY validator errors).
+    pp = sub.add_parser(
+        "pipe",
+        help="Read stdin as the prompt, fan out to validators, print answers",
+    )
+    pp.add_argument("--require-all", action="store_true",
+                    help="Exit non-zero if any validator errors (default: continue, show [ERROR] per-section)")
+    pp.add_argument("--json", action="store_true",
+                    help="Emit JSON instead of human sections")
+    _add_pool_flags(pp)
+
     # status
     sub.add_parser("status", help="Show available validators and config")
 
@@ -193,6 +238,18 @@ def main():
 
     if args.command == "review":
         _cmd_review(args)
+        return
+
+    if args.command == "vote":
+        _cmd_vote(args)
+        return
+
+    if args.command == "compare":
+        _cmd_compare(args)
+        return
+
+    if args.command == "pipe":
+        _cmd_pipe(args)
         return
 
 
@@ -881,6 +938,275 @@ def _cmd_review(args):
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
     _render_fanout("review", results, machine_json=args.json)
+
+
+# ─── vote ─────────────────────────────────────────────────────────────
+#
+# Every validator sees the IDENTICAL option list embedded in the prompt.
+# Each is asked to reply with EXACTLY ONE option label — no prose, no
+# re-labelling. We parse the first matching label from stdout and tally.
+# Addresses "option drift" flagged by pi during design review.
+
+
+def _parse_vote(raw_answer, options):
+    """Match the first option label that appears in `raw_answer`.
+
+    Case-insensitive. Labels are matched as whole tokens (bounded by
+    non-word chars) so 'A' doesn't match inside 'ALGORITHM'. Returns
+    the canonical label from `options` (preserves original case), or
+    None if no match is found.
+    """
+    import re as _re
+    text = raw_answer.strip()
+    # Try each option, longest first — so 'yes' doesn't eat 'yesterday'
+    # when the user's options include 'yesterday'.
+    for opt in sorted(options, key=len, reverse=True):
+        pattern = r"(?<![A-Za-z0-9_])" + _re.escape(opt) + r"(?![A-Za-z0-9_])"
+        if _re.search(pattern, text, _re.IGNORECASE):
+            return opt
+    return None
+
+
+def _cmd_vote(args):
+    """Each validator picks one of --options; tally and print winner."""
+    options = [o.strip() for o in args.options.split(",") if o.strip()]
+    if len(options) < 2:
+        print("--options needs at least 2 comma-separated labels", file=sys.stderr)
+        sys.exit(2)
+    if len(set(o.lower() for o in options)) != len(options):
+        print("--options labels must be unique (case-insensitive)", file=sys.stderr)
+        sys.exit(2)
+
+    cfg, pool = _ensure_config(args)
+    validator_names = [v.name for v in getattr(pool, "_validators", [])] or pool.names()
+
+    # Strict voter prompt — option list is a single block, reply shape pinned.
+    prompt = (
+        f"{args.prompt}\n\n"
+        f"Options (pick EXACTLY one):\n"
+        + "\n".join(f"  - {o}" for o in options)
+        + "\n\nReply with ONLY the option label. No explanation. No prose. "
+        "Just one of: " + ", ".join(options)
+    )
+
+    if not args.json:
+        print(f"\nLope vote: {args.prompt[:80]}{'...' if len(args.prompt) > 80 else ''}")
+        print(f"Options: {', '.join(options)}")
+        print(f"Validators: {', '.join(validator_names)}")
+        print(f"Timeout: {cfg.timeout}s per validator\n")
+
+    results = _fanout_generate(pool, prompt, cfg.timeout)
+    if not results:
+        print("No validators available. Run: lope status", file=sys.stderr)
+        sys.exit(1)
+
+    # Tally
+    picks = []  # list of (validator_name, chosen_option_or_None, raw_answer, error)
+    tally = {opt: 0 for opt in options}
+    unparseable = 0
+    errored = 0
+    for name, answer, error in results:
+        if error:
+            errored += 1
+            picks.append((name, None, answer, error))
+            continue
+        chosen = _parse_vote(answer, options)
+        if chosen is None:
+            unparseable += 1
+        else:
+            tally[chosen] += 1
+        picks.append((name, chosen, answer, None))
+
+    if args.json:
+        import json as _j
+        print(_j.dumps({
+            "prompt": args.prompt,
+            "options": options,
+            "tally": tally,
+            "winner": _vote_winner(tally),
+            "picks": [
+                {"validator": n, "chose": c, "raw": r, "error": e}
+                for n, c, r, e in picks
+            ],
+            "unparseable": unparseable,
+            "errored": errored,
+        }, indent=2))
+        return
+
+    # Human: per-voter first, then tally summary, then winner.
+    for name, chosen, raw, error in picks:
+        print(f"━━━ {name} ━━━")
+        if error:
+            print(f"[ERROR] {error}")
+        elif chosen:
+            print(f"  chose: {chosen}")
+        else:
+            preview = raw.strip().replace("\n", " ")[:120]
+            print(f"  [UNPARSEABLE — no option label found] {preview}")
+    print()
+    print("Tally:")
+    for opt in options:
+        bar = "█" * tally[opt]
+        print(f"  {opt:<20} {tally[opt]:>2}  {bar}")
+    if errored or unparseable:
+        print(f"  (errored: {errored}, unparseable: {unparseable})")
+    winner = _vote_winner(tally)
+    print()
+    if winner:
+        print(f"Winner: {winner}")
+    else:
+        print("No winner — tie or no votes. See tally above.")
+
+
+def _vote_winner(tally):
+    """Return the option with the strictly-highest count, or None on a tie."""
+    if not tally:
+        return None
+    max_count = max(tally.values())
+    if max_count == 0:
+        return None
+    winners = [opt for opt, c in tally.items() if c == max_count]
+    return winners[0] if len(winners) == 1 else None
+
+
+# ─── compare ──────────────────────────────────────────────────────────
+#
+# Two files + explicit --criteria → each validator picks A or B (a vote
+# with options {A, B}). Addresses "criteria opacity" by making criteria
+# mandatory in the prompt, never model-invented.
+
+
+def _cmd_compare(args):
+    """Each validator picks the better of two files given explicit criteria."""
+    file_a = Path(args.file_a)
+    file_b = Path(args.file_b)
+    for label, f in [("A", file_a), ("B", file_b)]:
+        if not f.is_file():
+            print(f"File {label} not found: {f}", file=sys.stderr)
+            sys.exit(1)
+    try:
+        content_a = file_a.read_text(encoding="utf-8", errors="replace")
+        content_b = file_b.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        print(f"Cannot read file: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    criteria = args.criteria.strip() or "correctness and clarity"
+    prompt = (
+        f"Compare two files and pick the better one against explicit criteria: {criteria}.\n\n"
+        f"━━━ File A ({file_a}) ━━━\n```\n{content_a}\n```\n\n"
+        f"━━━ File B ({file_b}) ━━━\n```\n{content_b}\n```\n\n"
+        "Reply with ONLY the letter A or B. No explanation. No prose. "
+        "Just: A or B."
+    )
+
+    cfg, pool = _ensure_config(args)
+    validator_names = [v.name for v in getattr(pool, "_validators", [])] or pool.names()
+
+    if not args.json:
+        print(f"\nLope compare:")
+        print(f"  A: {file_a}  ({len(content_a)} chars)")
+        print(f"  B: {file_b}  ({len(content_b)} chars)")
+        print(f"  Criteria: {criteria}")
+        print(f"  Validators: {', '.join(validator_names)}")
+        print(f"  Timeout: {cfg.timeout}s per validator\n")
+
+    results = _fanout_generate(pool, prompt, cfg.timeout)
+    if not results:
+        print("No validators available. Run: lope status", file=sys.stderr)
+        sys.exit(1)
+
+    tally = {"A": 0, "B": 0}
+    picks = []
+    errored = unparseable = 0
+    for name, answer, error in results:
+        if error:
+            errored += 1
+            picks.append((name, None, answer, error))
+            continue
+        chosen = _parse_vote(answer, ["A", "B"])
+        if chosen is None:
+            unparseable += 1
+        else:
+            tally[chosen] += 1
+        picks.append((name, chosen, answer, None))
+
+    if args.json:
+        import json as _j
+        print(_j.dumps({
+            "file_a": str(file_a),
+            "file_b": str(file_b),
+            "criteria": criteria,
+            "tally": tally,
+            "winner": _vote_winner(tally),
+            "picks": [
+                {"validator": n, "chose": c, "raw": r, "error": e}
+                for n, c, r, e in picks
+            ],
+        }, indent=2))
+        return
+
+    for name, chosen, raw, error in picks:
+        print(f"━━━ {name} ━━━")
+        if error:
+            print(f"[ERROR] {error}")
+        elif chosen:
+            print(f"  chose: {chosen}")
+        else:
+            preview = raw.strip().replace("\n", " ")[:120]
+            print(f"  [UNPARSEABLE] {preview}")
+    print()
+    print(f"Tally:  A={tally['A']}  B={tally['B']}")
+    if errored or unparseable:
+        print(f"  (errored: {errored}, unparseable: {unparseable})")
+    winner = _vote_winner(tally)
+    print()
+    if winner == "A":
+        print(f"Winner: A  ({file_a})")
+    elif winner == "B":
+        print(f"Winner: B  ({file_b})")
+    else:
+        print("No winner — tie.")
+
+
+# ─── pipe ─────────────────────────────────────────────────────────────
+#
+# Read stdin → fan out → per-validator stdout sections. Default is
+# fire-and-forget (errors surface per-section, exit 0). --require-all
+# makes any error an exit 1. Addresses "partial failure semantics"
+# from pi's design review.
+
+
+def _cmd_pipe(args):
+    """Read stdin as the prompt; fan out; print per-validator answers."""
+    if sys.stdin.isatty():
+        print("lope pipe: no stdin detected (run with a pipe, e.g. `echo 'Q' | lope pipe`)",
+              file=sys.stderr)
+        sys.exit(2)
+    prompt = sys.stdin.read()
+    if not prompt.strip():
+        print("lope pipe: stdin was empty", file=sys.stderr)
+        sys.exit(2)
+
+    cfg, pool = _ensure_config(args)
+    validator_names = [v.name for v in getattr(pool, "_validators", [])] or pool.names()
+
+    if not args.json:
+        preview = prompt.strip()[:80].replace("\n", " ")
+        print(f"\nLope pipe: {preview}{'...' if len(prompt) > 80 else ''}")
+        print(f"Validators: {', '.join(validator_names)}")
+        print(f"Timeout: {cfg.timeout}s per validator\n")
+
+    results = _fanout_generate(pool, prompt, cfg.timeout)
+    if not results:
+        print("No validators available. Run: lope status", file=sys.stderr)
+        sys.exit(1)
+    _render_fanout("answer", results, machine_json=args.json)
+
+    # Partial-failure semantics
+    any_error = any(e for _, _, e in results)
+    if any_error and args.require_all:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
