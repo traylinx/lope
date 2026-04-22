@@ -39,6 +39,7 @@ def _mk_args(**kwargs):
         "key_prefix": "Bearer ",
         "response_path": None,
         "body_json": None,
+        "from_curl": None,
         "wrap": None,
         "timeout": None,
         "primary": False,
@@ -320,6 +321,132 @@ class TestTeamRoundtrip:
         )
         with pytest.raises(SystemExit):
             _cmd_team(args)
+
+
+class TestFromCurlIntegration:
+    """End-to-end `lope team add --from-curl` against a temp LOPE_HOME."""
+
+    @pytest.fixture
+    def tmp_lope_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "lope"
+        monkeypatch.setenv("LOPE_HOME", str(home))
+        return home
+
+    def test_openai_curl_paste_produces_valid_config(self, tmp_lope_home):
+        from lope.cli import _cmd_team
+        from lope.config import default_path, load
+
+        curl = (
+            "curl https://api.openai.com/v1/chat/completions "
+            "-H 'Authorization: Bearer ${OPENAI_API_KEY}' "
+            "-H 'Content-Type: application/json' "
+            '-d \'{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}\''
+        )
+        _cmd_team(_mk_args(name="openai", from_curl=curl, team_cmd="add"))
+
+        cfg = load(default_path())
+        provider = cfg.providers[0]
+        assert provider["type"] == "http"
+        assert provider["url"] == "https://api.openai.com/v1/chat/completions"
+        assert provider["headers"]["Authorization"] == "Bearer ${OPENAI_API_KEY}"
+        assert provider["body"]["messages"][-1]["content"] == "{prompt}"
+        assert provider["response_path"] == "choices.0.message.content"
+
+    def test_literal_key_refused_without_key_env(self, tmp_lope_home):
+        from lope.cli import _cmd_team
+
+        curl = (
+            "curl https://api.openai.com/v1/chat/completions "
+            "-H 'Authorization: Bearer sk-proj-RAW1234567890' "
+            "-d '{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'"
+        )
+        with pytest.raises(SystemExit):
+            _cmd_team(_mk_args(name="openai", from_curl=curl, team_cmd="add"))
+
+    def test_literal_key_swapped_when_key_env_provided(self, tmp_lope_home):
+        from lope.cli import _cmd_team
+        from lope.config import default_path, load
+
+        curl = (
+            "curl https://api.openai.com/v1/chat/completions "
+            "-H 'Authorization: Bearer sk-proj-RAW1234567890' "
+            "-d '{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'"
+        )
+        _cmd_team(_mk_args(
+            name="openai",
+            from_curl=curl,
+            key_env="OPENAI_API_KEY",
+            team_cmd="add",
+        ))
+        cfg = load(default_path())
+        assert cfg.providers[0]["headers"]["Authorization"] == "Bearer ${OPENAI_API_KEY}"
+
+    def test_mutex_with_cmd(self, tmp_lope_home):
+        from lope.cli import _cmd_team
+
+        args = _mk_args(
+            name="x",
+            from_curl="curl https://api.example.com -H 'X: ${K}' -d '{\"prompt\":\"hi\"}'",
+            cmd="/bin/echo {prompt}",
+            team_cmd="add",
+        )
+        with pytest.raises(SystemExit):
+            _cmd_team(args)
+
+    def test_mutex_with_url(self, tmp_lope_home):
+        from lope.cli import _cmd_team
+
+        args = _mk_args(
+            name="x",
+            from_curl="curl https://api.example.com -H 'X: ${K}' -d '{\"prompt\":\"hi\"}'",
+            url="https://api.example.com/v2",
+            model="m",
+            team_cmd="add",
+        )
+        with pytest.raises(SystemExit):
+            _cmd_team(args)
+
+    def test_mutex_with_body_json(self, tmp_lope_home):
+        from lope.cli import _cmd_team
+
+        args = _mk_args(
+            name="x",
+            from_curl="curl https://api.example.com -H 'X: ${K}' -d '{\"prompt\":\"hi\"}'",
+            body_json='{"override":true}',
+            team_cmd="add",
+        )
+        with pytest.raises(SystemExit):
+            _cmd_team(args)
+
+    def test_malformed_curl_exits_cleanly(self, tmp_lope_home):
+        from lope.cli import _cmd_team
+
+        # Missing URL → CurlParseError → SystemExit(2) with a clear message.
+        with pytest.raises(SystemExit):
+            _cmd_team(_mk_args(
+                name="x",
+                from_curl="curl -H 'X: y' -d '{}'",
+                team_cmd="add",
+            ))
+
+    def test_anthropic_curl_infers_content_path(self, tmp_lope_home):
+        from lope.cli import _cmd_team
+        from lope.config import default_path, load
+
+        curl = (
+            "curl https://api.anthropic.com/v1/messages "
+            "-H 'x-api-key: ${ANTHROPIC_API_KEY}' "
+            "-H 'anthropic-version: 2023-06-01' "
+            "-H 'Content-Type: application/json' "
+            '-d \'{"model":"claude-sonnet-4-5","max_tokens":4096,'
+            '"messages":[{"role":"user","content":"hi"}]}\''
+        )
+        _cmd_team(_mk_args(name="anthropic", from_curl=curl, team_cmd="add"))
+        cfg = load(default_path())
+        provider = cfg.providers[0]
+        assert provider["response_path"] == "content.0.text"
+        assert provider["body"]["model"] == "claude-sonnet-4-5"
+        assert provider["body"]["messages"][-1]["content"] == "{prompt}"
 
 
 class TestHardcodedNamesConstant:

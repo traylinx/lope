@@ -242,29 +242,44 @@ Usage: lope team add [-h]
                      [--url URL] [--model MODEL]
                      [--key-env KEY_ENV] [--key-header KEY_HEADER] [--key-prefix KEY_PREFIX]
                      [--response-path RESPONSE_PATH] [--body-json BODY_JSON]
+                     [--from-curl CURL]
                      [--wrap WRAP] [--timeout TIMEOUT]
                      [--primary] [--disabled] [--force]
                      name
 
-Subprocess flags (mutually exclusive with --url):
-  --cmd CMD           Command string, shlex-split. `{prompt}` is a placeholder
-                      (auto-appended as the last argv token if omitted and
-                      `--stdin` is off).
+Mode flags (mutually exclusive — pick one):
+  --cmd CMD           Subprocess mode. Command string, shlex-split.
+                      `{prompt}` is a placeholder (auto-appended as the last
+                      argv token if omitted and `--stdin` is off).
+  --url URL           HTTP mode. Endpoint URL; must start with http:// or https://.
+  --from-curl CURL    HTTP mode, curl-paste flavor. Accepts the entire curl
+                      command as a quoted string; auto-extracts URL, headers,
+                      body; auto-injects {prompt} into the user-content field
+                      (messages[], prompt, input, message, query, text); auto-
+                      infers response_path from hostname + headers.
+
+Subprocess-only flag:
   --stdin             Feed the prompt via stdin instead of argv.
 
-HTTP flags (mutually exclusive with --cmd):
-  --url URL           Endpoint URL. Must start with http:// or https://.
+HTTP --url flags:
   --model MODEL       Model name used in the default OpenAI-compatible body.
                       Required unless --body-json overrides the body shape.
-  --key-env VAR       Env var name holding the API key. Stored as ${VAR} —
-                      expanded at call time, never written to disk plaintext.
   --key-header H      Auth header name (default: Authorization).
   --key-prefix P      Token prefix (default: "Bearer ", trailing space included).
                       Use "" for APIs that take a raw key.
-  --response-path P   Dot-path to walk into the JSON response for the answer
-                      (default: choices.0.message.content).
   --body-json JSON    Raw JSON body — replaces the OpenAI-compatible default
                       entirely. Use for non-OpenAI APIs.
+
+HTTP shared (--url and --from-curl):
+  --key-env VAR       Env var name holding the API key. Stored as ${VAR} —
+                      expanded at call time, never written to disk plaintext.
+                      With --from-curl, also swaps a literal credential
+                      detected in the pasted curl.
+  --response-path P   Dot-path to walk into the JSON response for the answer.
+                      With --url: defaults to choices.0.message.content.
+                      With --from-curl: defaults to an inferred path based on
+                      hostname (anthropic → content.0.text, cohere → text,
+                      else → choices.0.message.content). Flag wins either way.
 
 Shared:
   --wrap TEMPLATE     Prompt wrapper template (e.g. "Respond tersely: {prompt}").
@@ -273,6 +288,12 @@ Shared:
   --disabled          Save the provider config but don't add to the validators list.
   --force             Overwrite an existing provider with the same name.
 ```
+
+**`--from-curl` semantics** (summary; full SKILL.md has the decision tree):
+
+- **Body parsing.** The pasted curl's `-d/--data/--data-raw` value is parsed as JSON. If it's not valid JSON, lope errors and tells the user to use `--body-json` directly. If it parses, `{prompt}` is injected into the user-content field. Preserved shapes: `messages[]` with `{role, content}` (last `role=user` wins; system + assistant messages untouched), top-level `prompt`/`input`/`message`/`query`/`text`.
+- **Credential handling.** Headers matching `Authorization`, `X-API-Key`, `api-key`, `x-auth-token`, `x-access-token` are checked for `${VAR}` templating. If a literal value is found, the call refuses unless `--key-env VAR` is passed — in which case the literal (with its optional `Bearer`/`Basic`/`Token` prefix preserved) is rewritten to `${VAR}`. The error message suggests a hostname-derived env name (`api.openai.com` → `OPENAI_API_KEY`, etc.).
+- **Unsupported curl forms.** `-u user:pass`, `-F/--form`, `--data-binary @file`, `-X GET`, and malformed headers all refuse with a fix recipe. Ignored (safe): `-s`, `-S`, `--compressed`, `-L`, `-v`, `-i`, `-o <file>`, `--connect-timeout N`, and other common curl ergonomics flags.
 
 **`lope team remove NAME`** — drop the teammate from providers, validators, and primary (primary falls back to the first remaining validator).
 
@@ -288,13 +309,32 @@ Shared:
 **Common recipes:**
 
 ```bash
+# Paste a curl (the recommended path — zero flag memorization)
+lope team add openai --from-curl "curl https://api.openai.com/v1/chat/completions \
+  -H 'Authorization: Bearer \${OPENAI_API_KEY}' \
+  -H 'Content-Type: application/json' \
+  -d '{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'"
+
+# Paste a curl with a literal API key — --key-env swaps it for ${VAR}
+lope team add groq --from-curl "curl https://api.groq.com/openai/v1/chat/completions \
+  -H 'Authorization: Bearer gsk_RAW1234567890' \
+  -d '{\"model\":\"llama-3.3-70b-versatile\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'" \
+  --key-env GROQ_API_KEY
+
+# Paste an Anthropic curl (response_path auto-detected as content.0.text)
+lope team add anthropic --from-curl "curl https://api.anthropic.com/v1/messages \
+  -H 'x-api-key: \${ANTHROPIC_API_KEY}' \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'Content-Type: application/json' \
+  -d '{\"model\":\"claude-sonnet-4-5\",\"max_tokens\":4096,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'"
+
 # Local Ollama with Qwen3 8B
 lope team add my-ollama --cmd "ollama run qwen3:8b {prompt}"
 
 # Local binary that reads from stdin and emits JSON
 lope team add hermes --cmd "hermes chat --json" --stdin --timeout 180
 
-# OpenAI-compatible cloud API (Groq)
+# OpenAI-compatible cloud API — flag form (no curl handy)
 lope team add groq --url https://api.groq.com/openai/v1/chat/completions \
     --model llama-3.3-70b-versatile --key-env GROQ_API_KEY
 
@@ -302,7 +342,7 @@ lope team add groq --url https://api.groq.com/openai/v1/chat/completions \
 lope team add openclaw --url http://10.42.42.1:18080/v1/chat/completions \
     --model openclaw --key-env OPENAI_API_KEY
 
-# Anthropic Messages API (custom auth header + no prefix)
+# Anthropic Messages API — flag form with custom shape
 lope team add anthropic-raw --url https://api.anthropic.com/v1/messages \
     --key-env ANTHROPIC_API_KEY --key-header "x-api-key" --key-prefix "" \
     --body-json '{"model":"claude-sonnet-4-5","max_tokens":4096,"messages":[{"role":"user","content":"{prompt}"}]}' \

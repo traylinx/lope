@@ -94,6 +94,7 @@ Agent:  [recognizes multi-phase work → invokes /lope-negotiate]
 | "Which file is better — old or new?" | `lope compare old.py new.py --criteria "correctness and readability"` |
 | "Before/after bake-off for security" | `lope compare before.py after.py --criteria security` |
 | "Pipe this diff into every model" | `gh pr diff \| lope pipe` |
+| *(pastes a curl)* "add this to lope as openai" | `lope team add openai --from-curl "<paste>"` |
 | "Add openclaw to lope using my Tytus pod" | `lope team add openclaw --url <URL> --model openclaw --key-env OPENAI_API_KEY` |
 | "Add my local ollama (qwen3:8b) as a teammate" | `lope team add my-ollama --cmd "ollama run qwen3:8b {prompt}"` |
 | "Remove codex from the team" | `lope team remove codex` |
@@ -237,20 +238,47 @@ Each verb shares the same parallel fan-out primitive (`EnsemblePool.validate`). 
 
 You need at least one. Install whatever you already use.
 
-### Add any CLI or HTTP API — from a chat window (no JSON)
+### Add any AI in 30 seconds — paste a curl
 
-The easiest path: ask your AI agent to add it. Lope ships `lope team add/remove/list/test` so roster management works without touching a config file.
+If the AI provider publishes a quickstart curl (every major one does), **paste it into lope**. Lope parses the URL, headers, and body; auto-injects `{prompt}` into the user-content field; and infers where the response lives. Zero flag memorization.
 
 ```bash
-# Add a local CLI binary
-lope team add my-ollama --cmd "ollama run qwen3:8b {prompt}"
+# Paste a curl straight from OpenAI's docs — done.
+lope team add openai --from-curl "curl https://api.openai.com/v1/chat/completions \
+  -H 'Authorization: Bearer \${OPENAI_API_KEY}' \
+  -H 'Content-Type: application/json' \
+  -d '{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'"
 
-# Add an OpenAI-compatible HTTP endpoint (cloud API or private pod)
-lope team add openclaw --url http://10.42.42.1:18080/v1/chat/completions \
-    --model openclaw --key-env OPENAI_API_KEY
+# Curl had the literal key? Let lope swap it for an env var reference.
+lope team add groq --from-curl "curl https://api.groq.com/openai/v1/chat/completions \
+  -H 'Authorization: Bearer gsk_RAW12345' \
+  -d '{\"model\":\"llama-3.3-70b-versatile\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'" \
+  --key-env GROQ_API_KEY
+
+# Anthropic, Cohere, Together, Deepinfra, Tytus pods, vLLM servers, self-hosted gateways —
+# same single-command paste-and-go. Response path is auto-inferred.
 
 # Confirm it works
-lope team test openclaw
+lope team test openai
+```
+
+**Safety guarantees**, enforced on every paste:
+
+- Literal API keys in the pasted curl are **refused** unless you pass `--key-env` (lope then swaps them for `${VAR}` references). Keys never touch the config file in plaintext.
+- `{prompt}` substitution is a real placeholder — never shell-interpolated. No injection vector.
+- Unsupported shapes (`-u` basic auth, `-F` multipart, `@file` body, `-X GET`) are rejected with a clear fix.
+
+### Add any CLI or HTTP API — flag form
+
+Prefer describing the provider in flags (no curl handy)?
+
+```bash
+# Local CLI binary
+lope team add my-ollama --cmd "ollama run qwen3:8b {prompt}"
+
+# HTTP endpoint (OpenAI-compatible shape)
+lope team add openclaw --url http://10.42.42.1:18080/v1/chat/completions \
+    --model openclaw --key-env OPENAI_API_KEY
 
 # Drop a teammate
 lope team remove codex
@@ -259,7 +287,7 @@ lope team remove codex
 lope team list
 ```
 
-Your agent recognizes natural language — **"add openclaw to lope", "remove codex from the team", "test if the new mistral works"** — and runs the right `lope team` invocation. API keys always live as `${ENV_VAR}` references (never plaintext in argv or URL). Built-in names (`claude`, `opencode`, `gemini`, `codex`, `aider`) can't be shadowed. See [`skills/lope-team/SKILL.md`](skills/lope-team/SKILL.md) for the full decision tree.
+Your agent recognizes natural language — **"add openclaw to lope", "here's a curl, add it", "remove codex from the team", "test if the new mistral works"** — and runs the right `lope team` invocation. Built-in names (`claude`, `opencode`, `gemini`, `codex`, `aider`) can't be shadowed. Full decision tree + all supported body shapes + unsupported-curl error recipes in [`skills/lope-team/SKILL.md`](skills/lope-team/SKILL.md).
 
 ### Add any CLI or HTTP API — via config (advanced)
 
@@ -443,15 +471,23 @@ Manage the validator roster from a chat window — no JSON editing required.
 lope team
 lope team list
 
+# Add by pasting a curl (easiest — works with any provider's quickstart)
+lope team add openai --from-curl "curl https://api.openai.com/v1/chat/completions \
+  -H 'Authorization: Bearer \${OPENAI_API_KEY}' \
+  -H 'Content-Type: application/json' \
+  -d '{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'"
+
+# Paste a curl that has a literal API key — --key-env swaps it for ${VAR}
+lope team add groq --from-curl "curl ... -H 'Authorization: Bearer gsk_RAW123' ..." \
+  --key-env GROQ_API_KEY
+
 # Add a local CLI binary (subprocess)
 lope team add my-ollama --cmd "ollama run qwen3:8b {prompt}"
 lope team add hermes --cmd "hermes chat --json --prompt {prompt}" --timeout 180
 
-# Add an OpenAI-compatible HTTP endpoint (any cloud API or private pod)
+# Add an HTTP endpoint via flags (no curl handy — OpenAI-compatible shape)
 lope team add openclaw --url http://10.42.42.1:18080/v1/chat/completions \
     --model openclaw --key-env OPENAI_API_KEY
-lope team add groq --url https://api.groq.com/openai/v1/chat/completions \
-    --model llama-3.3-70b-versatile --key-env GROQ_API_KEY
 
 # Custom HTTP body shape (non-OpenAI)
 lope team add cohere --url https://api.cohere.ai/v1/chat --key-env COHERE_API_KEY \
@@ -470,9 +506,9 @@ lope team test openclaw
 lope team test openclaw "What's 2+2?" --timeout 120
 ```
 
-**Safety:** `{prompt}` is a real placeholder — never shell-interpolated. API keys live as `${ENV_VAR}` references, expanded only at call time (they never land in argv, URLs, or config files). Built-in validator names (`claude`, `opencode`, `gemini`, `codex`, `aider`) can't be shadowed.
+**Safety:** `{prompt}` is a real placeholder — never shell-interpolated. API keys live as `${ENV_VAR}` references, expanded only at call time (they never land in argv, URLs, or config files). Literal credentials inside `--from-curl` are refused unless you pass `--key-env` (lope swaps them). Built-in validator names (`claude`, `opencode`, `gemini`, `codex`, `aider`) can't be shadowed.
 
-**Natural language works too** — if you have your AI CLI loaded with the `lope-team` skill, just say *"add openclaw to lope with my Tytus pod"* and it runs the right invocation.
+**Natural language works too** — if your AI CLI is loaded with the `lope-team` skill, say *"here's a curl from OpenAI's docs, add it to lope"* or *"add openclaw to lope with my Tytus pod"* and the agent runs the right invocation.
 
 ---
 

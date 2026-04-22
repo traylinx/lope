@@ -5,10 +5,11 @@ sprints. Five single-shot modes (`ask`, `review`, `vote`, `compare`, `pipe`)
 cover cross-model Q&A, file critique, structured votes, A/B comparison,
 and stdin-fed fan-out. One roster-management mode (`team`) adds, removes,
 lists, and smoke-tests validators from any chat window — no JSON editing.
-Any CLI implements; any CLI validates.
+`team add --from-curl` parses a pasted curl command and turns it into a
+registered HTTP provider in one step. Any CLI implements; any CLI validates.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 from .models import (
     ExecutionReport,

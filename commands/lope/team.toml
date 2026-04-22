@@ -13,10 +13,11 @@ Manage the lope validator roster from a chat window — the end user never edits
    - `remove NAME`
    - `test NAME [PROMPT]`
 
-2. **Decide subprocess vs HTTP** (for `add`):
-   - If the user mentions a binary, CLI, or command → subprocess. Use `--cmd "binary --flag {prompt}"`.
-   - If the user mentions a URL, API, endpoint, or pod → HTTP. Use `--url <URL> --model <MODEL>` plus `--key-env <ENV_VAR>` when an API key is needed.
-   - Never guess a URL, model name, or API key env var. If the user hasn't given you one, ask — silently inventing values is worse than no config.
+2. **Pick the add path, easiest-first** (for `add`):
+   - **User pasted a curl command** (API docs quickstart, Slack message, etc.) → `--from-curl "<entire curl>"`. Lope auto-extracts URL, headers, body, and `response_path`; auto-injects `{prompt}`. If the pasted curl has a literal API key, also pass `--key-env <ENV_VAR>` (suggest one from the hostname: OpenAI → `OPENAI_API_KEY`, Anthropic → `ANTHROPIC_API_KEY`, etc.) and lope swaps the literal for you.
+   - **Binary/CLI command mentioned** → subprocess. Use `--cmd "binary --flag {prompt}"`.
+   - **URL + model + key described in prose (no curl)** → HTTP flag form. Use `--url <URL> --model <MODEL>` plus `--key-env <ENV_VAR>` when an API key is needed.
+   - Never guess a URL, model name, or API key env var. If the user hasn't given you one (and you can't derive it from a pasted curl), ask — silently inventing values is worse than no config.
 
 3. **Run the command**:
 ```bash
@@ -24,12 +25,16 @@ Manage the lope validator roster from a chat window — the end user never edits
 lope team
 lope team list
 
+# Add by pasting a curl (easiest path — zero flag memorization)
+lope team add <name> --from-curl "<entire curl block>"
+lope team add <name> --from-curl "curl ..." --key-env <ENV>  # if literal key in curl
+
 # Add subprocess
 lope team add <name> --cmd "binary --flag {prompt}"
 lope team add <name> --cmd "binary" --stdin            # pipe via stdin
 lope team add <name> --cmd "..." --wrap "Be terse: {prompt}"
 
-# Add HTTP (OpenAI-compatible — the common case)
+# Add HTTP (OpenAI-compatible, flag form if no curl available)
 lope team add <name> --url <URL> --model <MODEL> --key-env <ENV_VAR>
 
 # Add HTTP (custom body shape)

@@ -12,10 +12,11 @@ Manage the lope validator roster from a chat window. No JSON editing — transla
 
 1. **Figure out the verb**: `list` (default), `add NAME [flags]`, `remove NAME`, or `test NAME [PROMPT]`.
 
-2. **For `add`, pick subprocess or HTTP**:
-   - Binary or CLI command mentioned → `--cmd "binary --flag {prompt}"` (subprocess).
-   - URL, API, or pod endpoint mentioned → `--url <URL> --model <MODEL> --key-env <ENV_VAR>` (HTTP).
-   - If the user hasn't given you a URL, model, or env var name, **ask** — don't invent.
+2. **For `add`, pick the path in this order**:
+   - **User pasted a curl block** → `--from-curl "<entire curl>"`. This is the easiest path — no flag memorization.
+   - **Binary or CLI command mentioned** → `--cmd "binary --flag {prompt}"` (subprocess).
+   - **URL + model + key described in prose** → `--url <URL> --model <MODEL> --key-env <ENV_VAR>` (HTTP).
+   - If the user hasn't given you a curl, URL, binary, or env var name, **ask** — don't invent.
 
 3. **Run the command**:
 
@@ -23,10 +24,19 @@ Manage the lope validator roster from a chat window. No JSON editing — transla
 # List
 lope team
 
+# Add by pasting a curl (easiest — works with API docs quickstarts)
+lope team add openai --from-curl "curl https://api.openai.com/v1/chat/completions \
+  -H 'Authorization: Bearer \${OPENAI_API_KEY}' \
+  -H 'Content-Type: application/json' \
+  -d '{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'"
+
+# If the pasted curl has a literal key, add --key-env so lope swaps it
+lope team add openai --from-curl "curl ... 'Bearer sk-proj-...' ..." --key-env OPENAI_API_KEY
+
 # Add subprocess (any local CLI)
 lope team add my-ollama --cmd "ollama run qwen3:8b {prompt}"
 
-# Add HTTP (OpenAI-compatible)
+# Add HTTP (OpenAI-compatible, flag form)
 lope team add openclaw --url http://10.42.42.1:18080/v1/chat/completions \
     --model openclaw --key-env OPENAI_API_KEY
 

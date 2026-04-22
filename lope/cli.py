@@ -198,6 +198,11 @@ def main():
                        help="JSON dot-path to extract answer (default: choices.0.message.content)")
     t_add.add_argument("--body-json", default=None,
                        help="Raw JSON body override — replaces OpenAI-compatible shape entirely")
+    t_add.add_argument("--from-curl", default=None,
+                       help="Paste an entire curl command (quoted). Auto-extracts URL, headers, "
+                            "body, and response_path; auto-injects {prompt} into the user-content "
+                            "field. Credential-bearing headers must use ${VAR}, or pass --key-env "
+                            "so lope swaps the literal for you.")
     t_add.add_argument("--wrap", default=None,
                        help="Prompt wrapper template, e.g. 'Answer tersely: {prompt}'")
     t_add.add_argument("--timeout", type=int, default=None,
@@ -1382,22 +1387,40 @@ def _team_add(args, cfg, cfg_path):
         )
         sys.exit(2)
 
-    if args.url and args.cmd:
-        print("ERROR: --url and --cmd are mutually exclusive (HTTP vs subprocess)",
-              file=sys.stderr)
+    mode_flags = [bool(args.from_curl), bool(args.url), bool(args.cmd)]
+    if sum(mode_flags) > 1:
+        print(
+            "ERROR: --from-curl, --url, and --cmd are mutually exclusive — pick one.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if args.from_curl and args.body_json:
+        print(
+            "ERROR: --from-curl already sets the body from the pasted curl; "
+            "--body-json would override it. Drop one.",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
-    if args.url:
+    if args.from_curl:
+        entry = _team_build_entry_from_curl(name, args)
+    elif args.url:
         entry = _team_build_http_entry(name, args)
     elif args.cmd:
         entry = _team_build_subprocess_entry(name, args)
     else:
         print(
-            "ERROR: provide --cmd for a subprocess provider OR --url for an HTTP provider.\n"
+            "ERROR: provide one of --cmd (subprocess), --url (HTTP), "
+            "or --from-curl (paste a curl command).\n"
             "Examples:\n"
             "  lope team add my-ollama --cmd \"ollama run qwen3:8b {prompt}\"\n"
             "  lope team add openclaw --url http://10.42.42.1:18080/v1/chat/completions"
-            " --model openclaw --key-env OPENAI_API_KEY",
+            " --model openclaw --key-env OPENAI_API_KEY\n"
+            "  lope team add openai --from-curl \"curl https://api.openai.com/v1/chat/completions"
+            " -H 'Authorization: Bearer \\${OPENAI_API_KEY}'"
+            " -H 'Content-Type: application/json'"
+            " -d '{\\\"model\\\":\\\"gpt-4o-mini\\\",\\\"messages\\\":"
+            "[{\\\"role\\\":\\\"user\\\",\\\"content\\\":\\\"hi\\\"}]}'\"",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -1472,6 +1495,33 @@ def _team_build_subprocess_entry(name: str, args):
     if args.timeout:
         entry["timeout"] = args.timeout
     return entry
+
+
+def _team_build_entry_from_curl(name: str, args):
+    """Parse args.from_curl and convert it to a provider dict.
+
+    Exits 2 with a helpful message on any CurlParseError so the user sees the
+    fix they need (swap literal key → ${VAR}, put {prompt} in body, etc.).
+    """
+    from .curl_parser import (
+        CurlParseError,
+        curl_to_provider_entry,
+        parse_curl,
+    )
+
+    try:
+        parsed = parse_curl(args.from_curl)
+        return curl_to_provider_entry(
+            name,
+            parsed,
+            key_env=args.key_env,
+            response_path=args.response_path,
+            wrap=args.wrap,
+            timeout=args.timeout,
+        )
+    except CurlParseError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(2)
 
 
 def _team_build_http_entry(name: str, args):
