@@ -1,0 +1,70 @@
+description = "Manage the lope validator team: add, list, remove, or smoke-test teammates. Any AI CLI (local binary) or OpenAI-compatible HTTP endpoint (cloud API or private pod) can be added in one command — no JSON editing. Trigger on user asks like 'add openclaw to lope', 'remove codex', 'list validators', 'hook up my tytus pod as a teammate', or 'test if mistral is working'."
+
+prompt = """
+<objective>
+Manage the lope validator roster from a chat window — the end user never edits a config file. Translate the user's natural-language request into the right `lope team` invocation.
+</objective>
+
+<process>
+
+1. **Identify the verb**. Read `{{args}}` and map to one of:
+   - `list` (default if they just want to see the team)
+   - `add NAME [flags]` (they gave you enough info: a command or a URL)
+   - `remove NAME`
+   - `test NAME [PROMPT]`
+
+2. **Decide subprocess vs HTTP** (for `add`):
+   - If the user mentions a binary, CLI, or command → subprocess. Use `--cmd "binary --flag {prompt}"`.
+   - If the user mentions a URL, API, endpoint, or pod → HTTP. Use `--url <URL> --model <MODEL>` plus `--key-env <ENV_VAR>` when an API key is needed.
+   - Never guess a URL, model name, or API key env var. If the user hasn't given you one, ask — silently inventing values is worse than no config.
+
+3. **Run the command**:
+```bash
+# List (default)
+lope team
+lope team list
+
+# Add subprocess
+lope team add <name> --cmd "binary --flag {prompt}"
+lope team add <name> --cmd "binary" --stdin            # pipe via stdin
+lope team add <name> --cmd "..." --wrap "Be terse: {prompt}"
+
+# Add HTTP (OpenAI-compatible — the common case)
+lope team add <name> --url <URL> --model <MODEL> --key-env <ENV_VAR>
+
+# Add HTTP (custom body shape)
+lope team add <name> --url <URL> --key-env <ENV_VAR> \\
+    --body-json '{"message":"{prompt}","model":"..."}' --response-path "text"
+
+# Promote to primary / save-but-disabled / overwrite
+lope team add <name> ... --primary
+lope team add <name> ... --disabled
+lope team add <name> ... --force
+
+# Remove
+lope team remove <name>
+
+# Smoke-test
+lope team test <name>
+lope team test <name> "What's 2+2?" --timeout 120
+```
+
+4. **After a successful add, tell the user to test**. Every add should be followed by `lope team test <name>` — that's how the user confirms the key, URL, or binary actually works. If the test fails, the config is saved but unusable; tell them which flag to fix.
+
+</process>
+
+<when_to_use>
+- "Add X to lope / to my team / as a validator"
+- "Remove X from lope"
+- "List my validators / who's on lope"
+- "Test if my new X is working"
+- "Make X the primary validator"
+- "Hook up my pod / gateway / API / binary as a teammate"
+</when_to_use>
+
+<hard_rules>
+- Built-in names (claude, opencode, gemini, codex, aider) are reserved — pick a different name if the user's custom wrapper shares one.
+- API keys are ALWAYS stored as `${ENV_VAR}` via `--key-env`. Never put a raw key on the command line — it will leak into shell history.
+- If the user's wording is ambiguous ("add the thing we talked about"), ask which it is before inventing values.
+</hard_rules>
+"""

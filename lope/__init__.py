@@ -3,10 +3,12 @@
 Three structured modes (`negotiate`, `execute`, `audit`) cover multi-phase
 sprints. Five single-shot modes (`ask`, `review`, `vote`, `compare`, `pipe`)
 cover cross-model Q&A, file critique, structured votes, A/B comparison,
-and stdin-fed fan-out. Any CLI implements; any CLI validates.
+and stdin-fed fan-out. One roster-management mode (`team`) adds, removes,
+lists, and smoke-tests validators from any chat window — no JSON editing.
+Any CLI implements; any CLI validates.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from .models import (
     ExecutionReport,

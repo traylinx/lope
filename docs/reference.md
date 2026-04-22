@@ -22,9 +22,9 @@ Repo: https://github.com/traylinx/lope · MIT · Zero Python dependencies (pure 
 
 ---
 
-## The eight modes
+## The nine modes
 
-Three structured sprint modes + five single-shot verbs. Pick the mode that fits the shape of the work — don't force everything through `negotiate`.
+Three structured sprint modes + five single-shot verbs + one roster management verb. Pick the mode that fits the shape of the work — don't force everything through `negotiate`.
 
 | Mode | CLI | Slash command (where supported) | What it does |
 |---|---|---|---|
@@ -36,8 +36,9 @@ Three structured sprint modes + five single-shot verbs. Pick the mode that fits 
 | **Vote** | `lope vote "<q>" --options A,B,C` | `/lope-vote` | Each validator picks exactly one option label. Tally + winner. Whole-token strict parsing. |
 | **Compare** | `lope compare <a> <b>` | `/lope-compare` | Each validator picks between two files against explicit `--criteria`. Tally + winner. |
 | **Pipe** | `<cmd> \| lope pipe` | `/lope-pipe` | Read stdin as the prompt; fan out; per-validator sections. Default per-validator isolation; `--require-all` for strict. |
+| **Team** | `lope team {list,add,remove,test}` | `/lope-team` | Manage the validator roster — add local CLI binaries or OpenAI-compatible HTTP endpoints, drop teammates, smoke-test keys/URLs/binaries. No JSON editing. |
 
-Default flow for multi-phase work: **negotiate → execute → audit**. For single-prompt / single-file / piped work, the single-shot verbs run in one pass without a sprint doc.
+Default flow for multi-phase work: **negotiate → execute → audit**. For single-prompt / single-file / piped work, the single-shot verbs run in one pass without a sprint doc. `team` is runtime-independent — it only edits `~/.lope/config.json` and runs 0 validators (except on `test`).
 
 ---
 
@@ -222,6 +223,94 @@ Flags:
 **Partial-failure semantics.** The default is per-validator isolation — one timeout does not kill the others; `[ERROR]` appears only in that validator's section. `--require-all` opts in to strict exit-non-zero for CI pipelines or workflows where you need all-N assurance.
 
 **Stdin validation.** If stdin is a TTY (no pipe), lope pipe exits 2 with a usage hint. If stdin is empty, exits 2.
+
+### `lope team {list,add,remove,test}`
+
+Manage the validator roster from the command line. Every edit is one call; no JSON file editing required. Two flavors of teammate: **subprocess** (any local CLI binary) and **HTTP** (any OpenAI-compatible or custom REST endpoint).
+
+```
+Usage: lope team {list,add,remove,test} ...
+```
+
+**`lope team list`** (default if no subcommand) — show active validators with source tags (`(built-in)` / `(custom subprocess|http)` / `(auto)` / `(?)`) and disabled providers.
+
+**`lope team add NAME`** — upsert a provider and (unless `--disabled`) enable it in the active validators list.
+
+```
+Usage: lope team add [-h]
+                     [--cmd CMD] [--stdin]
+                     [--url URL] [--model MODEL]
+                     [--key-env KEY_ENV] [--key-header KEY_HEADER] [--key-prefix KEY_PREFIX]
+                     [--response-path RESPONSE_PATH] [--body-json BODY_JSON]
+                     [--wrap WRAP] [--timeout TIMEOUT]
+                     [--primary] [--disabled] [--force]
+                     name
+
+Subprocess flags (mutually exclusive with --url):
+  --cmd CMD           Command string, shlex-split. `{prompt}` is a placeholder
+                      (auto-appended as the last argv token if omitted and
+                      `--stdin` is off).
+  --stdin             Feed the prompt via stdin instead of argv.
+
+HTTP flags (mutually exclusive with --cmd):
+  --url URL           Endpoint URL. Must start with http:// or https://.
+  --model MODEL       Model name used in the default OpenAI-compatible body.
+                      Required unless --body-json overrides the body shape.
+  --key-env VAR       Env var name holding the API key. Stored as ${VAR} —
+                      expanded at call time, never written to disk plaintext.
+  --key-header H      Auth header name (default: Authorization).
+  --key-prefix P      Token prefix (default: "Bearer ", trailing space included).
+                      Use "" for APIs that take a raw key.
+  --response-path P   Dot-path to walk into the JSON response for the answer
+                      (default: choices.0.message.content).
+  --body-json JSON    Raw JSON body — replaces the OpenAI-compatible default
+                      entirely. Use for non-OpenAI APIs.
+
+Shared:
+  --wrap TEMPLATE     Prompt wrapper template (e.g. "Respond tersely: {prompt}").
+  --timeout SECS      Per-call timeout override.
+  --primary           Make this validator the primary.
+  --disabled          Save the provider config but don't add to the validators list.
+  --force             Overwrite an existing provider with the same name.
+```
+
+**`lope team remove NAME`** — drop the teammate from providers, validators, and primary (primary falls back to the first remaining validator).
+
+**`lope team test NAME [PROMPT]`** — call `generate()` once on the named teammate and print the raw response. Default prompt: `"Say hello in one word."`. `--timeout SECS` overrides (default: 60).
+
+**Safety rules enforced by `_validate_provider_config`:**
+
+- `${VAR}` substitution is accepted in `--body-json` and header values, **rejected** in `--url` and `--cmd` (prevents key leakage to `ps`, shell history, and server logs).
+- Subprocess commands always run with `shell=False`.
+- Built-in validator names (`claude`, `opencode`, `gemini`, `codex`, `aider`) are refused — pick a different custom name.
+- Invalid JSON in `--body-json`, bad env-var names in `--key-env`, and non-http(s) URLs exit with a clear error before touching the config.
+
+**Common recipes:**
+
+```bash
+# Local Ollama with Qwen3 8B
+lope team add my-ollama --cmd "ollama run qwen3:8b {prompt}"
+
+# Local binary that reads from stdin and emits JSON
+lope team add hermes --cmd "hermes chat --json" --stdin --timeout 180
+
+# OpenAI-compatible cloud API (Groq)
+lope team add groq --url https://api.groq.com/openai/v1/chat/completions \
+    --model llama-3.3-70b-versatile --key-env GROQ_API_KEY
+
+# Private Tytus pod running OpenClaw
+lope team add openclaw --url http://10.42.42.1:18080/v1/chat/completions \
+    --model openclaw --key-env OPENAI_API_KEY
+
+# Anthropic Messages API (custom auth header + no prefix)
+lope team add anthropic-raw --url https://api.anthropic.com/v1/messages \
+    --key-env ANTHROPIC_API_KEY --key-header "x-api-key" --key-prefix "" \
+    --body-json '{"model":"claude-sonnet-4-5","max_tokens":4096,"messages":[{"role":"user","content":"{prompt}"}]}' \
+    --response-path "content.0.text"
+
+# Promote an existing teammate to primary (just re-add with --force --primary)
+lope team add openclaw --url ... --model openclaw --key-env OPENAI_API_KEY --force --primary
+```
 
 ### `lope status`
 

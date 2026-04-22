@@ -161,6 +161,70 @@ def main():
                     help="Emit JSON instead of human sections")
     _add_pool_flags(pp)
 
+    # team — grandma-friendly validator management via CLI flags so any LLM
+    # running in a chat window can translate natural language ("add openclaw
+    # to lope") into the right invocation. Four verbs: list / add / remove / test.
+    team = sub.add_parser(
+        "team",
+        help="Manage your validator team: list / add / remove / test teammates",
+    )
+    team_sub = team.add_subparsers(dest="team_cmd")
+
+    team_sub.add_parser("list", help="Show current team members (default if no subcommand)")
+
+    t_add = team_sub.add_parser(
+        "add",
+        help="Add a new teammate. Provide --cmd (subprocess) OR --url (HTTP). "
+             "Adds to providers AND enables in validators unless --disabled.",
+    )
+    t_add.add_argument("name", help="Teammate name (e.g. openclaw, my-ollama, mistral-pod)")
+    t_add.add_argument("--cmd", default=None,
+                       help="Subprocess command, e.g. \"openclaw chat --prompt {prompt}\". "
+                            "Tokens split via shlex. If {prompt} is missing, it's appended.")
+    t_add.add_argument("--stdin", action="store_true",
+                       help="Pipe prompt via stdin instead of argv substitution")
+    t_add.add_argument("--url", default=None,
+                       help="HTTP endpoint URL (implies HTTP type). OpenAI-compatible shape by default.")
+    t_add.add_argument("--model", default=None,
+                       help="Model name for HTTP body (required unless --body-json used)")
+    t_add.add_argument("--key-env", default=None,
+                       help="Env var name holding the API key (e.g. OPENAI_API_KEY). "
+                            "Stored as ${VAR} in headers — expanded at call time, not saved in plaintext.")
+    t_add.add_argument("--key-header", default="Authorization",
+                       help="Auth header name (default: Authorization)")
+    t_add.add_argument("--key-prefix", default="Bearer ",
+                       help="Auth token prefix (default: 'Bearer '). Use '' for raw keys.")
+    t_add.add_argument("--response-path", default=None,
+                       help="JSON dot-path to extract answer (default: choices.0.message.content)")
+    t_add.add_argument("--body-json", default=None,
+                       help="Raw JSON body override — replaces OpenAI-compatible shape entirely")
+    t_add.add_argument("--wrap", default=None,
+                       help="Prompt wrapper template, e.g. 'Answer tersely: {prompt}'")
+    t_add.add_argument("--timeout", type=int, default=None,
+                       help="Per-call timeout override in seconds")
+    t_add.add_argument("--primary", action="store_true",
+                       help="Make this the primary validator (used by execute() for implementation)")
+    t_add.add_argument("--disabled", action="store_true",
+                       help="Save provider config but don't add to active validators list")
+    t_add.add_argument("--force", action="store_true",
+                       help="Overwrite an existing provider with the same name")
+
+    t_rm = team_sub.add_parser(
+        "remove",
+        help="Remove a teammate from providers + validators + primary",
+    )
+    t_rm.add_argument("name", help="Teammate name to remove")
+
+    t_test = team_sub.add_parser(
+        "test",
+        help="Smoke-test one teammate with a prompt (defaults to 'Say hello in one word.')",
+    )
+    t_test.add_argument("name", help="Teammate name to test")
+    t_test.add_argument("prompt", nargs="?", default="Say hello in one word.",
+                        help="Test prompt (default: 'Say hello in one word.')")
+    t_test.add_argument("--timeout", type=int, default=60,
+                        help="Timeout in seconds (default: 60)")
+
     # status
     sub.add_parser("status", help="Show available validators and config")
 
@@ -250,6 +314,10 @@ def main():
 
     if args.command == "pipe":
         _cmd_pipe(args)
+        return
+
+    if args.command == "team":
+        _cmd_team(args)
         return
 
 
@@ -1207,6 +1275,363 @@ def _cmd_pipe(args):
     any_error = any(e for _, _, e in results)
     if any_error and args.require_all:
         sys.exit(1)
+
+
+# ─── team: grandma-friendly validator management ───────────────
+
+
+# Hardcoded validator names that cannot be shadowed by custom providers.
+_HARDCODED_VALIDATOR_NAMES = frozenset({"claude", "opencode", "gemini", "codex", "aider"})
+
+
+def _cmd_team(args):
+    """Dispatch for `lope team {list,add,remove,test}`."""
+    from .config import LopeCfg
+
+    sub_cmd = getattr(args, "team_cmd", None) or "list"
+    cfg_path = default_path()
+    cfg = load_config(cfg_path)
+    if cfg is None:
+        cfg = LopeCfg(validators=[], primary="", timeout=480, parallel=True, providers=[])
+
+    if sub_cmd == "list":
+        _team_list(cfg)
+    elif sub_cmd == "add":
+        _team_add(args, cfg, cfg_path)
+    elif sub_cmd == "remove":
+        _team_remove(args, cfg, cfg_path)
+    elif sub_cmd == "test":
+        _team_test(args, cfg)
+    else:
+        _team_list(cfg)
+
+
+def _team_list(cfg):
+    """Render the current team: active validators (with source tag) + disabled providers."""
+    from .logo import box
+
+    print()
+    print(box())
+    print("\nLope — Your Validator Team")
+    print("-" * 40)
+
+    if not cfg.validators:
+        print("\n  (no active validators yet — add one with `lope team add <name> ...`)")
+    else:
+        print(f"\nActive ({len(cfg.validators)}):")
+        for name in cfg.validators:
+            marker = " ★ primary" if name == cfg.primary else ""
+            source = _team_classify_source(name, cfg)
+            print(f"  {name:<22} {source}{marker}")
+
+    custom_disabled = [p for p in cfg.providers if p.get("name") not in cfg.validators]
+    if custom_disabled:
+        print(f"\nDisabled providers ({len(custom_disabled)}):")
+        for entry in custom_disabled:
+            print(f"  {entry.get('name', '?'):<22} ({entry.get('type', '?')})")
+
+    print()
+    print("Add a teammate:")
+    print("  lope team add <name> --cmd \"binary --flag {prompt}\"")
+    print("  lope team add <name> --url URL --model MODEL --key-env OPENAI_API_KEY")
+    print()
+
+
+def _team_classify_source(name: str, cfg) -> str:
+    """Return a human-readable source tag for a validator name."""
+    if name in _HARDCODED_VALIDATOR_NAMES:
+        return "(built-in)"
+    custom = next((p for p in cfg.providers if p.get("name") == name), None)
+    if custom is not None:
+        return f"(custom {custom.get('type', '?')})"
+    try:
+        from .cli_discovery import KNOWN_CLIS
+        if any(c.name == name and getattr(c, "generic_command", None) for c in KNOWN_CLIS):
+            return "(auto)"
+    except Exception:
+        pass
+    return "(?)"
+
+
+def _team_add(args, cfg, cfg_path):
+    """Build a provider dict from CLI flags, validate, upsert, save."""
+    from .config import save
+    from .generic_validators import _validate_provider_config, ConfigError
+
+    name = args.name.strip()
+    if not name:
+        print("ERROR: name cannot be empty", file=sys.stderr)
+        sys.exit(2)
+    if name in _HARDCODED_VALIDATOR_NAMES:
+        print(
+            f"ERROR: {name!r} is a built-in validator — pick a different name "
+            f"(you already have {name} if its CLI is on PATH).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if any(ch in name for ch in " \t\n,;|"):
+        print(f"ERROR: name must not contain whitespace or separators", file=sys.stderr)
+        sys.exit(2)
+
+    existing = next((p for p in cfg.providers if p.get("name") == name), None)
+    if existing and not args.force:
+        print(
+            f"ERROR: provider {name!r} already exists — use --force to overwrite "
+            f"or `lope team remove {name}` first.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if args.url and args.cmd:
+        print("ERROR: --url and --cmd are mutually exclusive (HTTP vs subprocess)",
+              file=sys.stderr)
+        sys.exit(2)
+
+    if args.url:
+        entry = _team_build_http_entry(name, args)
+    elif args.cmd:
+        entry = _team_build_subprocess_entry(name, args)
+    else:
+        print(
+            "ERROR: provide --cmd for a subprocess provider OR --url for an HTTP provider.\n"
+            "Examples:\n"
+            "  lope team add my-ollama --cmd \"ollama run qwen3:8b {prompt}\"\n"
+            "  lope team add openclaw --url http://10.42.42.1:18080/v1/chat/completions"
+            " --model openclaw --key-env OPENAI_API_KEY",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    try:
+        _validate_provider_config(entry)
+    except ConfigError as e:
+        print(f"ERROR: invalid config: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    cfg.providers = [p for p in cfg.providers if p.get("name") != name]
+    cfg.providers.append(entry)
+
+    if not args.disabled:
+        if name not in cfg.validators:
+            cfg.validators.append(name)
+        # If this is the first validator ever, promote to primary automatically.
+        if not cfg.primary and cfg.validators:
+            cfg.primary = name
+
+    if args.primary:
+        if args.disabled:
+            print(
+                "ERROR: cannot set --primary and --disabled together "
+                "(disabled validators can't be primary).",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        cfg.primary = name
+
+    save(cfg, cfg_path)
+
+    status = (
+        "added to team" if not args.disabled
+        else "saved (disabled — enable with `lope team add` again without --disabled)"
+    )
+    kind = entry["type"]
+    print(f"[OK] {name} {status} ({kind}).")
+    if cfg.validators:
+        print(f"     Active validators ({len(cfg.validators)}): {', '.join(cfg.validators)}")
+    if cfg.primary:
+        print(f"     Primary: {cfg.primary}")
+    print(f"     Smoke-test now: lope team test {name}")
+
+
+def _team_build_subprocess_entry(name: str, args):
+    """Assemble a subprocess provider dict from --cmd / --stdin / --wrap / --timeout."""
+    import shlex
+
+    try:
+        tokens = shlex.split(args.cmd)
+    except ValueError as e:
+        print(f"ERROR: could not parse --cmd (unclosed quote?): {e}", file=sys.stderr)
+        sys.exit(2)
+    if not tokens:
+        print("ERROR: --cmd must have at least one token (the binary name)", file=sys.stderr)
+        sys.exit(2)
+    if not args.stdin and "{prompt}" not in " ".join(tokens):
+        # Auto-append {prompt} so casual invocations like
+        # `--cmd "mybin --json"` still feed the prompt as the final arg.
+        tokens.append("{prompt}")
+
+    entry: Dict[str, Any] = {
+        "name": name,
+        "type": "subprocess",
+        "command": tokens,
+    }
+    if args.stdin:
+        entry["stdin"] = True
+    if args.wrap:
+        entry["prompt_wrapper"] = args.wrap
+    if args.timeout:
+        entry["timeout"] = args.timeout
+    return entry
+
+
+def _team_build_http_entry(name: str, args):
+    """Assemble an HTTP provider dict. OpenAI-compatible shape unless --body-json override."""
+    if not args.url.startswith(("http://", "https://")):
+        print("ERROR: --url must start with http:// or https://", file=sys.stderr)
+        sys.exit(2)
+
+    headers: Dict[str, str] = {"Content-Type": "application/json"}
+    if args.key_env:
+        env_var = args.key_env.strip()
+        if not env_var:
+            print("ERROR: --key-env cannot be empty", file=sys.stderr)
+            sys.exit(2)
+        if not env_var.replace("_", "").isalnum():
+            print(f"ERROR: --key-env {env_var!r} must be a valid env var name (A-Z, 0-9, _)",
+                  file=sys.stderr)
+            sys.exit(2)
+        headers[args.key_header] = f"{args.key_prefix}${{{env_var}}}"
+
+    if args.body_json:
+        try:
+            body = json.loads(args.body_json)
+        except json.JSONDecodeError as e:
+            print(f"ERROR: --body-json is not valid JSON: {e}", file=sys.stderr)
+            sys.exit(2)
+    else:
+        if not args.model:
+            print(
+                "ERROR: HTTP provider needs --model (for OpenAI-compatible body), "
+                "or use --body-json to supply a custom shape.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        body = {
+            "model": args.model,
+            "messages": [{"role": "user", "content": "{prompt}"}],
+        }
+
+    entry: Dict[str, Any] = {
+        "name": name,
+        "type": "http",
+        "url": args.url,
+        "headers": headers,
+        "body": body,
+        "response_path": args.response_path or "choices.0.message.content",
+    }
+    if args.wrap:
+        entry["prompt_wrapper"] = args.wrap
+    if args.timeout:
+        entry["timeout"] = args.timeout
+    return entry
+
+
+def _team_remove(args, cfg, cfg_path):
+    """Drop a teammate from providers + validators. Unset primary if it pointed there."""
+    from .config import save
+
+    name = args.name.strip()
+    if not name:
+        print("ERROR: name required", file=sys.stderr)
+        sys.exit(2)
+
+    providers_before = len(cfg.providers)
+    cfg.providers = [p for p in cfg.providers if p.get("name") != name]
+    removed_provider = len(cfg.providers) < providers_before
+
+    was_validator = name in cfg.validators
+    if was_validator:
+        cfg.validators = [v for v in cfg.validators if v != name]
+
+    was_primary = cfg.primary == name
+    if was_primary:
+        cfg.primary = cfg.validators[0] if cfg.validators else ""
+
+    if not removed_provider and not was_validator:
+        print(
+            f"ERROR: no teammate named {name!r} found in providers or validators.\n"
+            f"       Run `lope team list` to see who's on the team.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    save(cfg, cfg_path)
+
+    bits = []
+    if removed_provider:
+        bits.append("custom provider config")
+    if was_validator:
+        bits.append("active validators")
+    if was_primary:
+        bits.append("primary role")
+    print(f"[OK] removed {name} from {', '.join(bits)}.")
+    if cfg.validators:
+        print(f"     Active validators ({len(cfg.validators)}): {', '.join(cfg.validators)}")
+        if cfg.primary:
+            print(f"     Primary: {cfg.primary}")
+    else:
+        print(f"     No validators remaining — add one with `lope team add`.")
+
+
+def _team_test(args, cfg):
+    """Send one prompt to a named validator via generate(); print the raw response."""
+    from .generic_validators import build_provider, ConfigError
+
+    name = args.name.strip()
+    if not name:
+        print("ERROR: name required", file=sys.stderr)
+        sys.exit(2)
+
+    # Lookup order mirrors build_validator_pool: custom providers first, then
+    # hardcoded + auto via the pool builder (which knows how to instantiate them).
+    entry = next((p for p in cfg.providers if p.get("name") == name), None)
+    if entry is not None:
+        try:
+            validator = build_provider(entry)
+        except ConfigError as e:
+            print(f"ERROR: cannot build {name!r}: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        try:
+            pool = build_validator_pool(cfg)
+        except Exception as e:
+            print(f"ERROR: could not build validator pool: {e}", file=sys.stderr)
+            sys.exit(1)
+        validator = next(
+            (v for v in getattr(pool, "validators", []) if getattr(v, "name", None) == name),
+            None,
+        )
+        if validator is None:
+            print(
+                f"ERROR: {name!r} is not on the team.\n"
+                f"       Active: {', '.join(cfg.validators) or '(none)'}.\n"
+                f"       Run `lope team list` to see the full roster.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    print(f"[test] {name} ← {args.prompt!r}")
+    try:
+        out = validator.generate(args.prompt, timeout=args.timeout)
+    except AttributeError:
+        print(
+            f"ERROR: {name!r} does not support generate() (validate-only validator). "
+            f"Use `lope ask` to fan out across validators instead.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except Exception as e:
+        print(f"ERROR: {name!r} failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    text = (out or "").strip()
+    if not text:
+        print(f"[warn] {name} returned empty output", file=sys.stderr)
+        sys.exit(1)
+    print("-" * 60)
+    print(text)
+    print("-" * 60)
+    print(f"[OK] {name} responded ({len(text)} chars).")
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@
 
 **Multi-CLI validator ensemble for AI work.**
 
-One AI CLI drafts. Others validate. No single-model blindspot. Works for multi-phase sprints (negotiate → execute → audit) **and** for single-shot multi-model tasks: ask a question to N CLIs, review a file across models, vote on options, A/B-compare two files, or pipe stdin to every validator.
+One AI CLI drafts. Others validate. No single-model blindspot. Works for multi-phase sprints (negotiate → execute → audit) **and** for single-shot multi-model tasks: ask a question to N CLIs, review a file across models, vote on options, A/B-compare two files, or pipe stdin to every validator. Add or remove teammates from any chat window — no JSON editing.
 
 > **Not just for code.** Lope works for **engineering, business (marketing, finance, ops, consulting), and research (systematic reviews, protocols, academic work)**. The same validator loop that catches bugs in code also catches gaps in budgets, timeline assumptions, methodology rigor, and audience targeting. See [Use cases](#use-cases) for 9 worked examples across all three domains.
 
@@ -94,10 +94,15 @@ Agent:  [recognizes multi-phase work → invokes /lope-negotiate]
 | "Which file is better — old or new?" | `lope compare old.py new.py --criteria "correctness and readability"` |
 | "Before/after bake-off for security" | `lope compare before.py after.py --criteria security` |
 | "Pipe this diff into every model" | `gh pr diff \| lope pipe` |
+| "Add openclaw to lope using my Tytus pod" | `lope team add openclaw --url <URL> --model openclaw --key-env OPENAI_API_KEY` |
+| "Add my local ollama (qwen3:8b) as a teammate" | `lope team add my-ollama --cmd "ollama run qwen3:8b {prompt}"` |
+| "Remove codex from the team" | `lope team remove codex` |
+| "Who's on lope?" / "list validators" | `lope team list` |
+| "Test if my new mistral teammate works" | `lope team test mistral` |
 
-The trigger words your agent watches for: **plan / negotiate / scope / draft / roll out** → `negotiate`; **ask / what do the CLIs think / second opinion** → `ask`; **review / critique / audit this file** → `review`; **yes-no / A-B-C / pick one** → `vote`; **which is better / compare / bake-off** → `compare`; **pipe / send output / `cmd | lope`** → `pipe`. The agent maps the shape of your request to the right verb without you having to remember slash syntax.
+The trigger words your agent watches for: **plan / negotiate / scope / draft / roll out** → `negotiate`; **ask / what do the CLIs think / second opinion** → `ask`; **review / critique / audit this file** → `review`; **yes-no / A-B-C / pick one** → `vote`; **which is better / compare / bake-off** → `compare`; **pipe / send output / `cmd | lope`** → `pipe`; **add / remove / list / test a validator** → `team`. The agent maps the shape of your request to the right verb without you having to remember slash syntax.
 
-Explicit slash commands still work — `/lope-negotiate`, `/lope-execute`, `/lope-audit`, `/lope-ask`, `/lope-review`, `/lope-vote`, `/lope-compare`, `/lope-pipe` (Gemini uses `/lope:negotiate`, etc.). Natural language is the lazy path when you just want to do something multi-model.
+Explicit slash commands still work — `/lope-negotiate`, `/lope-execute`, `/lope-audit`, `/lope-ask`, `/lope-review`, `/lope-vote`, `/lope-compare`, `/lope-pipe`, `/lope-team` (Gemini uses `/lope:negotiate`, etc.). Natural language is the lazy path when you just want to do something multi-model.
 
 ### What happens under the hood
 
@@ -205,7 +210,7 @@ Lope has two shapes: **structured sprint mode** (negotiate → execute → audit
 
 Each verb shares the same parallel fan-out primitive (`EnsemblePool.validate`). No sprint doc, no phase retries, no majority-vote on verdicts. You get each model's actual response; synthesis is your call (or optional with `--json`).
 
-**Eight modes in total:** `negotiate`, `execute`, `audit`, `ask`, `review`, `vote`, `compare`, `pipe`.
+**Nine modes in total:** `negotiate`, `execute`, `audit`, `ask`, `review`, `vote`, `compare`, `pipe`, `team`.
 
 ---
 
@@ -232,9 +237,33 @@ Each verb shares the same parallel fan-out primitive (`EnsemblePool.validate`). 
 
 You need at least one. Install whatever you already use.
 
-### Add any CLI or HTTP API
+### Add any CLI or HTTP API — from a chat window (no JSON)
 
-Five lines of JSON in `~/.lope/config.json`:
+The easiest path: ask your AI agent to add it. Lope ships `lope team add/remove/list/test` so roster management works without touching a config file.
+
+```bash
+# Add a local CLI binary
+lope team add my-ollama --cmd "ollama run qwen3:8b {prompt}"
+
+# Add an OpenAI-compatible HTTP endpoint (cloud API or private pod)
+lope team add openclaw --url http://10.42.42.1:18080/v1/chat/completions \
+    --model openclaw --key-env OPENAI_API_KEY
+
+# Confirm it works
+lope team test openclaw
+
+# Drop a teammate
+lope team remove codex
+
+# See who's on the team (active + disabled + source tag)
+lope team list
+```
+
+Your agent recognizes natural language — **"add openclaw to lope", "remove codex from the team", "test if the new mistral works"** — and runs the right `lope team` invocation. API keys always live as `${ENV_VAR}` references (never plaintext in argv or URL). Built-in names (`claude`, `opencode`, `gemini`, `codex`, `aider`) can't be shadowed. See [`skills/lope-team/SKILL.md`](skills/lope-team/SKILL.md) for the full decision tree.
+
+### Add any CLI or HTTP API — via config (advanced)
+
+Prefer editing JSON? `~/.lope/config.json`:
 
 ```json
 {
@@ -319,6 +348,7 @@ After install, these work in any supported CLI host (Gemini uses the `/lope:<ver
 | `/lope-vote` | Each validator picks from `--options`; tally + winner |
 | `/lope-compare` | Each validator picks between two files given `--criteria`; tally + winner |
 | `/lope-pipe` | Read stdin as the prompt; fan out; per-validator sections |
+| `/lope-team` | Add / remove / list / test teammates — no JSON editing |
 | `/lope-help` | Print the full reference into the current session |
 
 ---
@@ -404,6 +434,45 @@ echo "<prompt>" | lope pipe --require-all       # exit 1 if any validator errors
 ```
 
 Default is per-validator isolation — one timeout doesn't kill the others. `--require-all` opts in to strict failure for CI.
+
+### `lope team`
+Manage the validator roster from a chat window — no JSON editing required.
+
+```bash
+# List current team (active + disabled + source tags: built-in / custom / auto)
+lope team
+lope team list
+
+# Add a local CLI binary (subprocess)
+lope team add my-ollama --cmd "ollama run qwen3:8b {prompt}"
+lope team add hermes --cmd "hermes chat --json --prompt {prompt}" --timeout 180
+
+# Add an OpenAI-compatible HTTP endpoint (any cloud API or private pod)
+lope team add openclaw --url http://10.42.42.1:18080/v1/chat/completions \
+    --model openclaw --key-env OPENAI_API_KEY
+lope team add groq --url https://api.groq.com/openai/v1/chat/completions \
+    --model llama-3.3-70b-versatile --key-env GROQ_API_KEY
+
+# Custom HTTP body shape (non-OpenAI)
+lope team add cohere --url https://api.cohere.ai/v1/chat --key-env COHERE_API_KEY \
+    --body-json '{"message":"{prompt}","model":"command-r-plus"}' --response-path "text"
+
+# Make a teammate the primary / save-but-disabled / overwrite
+lope team add openclaw --url ... --primary
+lope team add openclaw --url ... --disabled
+lope team add openclaw --url ... --force
+
+# Remove
+lope team remove codex
+
+# Smoke-test
+lope team test openclaw
+lope team test openclaw "What's 2+2?" --timeout 120
+```
+
+**Safety:** `{prompt}` is a real placeholder — never shell-interpolated. API keys live as `${ENV_VAR}` references, expanded only at call time (they never land in argv, URLs, or config files). Built-in validator names (`claude`, `opencode`, `gemini`, `codex`, `aider`) can't be shadowed.
+
+**Natural language works too** — if you have your AI CLI loaded with the `lope-team` skill, just say *"add openclaw to lope with my Tytus pod"* and it runs the right invocation.
 
 ---
 

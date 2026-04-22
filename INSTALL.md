@@ -4,10 +4,11 @@ You (the AI agent reading this) are going to install lope for your user. **Do no
 
 ## Context
 
-Lope is a multi-CLI validator ensemble for AI work. Any AI CLI drafts; any AI CLI validates. Eight modes as of v0.5.0:
+Lope is a multi-CLI validator ensemble for AI work. Any AI CLI drafts; any AI CLI validates. Nine modes as of v0.6.0:
 
 - **Sprint modes** (multi-phase, validator-in-the-loop retry): `/lope-negotiate`, `/lope-execute`, `/lope-audit`
 - **Single-shot modes** (one prompt → N responses, no phases): `/lope-ask`, `/lope-review`, `/lope-vote`, `/lope-compare`, `/lope-pipe`
+- **Roster management** (add/remove/list/test validators from chat — no JSON): `/lope-team`
 - **Meta**: `/lope-help` (reference dump), `/lope` (umbrella), `/using-lope` (auto-trigger in supporting hosts)
 
 Gemini uses the `/lope:<verb>` namespaced form; Codex and Vibe load skills as content and invoke lope via natural language. Source: https://github.com/traylinx/lope (MIT, zero external Python deps, pure stdlib).
@@ -28,9 +29,9 @@ Verify with `git --version && python3 --version && bash --version | head -1`. If
 
 | Host | Slash commands? | Natural-language invocation? | Notes |
 |---|---|---|---|
-| **Claude Code** | ✅ full — `/lope`, `/lope-negotiate`, `/lope-execute`, `/lope-audit`, `/lope-ask`, `/lope-review`, `/lope-vote`, `/lope-compare`, `/lope-pipe`, `/lope-help`, `/using-lope` | ✅ | Scans `~/.claude/skills/` — symlinks just work |
-| **Gemini CLI** | ✅ namespaced — `/lope:negotiate`, `/lope:execute`, `/lope:audit`, `/lope:ask`, `/lope:review`, `/lope:vote`, `/lope:compare`, `/lope:pipe`, `/lope:help` | ✅ | TOML files in `~/.gemini/commands/lope/` — note the colon, not hyphen |
-| **OpenCode** | ✅ all 9 slash commands (same list as Claude, minus `/using-lope`) | ✅ | `~/.config/opencode/commands/*.md` (**plural**) with YAML frontmatter including `agent:` field |
+| **Claude Code** | ✅ full — `/lope`, `/lope-negotiate`, `/lope-execute`, `/lope-audit`, `/lope-ask`, `/lope-review`, `/lope-vote`, `/lope-compare`, `/lope-pipe`, `/lope-team`, `/lope-help`, `/using-lope` | ✅ | Scans `~/.claude/skills/` — symlinks just work |
+| **Gemini CLI** | ✅ namespaced — `/lope:negotiate`, `/lope:execute`, `/lope:audit`, `/lope:ask`, `/lope:review`, `/lope:vote`, `/lope:compare`, `/lope:pipe`, `/lope:team`, `/lope:help` | ✅ | TOML files in `~/.gemini/commands/lope/` — note the colon, not hyphen |
+| **OpenCode** | ✅ all 10 slash commands (same list as Claude, minus `/using-lope`) | ✅ | `~/.config/opencode/commands/*.md` (**plural**) with YAML frontmatter including `agent:` field |
 | **Cursor** | ⚠️ unverified | ✅ | Skills written to `~/.cursor/agents/`. Test `/lope-*` after install; if they don't autocomplete, use natural language |
 | **Mistral Vibe** | ❌ does **not** support user slash commands (confirmed by Vibe directly) | ✅ | Skills load as content at `~/.vibe/skills/`. Invoke via natural language |
 | **Qwen Code** | ✅ via `~/.qwen/skills/` — same slash list as Claude | ✅ | Standard skill dir format |
@@ -70,14 +71,14 @@ Identify which CLI you're running inside and execute the matching block below. S
 
 ```bash
 mkdir -p "$HOME/.claude/skills"
-for skill in lope lope-negotiate lope-execute lope-audit lope-ask lope-review lope-vote lope-compare lope-pipe lope-help using-lope; do
+for skill in lope lope-negotiate lope-execute lope-audit lope-ask lope-review lope-vote lope-compare lope-pipe lope-team lope-help using-lope; do
   target="$HOME/.claude/skills/$skill"
   [ -e "$target" ] || [ -L "$target" ] && rm -rf "$target"
   ln -s "$HOME/.lope/skills/$skill" "$target"
 done
 ```
 
-Available after restart: `/lope`, `/lope-negotiate`, `/lope-execute`, `/lope-audit`, `/lope-ask`, `/lope-review`, `/lope-vote`, `/lope-compare`, `/lope-pipe`, `/lope-help`, `/using-lope`.
+Available after restart: `/lope`, `/lope-negotiate`, `/lope-execute`, `/lope-audit`, `/lope-ask`, `/lope-review`, `/lope-vote`, `/lope-compare`, `/lope-pipe`, `/lope-team`, `/lope-help`, `/using-lope`.
 
 #### Gemini CLI
 
@@ -96,14 +97,14 @@ Available after restart: `/lope:negotiate`, `/lope:execute`, `/lope:audit`, `/lo
 
 ```bash
 mkdir -p "$HOME/.config/opencode/commands"   # plural "commands"
-for md in lope.md lope-negotiate.md lope-execute.md lope-audit.md lope-ask.md lope-review.md lope-vote.md lope-compare.md lope-pipe.md lope-help.md using-lope.md; do
+for md in lope.md lope-negotiate.md lope-execute.md lope-audit.md lope-ask.md lope-review.md lope-vote.md lope-compare.md lope-pipe.md lope-team.md lope-help.md using-lope.md; do
   target="$HOME/.config/opencode/commands/$md"
   [ -e "$target" ] || [ -L "$target" ] && rm -f "$target"
   ln -s "$HOME/.lope/commands/opencode/$md" "$target"
 done
 ```
 
-Available after restart: all 11 slash commands — `/lope`, `/lope-negotiate`, `/lope-execute`, `/lope-audit`, `/lope-ask`, `/lope-review`, `/lope-vote`, `/lope-compare`, `/lope-pipe`, `/lope-help`, `/using-lope`. The `.md` files in `commands/opencode/` already have the required YAML frontmatter (`name`, `description`, `agent: build`) — do not replace them with raw SKILL.md symlinks, OpenCode will reject them.
+Available after restart: all 12 slash commands — `/lope`, `/lope-negotiate`, `/lope-execute`, `/lope-audit`, `/lope-ask`, `/lope-review`, `/lope-vote`, `/lope-compare`, `/lope-pipe`, `/lope-team`, `/lope-help`, `/using-lope`. The `.md` files in `commands/opencode/` already have the required YAML frontmatter (`name`, `description`, `agent: build`) — do not replace them with raw SKILL.md symlinks, OpenCode will reject them.
 
 #### Codex — content install only, no slash commands
 
@@ -111,7 +112,7 @@ Codex does not surface user `SKILL.md` files as slash commands. Install them any
 
 ```bash
 mkdir -p "$HOME/.codex/skills"
-for skill in lope lope-negotiate lope-execute lope-audit lope-ask lope-review lope-vote lope-compare lope-pipe lope-help using-lope; do
+for skill in lope lope-negotiate lope-execute lope-audit lope-ask lope-review lope-vote lope-compare lope-pipe lope-team lope-help using-lope; do
   target="$HOME/.codex/skills/$skill"
   [ -e "$target" ] || [ -L "$target" ] && rm -rf "$target"
   ln -s "$HOME/.lope/skills/$skill" "$target"
@@ -126,7 +127,7 @@ Same story as Codex. Skills install as context, not slash commands.
 
 ```bash
 mkdir -p "$HOME/.vibe/skills"
-for skill in lope lope-negotiate lope-execute lope-audit lope-ask lope-review lope-vote lope-compare lope-pipe lope-help using-lope; do
+for skill in lope lope-negotiate lope-execute lope-audit lope-ask lope-review lope-vote lope-compare lope-pipe lope-team lope-help using-lope; do
   target="$HOME/.vibe/skills/$skill"
   [ -e "$target" ] || [ -L "$target" ] && rm -rf "$target"
   ln -s "$HOME/.lope/skills/$skill" "$target"
@@ -137,7 +138,7 @@ done
 
 ```bash
 mkdir -p "$HOME/.cursor/agents"
-for skill in lope lope-negotiate lope-execute lope-audit lope-ask lope-review lope-vote lope-compare lope-pipe lope-help using-lope; do
+for skill in lope lope-negotiate lope-execute lope-audit lope-ask lope-review lope-vote lope-compare lope-pipe lope-team lope-help using-lope; do
   src="$HOME/.lope/skills/$skill/SKILL.md"
   target="$HOME/.cursor/agents/$skill.md"
   [ -f "$src" ] || continue
@@ -152,7 +153,7 @@ After Cursor restart, check if `/lope-*` autocompletes. If yes, great. If no, in
 
 ```bash
 mkdir -p "$HOME/.qwen/skills"
-for skill in lope lope-negotiate lope-execute lope-audit lope-ask lope-review lope-vote lope-compare lope-pipe lope-help using-lope; do
+for skill in lope lope-negotiate lope-execute lope-audit lope-ask lope-review lope-vote lope-compare lope-pipe lope-team lope-help using-lope; do
   target="$HOME/.qwen/skills/$skill"
   [ -e "$target" ] || [ -L "$target" ] && rm -rf "$target"
   ln -s "$HOME/.lope/skills/$skill" "$target"
@@ -167,7 +168,7 @@ pi reads skills from the cross-CLI `~/.agents/skills/` directory (shared with an
 
 ```bash
 mkdir -p "$HOME/.agents/skills"
-for skill in lope lope-negotiate lope-execute lope-audit lope-ask lope-review lope-vote lope-compare lope-pipe lope-help using-lope; do
+for skill in lope lope-negotiate lope-execute lope-audit lope-ask lope-review lope-vote lope-compare lope-pipe lope-team lope-help using-lope; do
   target="$HOME/.agents/skills/$skill"
   [ -e "$target" ] || [ -L "$target" ] && rm -rf "$target"
   ln -s "$HOME/.lope/skills/$skill" "$target"
@@ -178,7 +179,7 @@ Available after pi restart: all 11 `/lope-*` slash commands. Note: the install a
 
 #### Any other AI CLI (generic)
 
-You know where your own skills or commands live. The 11 lope skills are in `~/.lope/skills/`:
+You know where your own skills or commands live. The 12 lope skills are in `~/.lope/skills/`:
 
 ```
 $HOME/.lope/skills/lope/SKILL.md
@@ -190,6 +191,7 @@ $HOME/.lope/skills/lope-review/SKILL.md
 $HOME/.lope/skills/lope-vote/SKILL.md
 $HOME/.lope/skills/lope-compare/SKILL.md
 $HOME/.lope/skills/lope-pipe/SKILL.md
+$HOME/.lope/skills/lope-team/SKILL.md
 $HOME/.lope/skills/lope-help/SKILL.md
 $HOME/.lope/skills/using-lope/SKILL.md
 ```
