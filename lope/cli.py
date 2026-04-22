@@ -91,6 +91,31 @@ def main():
     aud.add_argument("--no-journal", action="store_true", help="Skip journal write")
     _add_pool_flags(aud)
 
+    # ask — fan out ONE question to every validator, collect N raw answers.
+    # No sprint, no phases, no verdict parsing. Just multi-model Q&A.
+    ask = sub.add_parser(
+        "ask",
+        help="Ask every validator the same question, collect N answers",
+    )
+    ask.add_argument("question", help="The question to fan out (quoted)")
+    ask.add_argument("--json", action="store_true",
+                     help="Emit machine-readable JSON instead of human sections")
+    ask.add_argument("--context", default="",
+                     help="Optional context prepended to every validator's prompt")
+    _add_pool_flags(ask)
+
+    # review — read a file, fan out a review prompt, collect N per-model critiques.
+    rev = sub.add_parser(
+        "review",
+        help="Fan out a file review to every validator, collect N critiques",
+    )
+    rev.add_argument("file", help="Path to the file to review")
+    rev.add_argument("--focus", default="",
+                     help="Optional focus area (e.g. 'security', 'perf', 'tests')")
+    rev.add_argument("--json", action="store_true",
+                     help="Emit machine-readable JSON instead of human sections")
+    _add_pool_flags(rev)
+
     # status
     sub.add_parser("status", help="Show available validators and config")
 
@@ -160,6 +185,14 @@ def main():
 
     if args.command == "audit":
         _cmd_audit(args)
+        return
+
+    if args.command == "ask":
+        _cmd_ask(args)
+        return
+
+    if args.command == "review":
+        _cmd_review(args)
         return
 
 
@@ -731,6 +764,123 @@ def _cmd_audit(args):
     if not args.no_journal:
         journal_path = auditor.write_journal(report)
         print(f"\nJournal written to: {journal_path}")
+
+
+# ─── ask / review — sprint-free fan-out commands ──────────────────────
+#
+# Both commands share one primitive: take a raw prompt, dispatch `.generate()`
+# to every available validator in parallel, collect raw text responses. No
+# VERDICT block parsing, no phase retries, no majority vote. The user gets
+# N perspectives; synthesis is their job (or a future `--synth` flag).
+
+def _fanout_generate(pool, prompt, timeout):
+    """Parallel .generate() across every available validator in pool.
+
+    Returns a list of (validator_name, answer_text, error_message) tuples,
+    ordered by thread completion (fastest first). Never raises — errors
+    are surfaced per-validator so one slow/broken CLI doesn't blank the run.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    validators = (
+        getattr(pool, "_validators", None)
+        or getattr(pool, "_ordered", None)
+        or []
+    )
+    available = [v for v in validators if v.available()]
+    if not available:
+        return []
+    out = []
+    with ThreadPoolExecutor(max_workers=min(len(available), 5)) as ex:
+        futures = {ex.submit(v.generate, prompt, timeout): v for v in available}
+        for fut in as_completed(futures):
+            v = futures[fut]
+            try:
+                text = fut.result()
+                out.append((v.name, text or "", None))
+            except Exception as e:
+                out.append((v.name, "", str(e)))
+    return out
+
+
+def _render_fanout(label, results, machine_json=False):
+    """Format fan-out results for stdout. Human-readable by default."""
+    if machine_json:
+        import json as _j
+        payload = [
+            {"validator": n, label: a, "error": e} for n, a, e in results
+        ]
+        print(_j.dumps(payload, indent=2))
+        return
+    for name, answer, error in results:
+        print(f"\n━━━ {name} ━━━")
+        if error:
+            print(f"[ERROR] {error}")
+        elif answer.strip():
+            print(answer.rstrip())
+        else:
+            print("[empty response]")
+    print()
+
+
+def _cmd_ask(args):
+    """Fan out one question to every validator, print N answers."""
+    cfg, pool = _ensure_config(args)
+    validator_names = [v.name for v in getattr(pool, "_validators", [])] or pool.names()
+
+    prompt = args.question
+    if args.context:
+        prompt = f"{args.context}\n\n{prompt}"
+
+    preview = prompt[:100].replace("\n", " ")
+    if not args.json:
+        print(f"\nLope ask: {preview}{'...' if len(prompt) > 100 else ''}")
+        print(f"Validators: {', '.join(validator_names)}")
+        print(f"Timeout: {cfg.timeout}s per validator\n")
+
+    results = _fanout_generate(pool, prompt, cfg.timeout)
+    if not results:
+        print("No validators available. Run: lope status", file=sys.stderr)
+        sys.exit(1)
+    _render_fanout("answer", results, machine_json=args.json)
+
+
+def _cmd_review(args):
+    """Read a file, fan out a review prompt, print N critiques."""
+    file_path = Path(args.file)
+    if not file_path.is_file():
+        print(f"File not found: {file_path}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        content = file_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        print(f"Cannot read {file_path}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    focus = args.focus.strip() or (
+        "Review this file. Identify bugs, code-smells, design issues, "
+        "and concrete improvements. Be specific with line references."
+    )
+    prompt = (
+        f"{focus}\n\n"
+        f"File: {file_path}\n"
+        f"```\n{content}\n```\n\n"
+        "Return your review as plain prose. No VERDICT block needed."
+    )
+
+    cfg, pool = _ensure_config(args)
+    validator_names = [v.name for v in getattr(pool, "_validators", [])] or pool.names()
+
+    if not args.json:
+        print(f"\nLope review: {file_path}  ({len(content)} chars)")
+        print(f"Validators: {', '.join(validator_names)}")
+        print(f"Focus: {focus[:80]}{'...' if len(focus) > 80 else ''}")
+        print(f"Timeout: {cfg.timeout}s per validator\n")
+
+    results = _fanout_generate(pool, prompt, cfg.timeout)
+    if not results:
+        print("No validators available. Run: lope status", file=sys.stderr)
+        sys.exit(1)
+    _render_fanout("review", results, machine_json=args.json)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,45 @@
+description = "Ask every configured lope validator the same question and print N raw answers — one per model. No sprint, no phases, no majority vote. Use for any multi-perspective query where you want independent takes from several CLIs on a single prompt."
+
+prompt = """
+<objective>
+Fan out a single question to every configured lope validator and display their raw answers side-by-side. Each validator runs independently in parallel; no cross-talk, no synthesis, no voting.
+</objective>
+
+<process>
+
+1. **Confirm the question**. Read `{{args}}` as the question. If empty, ask the user what they want to ask the validators.
+
+2. **Run ask**:
+```bash
+lope ask "{{args}}"
+```
+
+Useful flags:
+- `--context "<ctx>"` — prepend context to every validator's prompt (e.g. a snippet they all need).
+- `--validators claude,gemini` — restrict which validators get the question (default: all configured).
+- `--json` — emit JSON for scripting.
+- `--timeout 60` — per-validator timeout in seconds.
+
+3. **Read the output**. Each validator's answer is wrapped in a `━━━ <name> ━━━` header. Errors show `[ERROR] <message>` instead of an answer. The run does not fail if one validator errors.
+
+4. **Summarize if useful**. Occasionally the user wants your take on which answer is strongest or where the models disagreed — offer a brief synthesis if the question is non-obvious. Don't pretend one answer is authoritative; show the spread.
+
+</process>
+
+<when_to_use>
+Use `/lope:ask` when the user wants multi-model perspectives on a single prompt:
+- "Get a second opinion across models"
+- "What do gemini and claude think about X?"
+- "Ask all my CLIs"
+- "Before I commit this, check with the other models"
+
+Do NOT use `/lope:ask` for:
+- Multi-phase planned work → that's `/lope:negotiate`
+- File critique → that's `/lope:review`
+- Single-model quick questions → just answer directly
+</when_to_use>
+
+<cost_note>
+Each `ask` run sends the prompt to every configured validator in parallel. If the user has 5 validators, expect roughly 5× the tokens of a single call. Restrict the pool with `--validators X,Y` for cheap runs.
+</cost_note>
+"""

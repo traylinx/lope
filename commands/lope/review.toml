@@ -1,0 +1,45 @@
+description = "Fan out a file review to every configured lope validator and collect N independent critiques. No sprint, no phases — each model reviews in parallel and prints its own take. Use --focus to narrow the critique area (security, perf, tests, etc.)."
+
+prompt = """
+<objective>
+Read a file the user points at, send it to every configured lope validator with a review prompt, and display their critiques side-by-side. Each validator reviews independently.
+</objective>
+
+<process>
+
+1. **Confirm the file path**. Read `{{args}}` as the path. If empty or the file doesn't exist, ask the user which file to review. Binary files, PDFs, and images are not supported — this is for plain-text files.
+
+2. **Run review**:
+```bash
+lope review "{{args}}"
+```
+
+Useful flags:
+- `--focus "<area>"` — narrow the critique (e.g. `--focus security`, `--focus "test coverage"`, `--focus "API ergonomics"`). Default focus is "bugs, code-smells, design issues, improvements with line references".
+- `--validators claude,opencode` — restrict the pool.
+- `--json` — machine-readable output.
+- `--timeout 120` — per-validator timeout.
+
+3. **Read the output**. Each validator's review is wrapped in a `━━━ <name> ━━━` header. Errors show `[ERROR] <message>`. The run does not fail if one validator errors.
+
+4. **Synthesize if useful**. Often a multi-model review surfaces contradictions — flag them. If two models agree on a bug but one missed it, call that out. Don't over-aggregate; the user asked to SEE the spread.
+
+</process>
+
+<when_to_use>
+Use `/lope:review` when the user has a concrete artifact they want critiqued across models:
+- "Review this file"
+- "Have claude, gemini, and opencode check auth.py for security"
+- "Multi-model review of my PR"
+- "What would the other CLIs say about this config?"
+
+Do NOT use `/lope:review` for:
+- Questions (no file) → that's `/lope:ask`
+- Implementing changes → direct code edits or `/lope:execute`
+- Non-text files (images, PDFs) → use describe tools instead
+</when_to_use>
+
+<cost_note>
+A review sends the full file content to every validator in parallel. Large files multiply the token cost. For very long files, pre-extract the section you want reviewed.
+</cost_note>
+"""

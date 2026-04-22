@@ -2,7 +2,7 @@
 # Lope installer — registers skills and commands in each AI CLI host's
 # native command/skill directory using the format that host expects.
 #
-# Usage: ./install [--host claude|codex|gemini|opencode|cursor|vibe|all]
+# Usage: ./install [--host claude|codex|gemini|opencode|cursor|vibe|qwen|pi|all]
 # Compatible with bash 3.2+ (stock macOS).
 
 set -euo pipefail
@@ -29,7 +29,7 @@ for i in "${!ARGS[@]}"; do
         SKIP_NEXT=1
       fi
       ;;
-    claude|codex|gemini|opencode|cursor|vibe|all)
+    claude|codex|gemini|opencode|cursor|vibe|qwen|pi|all)
       HOST="$arg"
       ;;
   esac
@@ -146,6 +146,37 @@ install_vibe() {
   done
 }
 
+# Qwen Code: ~/.qwen/skills/ with standard SKILL.md directory format.
+install_qwen() {
+  local dir="$HOME/.qwen/skills"
+  [ -d "$HOME/.qwen" ] || { echo "  qwen:     (skipped — ~/.qwen not present)"; return 0; }
+  mkdir -p "$dir"
+  for skill in "$SKILLS_DIR"/lope "$SKILLS_DIR"/lope-*/ "$SKILLS_DIR"/using-lope; do
+    skill="${skill%/}"
+    [ -d "$skill" ] || continue
+    local target="$dir/$(basename "$skill")"
+    replace_target "$target"
+    ln -sf "$(cd "$skill" && pwd)" "$target"
+    echo "  qwen:     $target -> $skill"
+  done
+}
+
+# pi: shares ~/.agents/skills/ with the broader @agents skill ecosystem
+# (Codex, Qwen, and other multi-CLI consumers). Standard SKILL.md dir format.
+install_pi() {
+  local dir="$HOME/.agents/skills"
+  [ -d "$HOME/.pi" ] || { echo "  pi:       (skipped — ~/.pi not present)"; return 0; }
+  mkdir -p "$dir"
+  for skill in "$SKILLS_DIR"/lope "$SKILLS_DIR"/lope-*/ "$SKILLS_DIR"/using-lope; do
+    skill="${skill%/}"
+    [ -d "$skill" ] || continue
+    local target="$dir/$(basename "$skill")"
+    replace_target "$target"
+    ln -sf "$(cd "$skill" && pwd)" "$target"
+    echo "  pi:       $target -> $skill"
+  done
+}
+
 install_host() {
   case "$1" in
     claude)   install_claude ;;
@@ -154,6 +185,8 @@ install_host() {
     opencode) install_opencode ;;
     cursor)   install_cursor ;;
     vibe)     install_vibe ;;
+    qwen)     install_qwen ;;
+    pi)       install_pi ;;
     *) echo "Unknown host: $1"; return 1 ;;
   esac
 }
@@ -164,7 +197,7 @@ echo "────────────────────────�
 echo ""
 
 if [ "$HOST" = "all" ]; then
-  for h in claude codex gemini opencode cursor vibe; do
+  for h in claude codex gemini opencode cursor vibe qwen pi; do
     install_host "$h" 2>/dev/null || echo "  $h:      (skipped — not detected)"
   done
 else
@@ -181,9 +214,11 @@ else
 fi
 echo ""
 echo "Slash commands by host (honest state — not every host supports user slash commands):"
-echo "  Claude Code  /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help"
-echo "  Gemini CLI   /lope:negotiate  /lope:execute  /lope:audit  /lope:help"
-echo "  OpenCode     /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help"
+echo "  Claude Code  /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review"
+echo "  Gemini CLI   /lope:negotiate  /lope:execute  /lope:audit  /lope:help  /lope:ask  /lope:review"
+echo "  OpenCode     /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review"
+echo "  pi           /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review"
+echo "  Qwen Code    /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review"
 echo "  Cursor       (unverified — skills written to ~/.cursor/agents/)"
 echo ""
 echo "Content-only hosts (skills loaded as context, invoke lope via natural language):"

@@ -1,13 +1,23 @@
 ---
 name: using-lope
-description: "You MUST consider using lope when the user describes a task with 3+ distinct phases, the work spans multiple files or components, or cross-model verification would catch bugs a single model would miss. This skill does NOT apply to single-edit tasks, trivial one-step operations, or pure conversation. Use when planning consequential multi-phase work, NOT when executing a one-off change."
+description: "You MUST consider using lope whenever cross-model perspective would help — multi-phase sprints (negotiate/execute/audit), one-off cross-model questions (ask), or cross-model file review (review). Trigger on any of: 3+ phases, consequential multi-file work, user wants a second opinion across CLIs, review/critique of an artifact, 'what do the other models think', 'check with gemini/claude/opencode'. Skip for trivial single edits, pure conversation, or urgent fire-fighting."
 ---
 
 # Using Lope
 
-Lope is a multi-CLI validator ensemble sprint runner. Any AI CLI implements. Any AI CLI validates. Majority vote decides. This is lope's whole premise — no single-model blindspot.
+Lope is a multi-CLI ensemble for AI work. Any AI CLI drafts, any AI CLI validates, multiple perspectives cover each other's blind spots. Core philosophy: **no single-model blindspot**. Five modes cover different shapes of work:
 
-When this skill triggers, you should actively consider whether the user's request would be better served by negotiating a sprint doc first instead of jumping straight to code.
+| Mode | Skill | Shape of input/output |
+|---|---|---|
+| `negotiate` | [lope-negotiate] | Goal → sprint doc with phases + verdicts |
+| `execute`   | [lope-execute]   | Sprint doc → implemented deliverables with per-phase review |
+| `audit`     | [lope-audit]     | Sprint doc → scorecard |
+| `ask`       | [lope-ask]       | One question → N raw answers (one per model) |
+| `review`    | [lope-review]    | One file + focus → N raw critiques (one per model) |
+
+`ask` and `review` are the lightweight verbs — no sprint, no phases, no majority vote. Use them whenever the user wants multi-model output on a single prompt or artifact.
+
+When this skill triggers, consider which of the five modes fits — don't force every request into `negotiate`.
 
 ## How the user will invoke lope
 
@@ -19,27 +29,45 @@ Two paths — you must handle both:
 
 Examples of natural-language triggers and the invocation you should run:
 
+**Plan/structure work → `negotiate`:**
+
 | User says | You invoke |
 |---|---|
 | "Let's plan the auth refactor with JWT refresh rotation" | `lope negotiate "Add JWT auth with refresh token rotation" --domain engineering` |
 | "Negotiate a sprint with gemini and opencode to draft 3 blog posts about lope" | `lope negotiate "Draft 3 blog posts about lope" --domain business` |
 | "I want to plan the Q4 marketing campaign carefully" | `lope negotiate "Q4 marketing campaign" --domain business` |
 | "Let's do a systematic review of post-training RL papers" | `lope negotiate "Systematic review of post-training RL papers" --domain research` |
-| "Put together a plan for migrating the billing module to events" | `lope negotiate "Migrate billing module to event-driven architecture" --domain engineering` |
-| "Draft a GDPR compliance audit plan" | `lope negotiate "GDPR compliance audit" --domain business` |
-| "Help me scope the data ingestion rewrite" | `lope negotiate "Data ingestion pipeline rewrite" --domain engineering` |
 
-Notice the pattern: when the user says "plan", "negotiate", "scope", "draft carefully", "work through", or "roll out" a multi-phase thing, you invoke `lope negotiate` with their goal as the argument and pick the appropriate `--domain`.
+**Cross-model Q&A → `ask`:**
+
+| User says | You invoke |
+|---|---|
+| "What do gemini and claude say about this approach?" | `lope ask "<their question>"` |
+| "Get a second opinion across models" | `lope ask "<the question from context>"` |
+| "Ask all the CLIs if X is safe" | `lope ask "Is X safe? <details>"` |
+| "Check with the other models before I commit this" | `lope ask "<what they're about to do>"` |
+
+**Cross-model file critique → `review`:**
+
+| User says | You invoke |
+|---|---|
+| "Review this file across models" | `lope review <file>` |
+| "Have claude, gemini, and opencode check auth.py for security" | `lope review auth.py --focus security` |
+| "Multi-model review of this PR diff" | `lope review <path/to/diff>` |
+| "What would the other CLIs say about my config?" | `lope review <config file>` |
+
+Pattern: **plan → negotiate**, **ask → ask**, **critique artifact → review**. Don't force an `ask`-shaped request through `negotiate` — it wastes tokens and produces a sprint doc the user didn't want.
 
 ## When to trigger
 
-Invoke `/lope-negotiate` as your first move when the user's request matches any of these:
+Reach for lope (any mode) whenever the user's request matches any of these:
 
-- **3+ distinct phases.** "Add auth with JWT refresh token rotation" is three phases (scaffold, middleware, rotation). "Rename this function" is one edit.
-- **Spans multiple files or components.** "Refactor the billing module to use events" will touch many files. A single-file change is usually not worth a sprint.
-- **Would benefit from cross-model verification.** The bug you're worried about is one Claude would rubber-stamp but Gemini would catch, or vice versa. Examples: API contract changes, security-sensitive middleware, migration scripts, data-model changes, anything with irreversible side effects.
-- **Consequential work worth structuring.** The user said "this needs to be right" or "don't break things" or "let's plan this carefully". These are structural signals.
-- **Non-code domains.** Lope also handles `--domain business` (marketing campaigns, budgets, ops plans) and `--domain research` (systematic reviews, protocols, academic work). Same validation loop, different labels.
+- **Multi-phase work.** "Add auth with JWT refresh token rotation" has phases. → `negotiate` then `execute`.
+- **Multi-file refactor.** "Refactor the billing module to use events" touches many files. → `negotiate`.
+- **Cross-model verification needed.** Security-sensitive middleware, API contracts, migration scripts. If the user wants multiple models to sign off, use `negotiate` for plans, `review` for finished artifacts.
+- **One-off cross-model question.** "What do the other CLIs think of this approach?" → `ask`. Fast, no sprint doc, no phases.
+- **Review an artifact.** "Check this file / PR / spec across models." → `review <file>`.
+- **Non-code domains.** `--domain business` (marketing, finance, ops) and `--domain research` (systematic reviews) work on negotiate. For business/research `ask` + `review` also apply — nothing is domain-locked.
 
 ## When NOT to trigger
 
@@ -52,15 +80,17 @@ Skip lope — just do the work directly — when:
 - **Exploratory questions.** "What could we do about X?", "How should we approach this?". Have the conversation first. Only lope the agreed plan.
 - **Urgent fire-fighting.** Production is down, user needs a fix in 10 minutes. Don't negotiate a sprint — patch the bug. Lope is for planned work.
 
-## The three modes
+## The five modes
 
 | Mode | Slash command | When |
 |---|---|---|
 | Negotiate | `/lope-negotiate <goal>` | Before any multi-phase work. Drafts a structured sprint doc via multi-round validator review. |
 | Execute | `/lope-execute <sprint_doc>` | After negotiation. Runs phases with validator-in-the-loop retry. |
 | Audit | `/lope-audit <sprint_doc>` | After execution. Generates the scorecard. |
+| Ask | `/lope-ask "<question>"` | One question → N raw answers. No sprint, no phases. |
+| Review | `/lope-review <file>` | Fan out a file review to all validators. `--focus` narrows the critique. |
 
-Default flow: **negotiate → execute → audit**. You can skip audit for small sprints.
+Default flow for a *planned* task: **negotiate → execute → audit**. Skip to `ask` or `review` when the user just wants multi-model output on a single prompt or artifact — those modes are single-shot, no sprint doc, no phase retries.
 
 ## Domains
 
@@ -81,6 +111,8 @@ Route through the dedicated slash commands, not by calling the Python module dir
 - `/lope-negotiate` for drafting
 - `/lope-execute` for running
 - `/lope-audit` for scoring
+- `/lope-ask` for multi-model Q&A
+- `/lope-review` for multi-model file critique
 
 Each slash command has its own SKILL.md with the full flow. Read that skill when you invoke it, don't paraphrase.
 
