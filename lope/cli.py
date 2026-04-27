@@ -114,6 +114,22 @@ def main():
                      help="Optional focus area (e.g. 'security', 'perf', 'tests')")
     rev.add_argument("--json", action="store_true",
                      help="Emit machine-readable JSON instead of human sections")
+    # v0.7 structured-mode flags. Default review behavior is unchanged: raw
+    # per-validator critique blocks. `--consensus`/`--structured` switch on
+    # the dedup + scoring pipeline; `--format` picks the renderer.
+    rev.add_argument("--consensus", action="store_true",
+                     help="Merge, dedupe, and consensus-rank findings (v0.7)")
+    rev.add_argument("--structured", dest="consensus", action="store_true",
+                     help="Alias for --consensus")
+    rev.add_argument("--min-consensus", dest="min_consensus", type=float, default=0.0,
+                     help="Drop findings with consensus_score below this threshold (default: 0.0)")
+    rev.add_argument("--similarity", type=float, default=0.85,
+                     help="Cross-validator dedup similarity threshold (default: 0.85)")
+    rev.add_argument("--format", dest="output_format", default="text",
+                     choices=["text", "json", "markdown", "markdown-pr", "sarif"],
+                     help="Output format for consensus mode (default: text)")
+    rev.add_argument("--include-raw", dest="include_raw", action="store_true",
+                     help="Append raw per-validator responses to consensus output")
     _add_pool_flags(rev)
 
     # vote — each validator picks one of the provided options; tally + print winner.
@@ -974,7 +990,12 @@ def _cmd_ask(args):
 
 
 def _cmd_review(args):
-    """Read a file, fan out a review prompt, print N critiques."""
+    """Read a file, fan out a review prompt, print N critiques.
+
+    Default behavior is the v0.6 raw fan-out: one section per validator. With
+    ``--consensus`` (or any non-text ``--format``) the request flows through
+    :mod:`lope.review` instead, which dedupes and consensus-ranks findings.
+    """
     file_path = Path(args.file)
     if not file_path.is_file():
         print(f"File not found: {file_path}", file=sys.stderr)
@@ -984,6 +1005,16 @@ def _cmd_review(args):
     except Exception as e:
         print(f"Cannot read {file_path}: {e}", file=sys.stderr)
         sys.exit(1)
+
+    # Resolve the structured-mode decision once, then route. Specifying
+    # any non-text ``--format`` implies structured because text is the
+    # only renderer that has a meaningful raw-mode equivalent.
+    output_format = getattr(args, "output_format", "text") or "text"
+    structured_mode = bool(getattr(args, "consensus", False)) or output_format != "text"
+
+    if structured_mode:
+        _cmd_review_consensus(args, file_path, content, output_format)
+        return
 
     focus = args.focus.strip() or (
         "Review this file. Identify bugs, code-smells, design issues, "
@@ -1010,6 +1041,61 @@ def _cmd_review(args):
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
     _render_fanout("review", results, machine_json=args.json)
+
+
+def _cmd_review_consensus(args, file_path, content, output_format):
+    """Run a consensus review and print the chosen format.
+
+    Tests should not reach this helper directly; they exercise
+    :func:`lope.review.run_consensus_review` and :func:`render_report`
+    against monkeypatched fan-out functions instead.
+    """
+    from .review import render_report, run_consensus_review
+
+    cfg, pool = _ensure_config(args)
+    validator_names = [v.name for v in getattr(pool, "_validators", [])] or pool.names()
+
+    # ``--json`` is a long-standing ergonomic flag. In structured mode treat
+    # it as ``--format json`` unless the user explicitly chose another format.
+    fmt = output_format
+    if fmt == "text" and getattr(args, "json", False):
+        fmt = "json"
+
+    is_machine = fmt in {"json", "sarif"}
+
+    if not is_machine:
+        focus_preview = (args.focus or "").strip()
+        if focus_preview:
+            focus_label = focus_preview[:80] + ("..." if len(focus_preview) > 80 else "")
+        else:
+            focus_label = "(default)"
+        print(f"\nLope consensus review: {file_path}  ({len(content)} chars)")
+        print(f"Validators: {', '.join(validator_names) or '—'}")
+        print(f"Focus: {focus_label}")
+        print(f"Format: {fmt}")
+        print(f"Timeout: {cfg.timeout}s per validator\n")
+
+    report = run_consensus_review(
+        target=str(file_path),
+        content=content,
+        focus=args.focus,
+        validators=validator_names,
+        pool=pool,
+        timeout=cfg.timeout,
+        similarity=getattr(args, "similarity", 0.85),
+        min_consensus=getattr(args, "min_consensus", 0.0),
+    )
+
+    if not report.raw_results and not report.errors:
+        print("No validators available. Run: lope status", file=sys.stderr)
+        sys.exit(1)
+
+    rendered = render_report(
+        report,
+        output_format=fmt,
+        include_raw=getattr(args, "include_raw", False),
+    )
+    print(rendered, end="" if rendered.endswith("\n") else "\n")
 
 
 # ─── vote ─────────────────────────────────────────────────────────────

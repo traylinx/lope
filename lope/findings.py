@@ -716,7 +716,7 @@ def _build_finding(
 
 def merge_findings(
     findings: Iterable[Finding],
-    total_validators: int = 0,
+    total_validators: int = 0,  # noqa: ARG001 — reserved; see note below
     similarity_threshold: float = 0.85,
 ) -> List[MergedFinding]:
     """Merge raw findings into a deduplicated list.
@@ -725,12 +725,14 @@ def merge_findings(
     file/line ±2 with high paraphrase similarity, and message-only
     similarity within the same severity family.
 
-    ``total_validators`` is reserved for callers that want consensus rules
-    consistent across an empty fan-out; it is not used here directly but
-    accepted for symmetry with :func:`score_consensus`.
+    ``total_validators`` is part of the v0.7 sprint's documented signature
+    so callers (CLI, tests, future memory layer) can pass through their
+    roster size verbatim. The actual roster denominator is applied later
+    inside :func:`score_consensus` against ``all_validator_names``, so the
+    parameter is currently a no-op here. It is kept for forward
+    compatibility — a future phase that gates dedup on roster size can
+    plug in without touching every caller.
     """
-
-    del total_validators  # accepted for API symmetry, no current effect
 
     merged: List[MergedFinding] = []
 
