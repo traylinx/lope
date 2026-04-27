@@ -140,6 +140,8 @@ def main():
                      help="Output format for consensus mode (default: text)")
     rev.add_argument("--include-raw", dest="include_raw", action="store_true",
                      help="Append raw per-validator responses to consensus output")
+    rev.add_argument("--remember", action="store_true",
+                     help="Store consensus findings in the persistent Lope memory (v0.7)")
     _add_pool_flags(rev)
     _add_synth_flags(rev)
 
@@ -260,6 +262,51 @@ def main():
     t_test.add_argument("--timeout", type=int, default=60,
                         help="Timeout in seconds (default: 60)")
 
+    # memory — persistent finding store. Subcommands: stats / search / file
+    # / hotspots / forget. Default subcommand is `stats`.
+    mem = sub.add_parser(
+        "memory",
+        help="Query and manage the persistent Lope finding memory",
+    )
+    mem_sub = mem.add_subparsers(dest="memory_cmd")
+    mem_stats = mem_sub.add_parser("stats", help="Show aggregate memory statistics")
+    mem_stats.add_argument("--json", action="store_true", help="Emit JSON")
+
+    mem_search = mem_sub.add_parser(
+        "search", help="LIKE-search stored findings by message"
+    )
+    mem_search.add_argument("query", help="Substring to match against message")
+    mem_search.add_argument("--min-score", dest="min_score", type=float, default=0.0,
+                            help="Minimum consensus_score (default: 0.0)")
+    mem_search.add_argument("--limit", type=int, default=20,
+                            help="Maximum rows to return (default: 20)")
+    mem_search.add_argument("--json", action="store_true", help="Emit JSON")
+
+    mem_file = mem_sub.add_parser(
+        "file", help="Show stored findings for a specific file"
+    )
+    mem_file.add_argument("path", help="File path to look up")
+    mem_file.add_argument("--limit", type=int, default=50,
+                          help="Maximum rows to return (default: 50)")
+    mem_file.add_argument("--json", action="store_true", help="Emit JSON")
+
+    mem_hot = mem_sub.add_parser(
+        "hotspots", help="Files with the most stored findings recently"
+    )
+    mem_hot.add_argument("--days", type=int, default=30,
+                         help="Window length in days (default: 30)")
+    mem_hot.add_argument("--limit", type=int, default=10,
+                         help="Maximum rows to return (default: 10)")
+    mem_hot.add_argument("--json", action="store_true", help="Emit JSON")
+
+    mem_forget = mem_sub.add_parser(
+        "forget", help="Remove findings by --hash or --file"
+    )
+    mem_forget.add_argument("--hash", default=None,
+                            help="Finding hash to remove")
+    mem_forget.add_argument("--file", default=None,
+                            help="File path; removes every finding stored for it")
+
     # status
     sub.add_parser("status", help="Show available validators and config")
 
@@ -315,6 +362,10 @@ def main():
         _cmd_install(args.host)
         return
 
+    if args.command == "memory":
+        _cmd_memory(args)
+        return
+
     if args.command == "negotiate":
         from .runlock import acquire as _runlock
         with _runlock("negotiate"):
@@ -354,6 +405,127 @@ def main():
     if args.command == "team":
         _cmd_team(args)
         return
+
+
+def _cmd_memory(args):
+    """Dispatch ``lope memory {stats|search|file|hotspots|forget}``."""
+    from .memory import open_memory
+
+    sub_cmd = getattr(args, "memory_cmd", None) or "stats"
+    store = open_memory()
+    if store is None:
+        print(
+            "Lope memory is disabled (LOPE_MEMORY=off). "
+            "Unset the variable or set LOPE_MEMORY= to re-enable.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if sub_cmd == "stats":
+        _memory_stats(store, args)
+    elif sub_cmd == "search":
+        _memory_search(store, args)
+    elif sub_cmd == "file":
+        _memory_file(store, args)
+    elif sub_cmd == "hotspots":
+        _memory_hotspots(store, args)
+    elif sub_cmd == "forget":
+        _memory_forget(store, args)
+    else:
+        _memory_stats(store, args)
+
+
+def _memory_stats(store, args):
+    payload = store.stats()
+    if getattr(args, "json", False):
+        import json as _j
+        print(_j.dumps(payload, indent=2, sort_keys=True))
+        return
+    print(f"\nLope memory at {payload['db_path']}")
+    print("-" * 40)
+    print(f"  Findings (total)      {payload['total_findings']:>5}")
+    print(f"  Findings (recurring)  {payload['recurring_findings']:>5}")
+    print(f"  Findings (confirmed)  {payload['confirmed_findings']:>5}")
+    print(f"  Files flagged         {payload['flagged_files']:>5}")
+    print(f"  Sessions stored       {payload['total_sessions']:>5}")
+    if payload["last_session_at"]:
+        print(f"  Last session          {payload['last_session_at']}")
+    print()
+
+
+def _memory_search(store, args):
+    rows = store.search_findings(args.query, min_score=args.min_score, limit=args.limit)
+    if getattr(args, "json", False):
+        import json as _j
+        print(_j.dumps([r.to_dict() for r in rows], indent=2, sort_keys=True))
+        return
+    if not rows:
+        print(f"No stored findings matching {args.query!r}.")
+        return
+    print(f"\nLope memory: {len(rows)} match(es) for {args.query!r}")
+    print("-" * 60)
+    for r in rows:
+        location = r.file or ""
+        if r.line is not None:
+            location += f":{r.line}"
+        print(
+            f"  [{r.severity.upper():<8}] {r.consensus_level:<11} "
+            f"score {r.consensus_score:.2f}  seen {r.seen_count}x  "
+            f"{location}"
+        )
+        print(f"    {r.message[:120]}")
+    print()
+
+
+def _memory_file(store, args):
+    rows = store.findings_for_file(args.path, limit=args.limit)
+    if getattr(args, "json", False):
+        import json as _j
+        print(_j.dumps([r.to_dict() for r in rows], indent=2, sort_keys=True))
+        return
+    if not rows:
+        print(f"No stored findings for {args.path}.")
+        return
+    print(f"\nLope memory for {args.path}: {len(rows)} finding(s)")
+    print("-" * 60)
+    for r in rows:
+        line = f":{r.line}" if r.line is not None else ""
+        print(
+            f"  [{r.severity.upper():<8}] score {r.consensus_score:.2f}  "
+            f"seen {r.seen_count}x  {r.file}{line}"
+        )
+        print(f"    hash: {r.hash}  level: {r.consensus_level}")
+        print(f"    {r.message[:120]}")
+    print()
+
+
+def _memory_hotspots(store, args):
+    rows = store.hotspots(days=args.days, limit=args.limit)
+    if getattr(args, "json", False):
+        import json as _j
+        print(_j.dumps(rows, indent=2, sort_keys=True))
+        return
+    if not rows:
+        print(f"No hotspots in the last {args.days} day(s).")
+        return
+    print(f"\nLope hotspots (last {args.days} days)")
+    print("-" * 60)
+    for row in rows:
+        print(
+            f"  {row['finding_count']:>3} findings  "
+            f"{row['detection_count']:>3} detections  "
+            f"avg {row['avg_score']:.2f}   {row['file']}"
+        )
+    print()
+
+
+def _memory_forget(store, args):
+    if not (args.hash or args.file):
+        print("memory forget: pass --hash or --file", file=sys.stderr)
+        sys.exit(2)
+    removed = store.forget(hash=args.hash, file=args.file)
+    target = f"hash={args.hash}" if args.hash else f"file={args.file}"
+    print(f"Removed {removed} finding(s) for {target}")
 
 
 def _cmd_docs():
@@ -1165,6 +1337,40 @@ def _cmd_review_consensus(args, file_path, content, output_format):
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
 
+    # --remember: persist consensus findings to the local SQLite memory.
+    # Honors LOPE_MEMORY=off (visible no-op) and LOPE_MEMORY_DB override.
+    memory_message = None
+    memory_summary = None
+    if getattr(args, "remember", False):
+        from .memory import open_memory
+
+        store = open_memory()
+        if store is None:
+            memory_message = (
+                "Memory disabled (LOPE_MEMORY=off); --remember was a no-op."
+            )
+        else:
+            session_id, stored = store.store_review_session(
+                task=f"lope review {file_path}",
+                focus=args.focus or "",
+                target_path=str(file_path),
+                validators=validator_names,
+                findings=report.scored,
+                duration_ms=0,
+            )
+            recurring = [r for r in stored if r.seen_count > 1]
+            memory_summary = {
+                "session_id": session_id,
+                "stored_count": len(stored),
+                "recurring_count": len(recurring),
+                "recurring_hashes": [r.hash for r in recurring],
+                "db_path": str(store.db_path),
+            }
+            memory_message = (
+                f"Memory: stored {len(stored)} finding(s) "
+                f"({len(recurring)} recurring) → {store.db_path}"
+            )
+
     # Synthesis on the consensus path: feed merged findings (not raw spam)
     # to the primary, then either append the synthesis block in human modes
     # or attach it under ``synthesis`` in JSON / SARIF properties.
@@ -1207,17 +1413,16 @@ def _cmd_review_consensus(args, file_path, content, output_format):
         include_raw=getattr(args, "include_raw", False),
     )
 
-    if synth is None or fmt == "sarif":
-        # SARIF has no place for free-form synthesis prose; we keep the
-        # synth block out of the document so consumers receive a clean,
-        # spec-compliant SARIF run. Surface it on stderr instead.
+    # SARIF stays spec-compliant: synthesis goes to stderr and so does the
+    # ``--remember`` ack so the JSON payload stays a clean SARIF run.
+    if fmt == "sarif":
         print(rendered, end="" if rendered.endswith("\n") else "\n")
         if synth is not None:
             from .synthesis import format_synthesis as _fmt_synth
             print(_fmt_synth(synth, machine_json=False), file=sys.stderr)
+        if memory_message:
+            print(memory_message, file=sys.stderr)
         return
-
-    from .synthesis import format_synthesis as _fmt_synth
 
     if fmt == "json":
         import json as _j
@@ -1225,18 +1430,28 @@ def _cmd_review_consensus(args, file_path, content, output_format):
             payload = _j.loads(rendered)
         except _j.JSONDecodeError:
             payload = {"raw": rendered}
-        payload["synthesis"] = {
-            "ok": synth.ok,
-            "primary": synth.primary,
-            "text": _fmt_synth(synth, machine_json=True) if synth.ok else "",
-            "error": synth.error if not synth.ok else "",
-        }
+        if synth is not None:
+            from .synthesis import format_synthesis as _fmt_synth
+            payload["synthesis"] = {
+                "ok": synth.ok,
+                "primary": synth.primary,
+                "text": _fmt_synth(synth, machine_json=True) if synth.ok else "",
+                "error": synth.error if not synth.ok else "",
+            }
+        if memory_summary is not None:
+            payload["memory"] = memory_summary
+        elif memory_message:
+            payload["memory"] = {"disabled": True, "note": memory_message}
         print(_j.dumps(payload, indent=2, sort_keys=True))
         return
 
-    # Human / markdown / markdown-pr — append the synthesis block.
+    # Human / markdown / markdown-pr — append synthesis + memory footer.
     print(rendered, end="" if rendered.endswith("\n") else "\n")
-    print(_fmt_synth(synth, machine_json=False))
+    if synth is not None:
+        from .synthesis import format_synthesis as _fmt_synth
+        print(_fmt_synth(synth, machine_json=False))
+    if memory_message:
+        print(memory_message)
 
 
 # ─── vote ─────────────────────────────────────────────────────────────
