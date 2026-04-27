@@ -1,4 +1,4 @@
-"""Phase 9 release criteria — hermetic smoke tests for v0.7.0.
+"""Phase 9 release criteria — hermetic smoke tests for v0.7.x.
 
 Every criterion in the v0.7 sprint's "Phase 9" section has a test here
 so a future bump does not silently regress what the release was
@@ -27,10 +27,10 @@ SAMPLE_SCENARIO = REPO_ROOT / "tests" / "fixtures" / "scenario.md"
 # ---------------------------------------------------------------------------
 
 
-def test_version_strings_in_sync_at_070():
+def test_version_strings_in_sync_at_071():
     from lope import __version__
 
-    assert __version__ == "0.7.0"
+    assert __version__ == "0.7.1"
 
 
 def test_check_version_script_passes():
@@ -41,7 +41,7 @@ def test_check_version_script_passes():
         timeout=20,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "0.7.0" in proc.stdout
+    assert "0.7.1" in proc.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -69,10 +69,10 @@ def test_required_artifact_exists(relpath):
     assert path.is_file(), f"missing release artifact: {relpath}"
 
 
-def test_changelog_lists_v070_at_top():
+def test_changelog_lists_latest_at_top():
     text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     head = text.split("\n", 4)
-    assert "0.7.0" in "\n".join(head[:4])
+    assert "0.7.1" in "\n".join(head[:4])
 
 
 def test_pyproject_has_no_new_dependency():
@@ -285,6 +285,42 @@ def test_review_roles_works_with_single_validator_pool(monkeypatch, capsys):
     # unavailable" would zero this out.
     assert parsed["raw_count"] >= 1
     assert parsed["merged_count"] >= 1
+
+
+def test_review_divide_files_keeps_stdout_pure_json(
+    monkeypatch, capsys, stub_pool, tmp_path
+):
+    """v0.7.1 regression: ``--divide files --format json`` used to
+    leak ``→ reviewing X`` progress lines onto stdout, breaking any
+    downstream JSON parser (jq, python -m json.tool, CI). Progress
+    must go to stderr so stdout stays a single parseable JSON document.
+    """
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.py").write_text("def foo(): return 1\n")
+    (src / "b.py").write_text("def bar(): return 2\n")
+
+    code = _run_main(
+        monkeypatch,
+        "review",
+        str(src),
+        "--consensus",
+        "--divide",
+        "files",
+        "--format",
+        "json",
+        "--validators",
+        "claude",
+    )
+    captured = capsys.readouterr()
+    assert code == 0
+    # The contract: stdout MUST be a single parseable JSON document.
+    parsed = json.loads(captured.out)
+    assert "findings" in parsed
+    # Progress lines belong on stderr, not stdout.
+    assert "→ reviewing" not in captured.out
+    assert "→ reviewing" in captured.err
 
 
 # ---------------------------------------------------------------------------

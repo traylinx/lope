@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1 — Hotfix: divide-mode keeps stdout pure for JSON / SARIF / markdown-pr
+
+`lope review --divide files|hunks --format json|sarif|markdown-pr` was leaking `→ reviewing X` progress lines onto stdout, breaking any downstream parser (`jq`, `python -m json.tool`, CI). v0.7.1 routes those progress lines to stderr so stdout stays a single parseable document. No CLI surface change; human users still see progress on the terminal.
+
+Found via dogfood smoke after v0.7.0 tag; regression test pins the contract.
+
 ## 0.7.0 — Superpowers (consensus intelligence + Makakoo bridge)
 
 > **Lope v0.7 turns N raw model opinions into one durable, consensus-ranked, Brain-aware action report — still zero dependencies, still inside every CLI you already use.**

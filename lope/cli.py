@@ -1398,8 +1398,9 @@ def _build_report_via_divided_files(
     parse_methods_combined: Dict[str, str] = {}
 
     for chunk in chunks:
-        if not args.json:
-            print(f"  → reviewing {chunk.label}")
+        # Progress goes to stderr so machine-readable formats (json,
+        # sarif, markdown-pr) keep stdout clean for downstream parsers.
+        print(f"  → reviewing {chunk.label}", file=sys.stderr)
         chunk_report = run_consensus_review(
             target=chunk.label,
             content=chunk.content,
@@ -1465,8 +1466,9 @@ def _build_report_via_divided_hunks(
     parse_methods_combined: Dict[str, str] = {}
 
     for hunk in hunks:
-        if not args.json:
-            print(f"  → reviewing {hunk.label}")
+        # Progress goes to stderr so machine-readable formats (json,
+        # sarif, markdown-pr) keep stdout clean for downstream parsers.
+        print(f"  → reviewing {hunk.label}", file=sys.stderr)
         chunk_report = run_consensus_review(
             target=hunk.label,
             content=hunk.content,
