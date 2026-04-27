@@ -64,6 +64,15 @@ def main():
         parallel_group.add_argument("--sequential", dest="parallel", action="store_false",
                                     help="Run validators sequentially")
 
+    def _add_synth_flags(p):
+        # v0.7 synthesis pass: roll N answers into one executive summary via
+        # the primary. ``--anonymous`` strips validator identity from the
+        # synthesis prompt so the synthesizer can't bias on model name.
+        p.add_argument("--synth", action="store_true",
+                       help="Run a synthesis pass on the fan-out (executive summary)")
+        p.add_argument("--anonymous", dest="anonymous", action="store_true",
+                       help="Strip validator names from synthesis input (Response A/B/C labels)")
+
     # negotiate
     neg = sub.add_parser("negotiate", help="Draft a sprint doc via multi-round validation")
     neg.add_argument("goal", help="Sprint goal description")
@@ -103,6 +112,7 @@ def main():
     ask.add_argument("--context", default="",
                      help="Optional context prepended to every validator's prompt")
     _add_pool_flags(ask)
+    _add_synth_flags(ask)
 
     # review — read a file, fan out a review prompt, collect N per-model critiques.
     rev = sub.add_parser(
@@ -131,6 +141,7 @@ def main():
     rev.add_argument("--include-raw", dest="include_raw", action="store_true",
                      help="Append raw per-validator responses to consensus output")
     _add_pool_flags(rev)
+    _add_synth_flags(rev)
 
     # vote — each validator picks one of the provided options; tally + print winner.
     # Addresses "option drift" (pi design review 2026-04-22): every validator
@@ -146,6 +157,7 @@ def main():
     vote.add_argument("--json", action="store_true",
                       help="Emit JSON with per-voter picks + tallies")
     _add_pool_flags(vote)
+    _add_synth_flags(vote)
 
     # compare — each validator picks the better of two files against explicit criteria.
     # Addresses "criteria opacity" (pi design review 2026-04-22): `--criteria`
@@ -162,6 +174,7 @@ def main():
     comp.add_argument("--json", action="store_true",
                       help="Emit JSON with per-voter picks + tallies")
     _add_pool_flags(comp)
+    _add_synth_flags(comp)
 
     # pipe — read stdin, fan out to validators, print responses.
     # Addresses "partial failure" (pi design review 2026-04-22): default is
@@ -176,6 +189,7 @@ def main():
     pp.add_argument("--json", action="store_true",
                     help="Emit JSON instead of human sections")
     _add_pool_flags(pp)
+    _add_synth_flags(pp)
 
     # team — grandma-friendly validator management via CLI flags so any LLM
     # running in a chat window can translate natural language ("add openclaw
@@ -967,6 +981,64 @@ def _render_fanout(label, results, machine_json=False):
     print()
 
 
+def _maybe_synthesize(args, pool, results, *, task, structured_findings=None, timeout=None):
+    """Run a synthesis pass when ``--synth`` is set; otherwise return None.
+
+    Returns a :class:`lope.synthesis.SynthesisResult` so callers can decide
+    whether to surface success or fall back to the raw fan-out. The pool's
+    primary is used as the synthesizer; if no primary is available the
+    result carries a fail-soft error message.
+    """
+    if not getattr(args, "synth", False):
+        return None
+    from .synthesis import build_synthesis_prompt, run_synthesis
+
+    primary = None
+    if pool is not None:
+        try:
+            primary = pool.primary_validator()
+        except Exception:
+            primary = None
+
+    prompt = build_synthesis_prompt(
+        task=task,
+        responses=results,
+        structured_findings=structured_findings,
+        anonymous=getattr(args, "anonymous", False),
+    )
+    return run_synthesis(primary, prompt, timeout or 240)
+
+
+def _render_fanout_with_synth(label, results, synth, machine_json=False):
+    """Combined renderer that prints fan-out + synthesis or JSON-bundles them.
+
+    ``synth`` is the optional :class:`SynthesisResult` from
+    :func:`_maybe_synthesize`. When ``machine_json`` is set the function
+    prints a single JSON envelope ``{responses: [...], synthesis: ...}``
+    so machine consumers get one parseable artifact.
+    """
+    from .output import fanout_payload, print_json
+    from .synthesis import format_synthesis
+
+    if machine_json:
+        payload = {
+            "responses": fanout_payload(label, results),
+        }
+        if synth is not None:
+            payload["synthesis"] = {
+                "ok": synth.ok,
+                "primary": synth.primary,
+                "text": format_synthesis(synth, machine_json=True) if synth.ok else "",
+                "error": synth.error if not synth.ok else "",
+            }
+        print_json(payload)
+        return
+
+    _render_fanout(label, results, machine_json=False)
+    if synth is not None:
+        print(format_synthesis(synth, machine_json=False))
+
+
 def _cmd_ask(args):
     """Fan out one question to every validator, print N answers."""
     cfg, pool = _ensure_config(args)
@@ -986,7 +1058,8 @@ def _cmd_ask(args):
     if not results:
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
-    _render_fanout("answer", results, machine_json=args.json)
+    synth = _maybe_synthesize(args, pool, results, task=prompt, timeout=cfg.timeout)
+    _render_fanout_with_synth("answer", results, synth, machine_json=args.json)
 
 
 def _cmd_review(args):
@@ -1040,7 +1113,9 @@ def _cmd_review(args):
     if not results:
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
-    _render_fanout("review", results, machine_json=args.json)
+    synth_task = f"Review of {file_path} — focus: {focus}"
+    synth = _maybe_synthesize(args, pool, results, task=synth_task, timeout=cfg.timeout)
+    _render_fanout_with_synth("review", results, synth, machine_json=args.json)
 
 
 def _cmd_review_consensus(args, file_path, content, output_format):
@@ -1090,12 +1165,78 @@ def _cmd_review_consensus(args, file_path, content, output_format):
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
 
+    # Synthesis on the consensus path: feed merged findings (not raw spam)
+    # to the primary, then either append the synthesis block in human modes
+    # or attach it under ``synthesis`` in JSON / SARIF properties.
+    synth = None
+    if getattr(args, "synth", False):
+        from .synthesis import build_synthesis_prompt, run_synthesis
+
+        # In structured mode the synthesizer should see merged findings
+        # rather than the full transcripts, unless the caller explicitly
+        # asks for raw inclusion.
+        include_raw = getattr(args, "include_raw", False)
+        responses_for_synth = [
+            (r["validator"], r.get("answer") or "", r.get("error"))
+            for r in report.raw_results
+        ] if include_raw else [
+            (r["validator"], "", r.get("error"))
+            for r in report.raw_results
+        ]
+        primary = None
+        try:
+            primary = pool.primary_validator()
+        except Exception:
+            primary = None
+        synth_task = (
+            f"Consensus review of {file_path} — "
+            f"{report.merged_count} merged findings from "
+            f"{len(report.validators)} validators."
+        )
+        synth_prompt = build_synthesis_prompt(
+            task=synth_task,
+            responses=responses_for_synth,
+            structured_findings=report.scored,
+            anonymous=getattr(args, "anonymous", False),
+        )
+        synth = run_synthesis(primary, synth_prompt, cfg.timeout)
+
     rendered = render_report(
         report,
         output_format=fmt,
         include_raw=getattr(args, "include_raw", False),
     )
+
+    if synth is None or fmt == "sarif":
+        # SARIF has no place for free-form synthesis prose; we keep the
+        # synth block out of the document so consumers receive a clean,
+        # spec-compliant SARIF run. Surface it on stderr instead.
+        print(rendered, end="" if rendered.endswith("\n") else "\n")
+        if synth is not None:
+            from .synthesis import format_synthesis as _fmt_synth
+            print(_fmt_synth(synth, machine_json=False), file=sys.stderr)
+        return
+
+    from .synthesis import format_synthesis as _fmt_synth
+
+    if fmt == "json":
+        import json as _j
+        try:
+            payload = _j.loads(rendered)
+        except _j.JSONDecodeError:
+            payload = {"raw": rendered}
+        payload["synthesis"] = {
+            "ok": synth.ok,
+            "primary": synth.primary,
+            "text": _fmt_synth(synth, machine_json=True) if synth.ok else "",
+            "error": synth.error if not synth.ok else "",
+        }
+        print(_j.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    # Human / markdown / markdown-pr — append the synthesis block.
     print(rendered, end="" if rendered.endswith("\n") else "\n")
+    print(_fmt_synth(synth, machine_json=False))
 
 
 # ─── vote ─────────────────────────────────────────────────────────────
@@ -1175,9 +1316,21 @@ def _cmd_vote(args):
             tally[chosen] += 1
         picks.append((name, chosen, answer, None))
 
+    synth = _maybe_synthesize(
+        args,
+        pool,
+        results,
+        task=(
+            f"Vote on: {args.prompt}\n"
+            f"Options: {', '.join(options)}\n"
+            f"Tally: " + ", ".join(f"{o}={tally[o]}" for o in options)
+        ),
+        timeout=cfg.timeout,
+    )
+
     if args.json:
         import json as _j
-        print(_j.dumps({
+        payload = {
             "prompt": args.prompt,
             "options": options,
             "tally": tally,
@@ -1188,7 +1341,16 @@ def _cmd_vote(args):
             ],
             "unparseable": unparseable,
             "errored": errored,
-        }, indent=2))
+        }
+        if synth is not None:
+            from .synthesis import format_synthesis as _fmt_synth
+            payload["synthesis"] = {
+                "ok": synth.ok,
+                "primary": synth.primary,
+                "text": _fmt_synth(synth, machine_json=True) if synth.ok else "",
+                "error": synth.error if not synth.ok else "",
+            }
+        print(_j.dumps(payload, indent=2))
         return
 
     # Human: per-voter first, then tally summary, then winner.
@@ -1214,6 +1376,11 @@ def _cmd_vote(args):
         print(f"Winner: {winner}")
     else:
         print("No winner — tie or no votes. See tally above.")
+
+    if synth is not None:
+        from .synthesis import format_synthesis as _fmt_synth
+        print()
+        print(_fmt_synth(synth, machine_json=False))
 
 
 def _vote_winner(tally):
@@ -1289,9 +1456,20 @@ def _cmd_compare(args):
             tally[chosen] += 1
         picks.append((name, chosen, answer, None))
 
+    synth = _maybe_synthesize(
+        args,
+        pool,
+        results,
+        task=(
+            f"Compare {file_a} (A) vs {file_b} (B) against criteria: {criteria}\n"
+            f"Tally: A={tally['A']}  B={tally['B']}"
+        ),
+        timeout=cfg.timeout,
+    )
+
     if args.json:
         import json as _j
-        print(_j.dumps({
+        payload = {
             "file_a": str(file_a),
             "file_b": str(file_b),
             "criteria": criteria,
@@ -1301,7 +1479,16 @@ def _cmd_compare(args):
                 {"validator": n, "chose": c, "raw": r, "error": e}
                 for n, c, r, e in picks
             ],
-        }, indent=2))
+        }
+        if synth is not None:
+            from .synthesis import format_synthesis as _fmt_synth
+            payload["synthesis"] = {
+                "ok": synth.ok,
+                "primary": synth.primary,
+                "text": _fmt_synth(synth, machine_json=True) if synth.ok else "",
+                "error": synth.error if not synth.ok else "",
+            }
+        print(_j.dumps(payload, indent=2))
         return
 
     for name, chosen, raw, error in picks:
@@ -1325,6 +1512,11 @@ def _cmd_compare(args):
         print(f"Winner: B  ({file_b})")
     else:
         print("No winner — tie.")
+
+    if synth is not None:
+        from .synthesis import format_synthesis as _fmt_synth
+        print()
+        print(_fmt_synth(synth, machine_json=False))
 
 
 # ─── pipe ─────────────────────────────────────────────────────────────
@@ -1359,7 +1551,8 @@ def _cmd_pipe(args):
     if not results:
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
-    _render_fanout("answer", results, machine_json=args.json)
+    synth = _maybe_synthesize(args, pool, results, task=prompt, timeout=cfg.timeout)
+    _render_fanout_with_synth("answer", results, synth, machine_json=args.json)
 
     # Partial-failure semantics
     any_error = any(e for _, _, e in results)
