@@ -108,12 +108,26 @@ class ReviewReport:
 # ---------------------------------------------------------------------------
 
 
-def build_review_prompt(review: ReviewInput) -> str:
-    """Build the validator prompt used by structured review."""
+def build_review_prompt(
+    review: ReviewInput,
+    *,
+    brain_context_block: Optional[str] = None,
+) -> str:
+    """Build the validator prompt used by structured review.
+
+    ``brain_context_block`` is the redacted, marker-wrapped context
+    string from :func:`lope.makakoo_bridge.build_context_block`. When
+    present it is prepended verbatim, so callers can trust there's
+    only one set of context markers in the final prompt.
+    """
 
     focus = (review.focus or "").strip() or DEFAULT_FOCUS
     label = review.source_label or review.target
+    prefix = ""
+    if brain_context_block:
+        prefix = brain_context_block.rstrip() + "\n\n"
     return (
+        f"{prefix}"
         f"{focus}\n\n"
         f"File: {label}\n"
         f"```\n{review.content}\n```\n\n"
@@ -184,6 +198,7 @@ def run_consensus_review(
     min_consensus: float = 0.0,
     fanout: Optional[FanoutFn] = None,
     source_label: Optional[str] = None,
+    brain_context_block: Optional[str] = None,
 ) -> ReviewReport:
     """Run the consensus pipeline end-to-end and return a :class:`ReviewReport`.
 
@@ -201,7 +216,10 @@ def run_consensus_review(
         focus=focus,
         source_label=source_label or target,
     )
-    prompt = build_review_prompt(review_input)
+    prompt = build_review_prompt(
+        review_input,
+        brain_context_block=brain_context_block,
+    )
 
     raw = list(fanout_fn(pool, prompt, timeout))
 

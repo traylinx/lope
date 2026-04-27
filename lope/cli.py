@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from . import (
     Auditor,
@@ -73,6 +73,18 @@ def main():
         p.add_argument("--anonymous", dest="anonymous", action="store_true",
                        help="Strip validator names from synthesis input (Response A/B/C labels)")
 
+    def _add_brain_flags(p):
+        # v0.7 Makakoo bridge: optional Brain context-in / log-out. Public
+        # Lope must work outside Makakoo, so these flags only activate the
+        # bridge — they never silently auto-detect or auto-log.
+        p.add_argument("--brain-context", dest="brain_context", default=None,
+                       metavar="QUERY",
+                       help="Pull Makakoo Brain context for QUERY and prepend to validator prompts")
+        p.add_argument("--brain-budget", dest="brain_budget", type=int, default=1200,
+                       help="Approximate token budget for brain context (default: 1200)")
+        p.add_argument("--brain-log", dest="brain_log", action="store_true",
+                       help="Append a bullet to today's Makakoo Brain journal after the run")
+
     # negotiate
     neg = sub.add_parser("negotiate", help="Draft a sprint doc via multi-round validation")
     neg.add_argument("goal", help="Sprint goal description")
@@ -83,6 +95,7 @@ def main():
                      choices=["engineering", "business", "research"],
                      help="Domain: engineering (default), business, or research")
     _add_pool_flags(neg)
+    _add_brain_flags(neg)
 
     # execute
     exe = sub.add_parser("execute", help="Run sprint phases with validator-in-the-loop")
@@ -113,6 +126,7 @@ def main():
                      help="Optional context prepended to every validator's prompt")
     _add_pool_flags(ask)
     _add_synth_flags(ask)
+    _add_brain_flags(ask)
 
     # review — read a file, fan out a review prompt, collect N per-model critiques.
     rev = sub.add_parser(
@@ -144,6 +158,7 @@ def main():
                      help="Store consensus findings in the persistent Lope memory (v0.7)")
     _add_pool_flags(rev)
     _add_synth_flags(rev)
+    _add_brain_flags(rev)
 
     # vote — each validator picks one of the provided options; tally + print winner.
     # Addresses "option drift" (pi design review 2026-04-22): every validator
@@ -192,6 +207,7 @@ def main():
                     help="Emit JSON instead of human sections")
     _add_pool_flags(pp)
     _add_synth_flags(pp)
+    _add_brain_flags(pp)
 
     # team — grandma-friendly validator management via CLI flags so any LLM
     # running in a chat window can translate natural language ("add openclaw
@@ -817,6 +833,17 @@ def _cmd_negotiate(args):
             f"  Or: set LOPE_LLM_URL + LOPE_LLM_API_KEY to a hosted endpoint"
         ) from None
 
+    # Brain context: prepend to the goal context so every drafter +
+    # reviewer round sees the same advisory background. We feed it via
+    # ``context`` rather than ``goal`` so the sprint doc title stays clean.
+    augmented_context = args.context or ""
+    brain_block = _maybe_brain_context_block(args)
+    if brain_block:
+        if augmented_context.strip():
+            augmented_context = f"{brain_block}\n{augmented_context}"
+        else:
+            augmented_context = brain_block
+
     negotiator = Negotiator(
         llm_call=llm_call,
         validator_pool=pool,
@@ -824,7 +851,7 @@ def _cmd_negotiate(args):
         domain=args.domain,
     )
     try:
-        result = negotiator.converge(args.goal, args.context)
+        result = negotiator.converge(args.goal, augmented_context)
     except RuntimeError as e:
         print()
         print("lope negotiate failed:")
@@ -847,6 +874,19 @@ def _cmd_negotiate(args):
     else:
         print(f"Negotiation escalated: {result}")
         sys.exit(1)
+
+    # Brain log: drop a one-liner about the negotiated sprint into the
+    # journal so the team has a paper trail of what Lope produced.
+    if isinstance(result, SprintDoc):
+        _print_brain_log_ack(
+            args,
+            machine_json=False,
+            journal_text=(
+                f"[[Lope]] negotiated sprint `{out_path}` for goal: "
+                f"{args.goal[:120]}. Rounds: {len(negotiator.rounds)}. "
+                "[[Makakoo OS]]"
+            ),
+        )
 
 
 def _cmd_execute(args):
@@ -1153,6 +1193,145 @@ def _render_fanout(label, results, machine_json=False):
     print()
 
 
+def _build_review_brain_journal_text(*, file_path, report, memory_summary) -> str:
+    """Compose the canonical journal bullet for `lope review --brain-log`.
+
+    Picks the highest-severity / highest-consensus finding as ``Top``,
+    falls back gracefully when nothing parsed, and quotes the Lope
+    memory hash when ``--remember`` was paired with ``--brain-log``.
+    """
+    from .makakoo_bridge import format_review_journal_line
+
+    confirmed_count = sum(
+        1 for f in report.scored if f.consensus_level.value == "confirmed"
+    )
+    top_finding = None
+    if report.scored:
+        head = report.scored[0]
+        agreement = f"{head.agreement_count}/{head.total_validators} validators"
+        top_finding = {
+            "file": head.file,
+            "line": head.line,
+            "agreement": agreement,
+            "score": head.consensus_score,
+            "message": head.message,
+        }
+    memory_hash = None
+    if memory_summary and memory_summary.get("recurring_hashes"):
+        memory_hash = memory_summary["recurring_hashes"][0]
+    elif memory_summary and report.scored:
+        memory_hash = report.scored[0].hash if report.scored else None
+
+    return format_review_journal_line(
+        target_path=str(file_path),
+        merged_count=report.merged_count,
+        confirmed_count=confirmed_count,
+        top_finding=top_finding,
+        memory_hash=memory_hash,
+    )
+
+
+def _maybe_brain_context_block(args) -> Optional[str]:
+    """Return a Makakoo Brain context block (already redacted + marker-wrapped).
+
+    Used by structured commands (``review --consensus``) that build
+    their prompts internally and need to pass the block in rather than
+    receive a pre-built string. Outside Makakoo this exits 2 just like
+    :func:`_maybe_apply_brain_context`.
+    """
+
+    query = getattr(args, "brain_context", None)
+    if not query:
+        return None
+
+    from .makakoo_bridge import (
+        BrainQueryError,
+        MakakooNotDetected,
+        build_context_block,
+        query_brain,
+    )
+
+    budget = int(getattr(args, "brain_budget", 1200) or 1200)
+    try:
+        body = query_brain(query, budget_tokens=budget)
+    except (MakakooNotDetected, BrainQueryError) as exc:
+        print(f"--brain-context: {exc}", file=sys.stderr)
+        sys.exit(2)
+    return build_context_block(query, body)
+
+
+def _maybe_apply_brain_context(args, prompt: str) -> str:
+    """If ``--brain-context`` is set, prepend a Makakoo Brain block to ``prompt``.
+
+    Outside Makakoo, this prints a clear error to stderr and exits 2 so
+    the user knows their request was honored but the bridge isn't
+    available. Inside Makakoo, the context is fetched once and rendered
+    by :func:`build_context_block` so the markers can't be doubled.
+    """
+
+    query = getattr(args, "brain_context", None)
+    if not query:
+        return prompt
+
+    from .makakoo_bridge import (
+        BrainQueryError,
+        MakakooNotDetected,
+        build_context_block,
+        query_brain,
+    )
+
+    budget = int(getattr(args, "brain_budget", 1200) or 1200)
+    try:
+        body = query_brain(query, budget_tokens=budget)
+    except MakakooNotDetected as exc:
+        print(f"--brain-context: {exc}", file=sys.stderr)
+        sys.exit(2)
+    except BrainQueryError as exc:
+        print(f"--brain-context: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    block = build_context_block(query, body)
+    return f"{block}\n{prompt}"
+
+
+def _print_brain_log_ack(args, *, journal_text: str, machine_json: bool = False) -> None:
+    """Single helper for raw-mode commands: emit + ack the brain log line.
+
+    For machine-readable output, the ack is suppressed (the JSON
+    consumer can parse no extra noise). Human modes get a one-line
+    footer either confirming the path or surfacing the bridge error.
+    """
+    ack = _maybe_emit_brain_log(args, journal_text=journal_text)
+    if ack and not machine_json:
+        print(ack)
+
+
+def _maybe_emit_brain_log(args, *, journal_text: str) -> Optional[str]:
+    """If ``--brain-log`` is set, append ``journal_text`` to today's journal.
+
+    Returns a one-line ack ("Brain journal: <path>") on success, the
+    error message on failure, or ``None`` when the flag wasn't passed.
+    Failures never exit the process — Brain logging is post-hoc and
+    must not undo the work the user already paid for.
+    """
+
+    if not getattr(args, "brain_log", False):
+        return None
+
+    from .makakoo_bridge import (
+        MakakooBridgeError,
+        write_brain_journal,
+    )
+
+    try:
+        path = write_brain_journal(journal_text)
+    except MakakooBridgeError as exc:
+        return f"--brain-log: {exc}"
+    except Exception as exc:  # pragma: no cover — defensive
+        return f"--brain-log: unexpected error: {type(exc).__name__}"
+    return f"Brain journal: {path}"
+
+
 def _maybe_synthesize(args, pool, results, *, task, structured_findings=None, timeout=None):
     """Run a synthesis pass when ``--synth`` is set; otherwise return None.
 
@@ -1219,6 +1398,7 @@ def _cmd_ask(args):
     prompt = args.question
     if args.context:
         prompt = f"{args.context}\n\n{prompt}"
+    prompt = _maybe_apply_brain_context(args, prompt)
 
     preview = prompt[:100].replace("\n", " ")
     if not args.json:
@@ -1232,6 +1412,8 @@ def _cmd_ask(args):
         sys.exit(1)
     synth = _maybe_synthesize(args, pool, results, task=prompt, timeout=cfg.timeout)
     _render_fanout_with_synth("answer", results, synth, machine_json=args.json)
+    _print_brain_log_ack(args, machine_json=args.json,
+                         journal_text=f"[[Lope]] ask: {args.question[:120]} [[Makakoo OS]]")
 
 
 def _cmd_review(args):
@@ -1271,6 +1453,7 @@ def _cmd_review(args):
         f"```\n{content}\n```\n\n"
         "Return your review as plain prose. No VERDICT block needed."
     )
+    prompt = _maybe_apply_brain_context(args, prompt)
 
     cfg, pool = _ensure_config(args)
     validator_names = [v.name for v in getattr(pool, "_validators", [])] or pool.names()
@@ -1288,6 +1471,14 @@ def _cmd_review(args):
     synth_task = f"Review of {file_path} — focus: {focus}"
     synth = _maybe_synthesize(args, pool, results, task=synth_task, timeout=cfg.timeout)
     _render_fanout_with_synth("review", results, synth, machine_json=args.json)
+    _print_brain_log_ack(
+        args,
+        machine_json=args.json,
+        journal_text=(
+            f"[[Lope]] review of `{file_path}` — focus: {focus[:80]}. "
+            "[[Makakoo OS]]"
+        ),
+    )
 
 
 def _cmd_review_consensus(args, file_path, content, output_format):
@@ -1322,6 +1513,8 @@ def _cmd_review_consensus(args, file_path, content, output_format):
         print(f"Format: {fmt}")
         print(f"Timeout: {cfg.timeout}s per validator\n")
 
+    brain_context_block = _maybe_brain_context_block(args)
+
     report = run_consensus_review(
         target=str(file_path),
         content=content,
@@ -1331,6 +1524,7 @@ def _cmd_review_consensus(args, file_path, content, output_format):
         timeout=cfg.timeout,
         similarity=getattr(args, "similarity", 0.85),
         min_consensus=getattr(args, "min_consensus", 0.0),
+        brain_context_block=brain_context_block,
     )
 
     if not report.raw_results and not report.errors:
@@ -1413,6 +1607,13 @@ def _cmd_review_consensus(args, file_path, content, output_format):
         include_raw=getattr(args, "include_raw", False),
     )
 
+    brain_log_text = _build_review_brain_journal_text(
+        file_path=file_path,
+        report=report,
+        memory_summary=memory_summary,
+    )
+    brain_ack = _maybe_emit_brain_log(args, journal_text=brain_log_text)
+
     # SARIF stays spec-compliant: synthesis goes to stderr and so does the
     # ``--remember`` ack so the JSON payload stays a clean SARIF run.
     if fmt == "sarif":
@@ -1422,6 +1623,8 @@ def _cmd_review_consensus(args, file_path, content, output_format):
             print(_fmt_synth(synth, machine_json=False), file=sys.stderr)
         if memory_message:
             print(memory_message, file=sys.stderr)
+        if brain_ack:
+            print(brain_ack, file=sys.stderr)
         return
 
     if fmt == "json":
@@ -1442,6 +1645,8 @@ def _cmd_review_consensus(args, file_path, content, output_format):
             payload["memory"] = memory_summary
         elif memory_message:
             payload["memory"] = {"disabled": True, "note": memory_message}
+        if brain_ack:
+            payload["brain"] = {"note": brain_ack}
         print(_j.dumps(payload, indent=2, sort_keys=True))
         return
 
@@ -1452,6 +1657,8 @@ def _cmd_review_consensus(args, file_path, content, output_format):
         print(_fmt_synth(synth, machine_json=False))
     if memory_message:
         print(memory_message)
+    if brain_ack:
+        print(brain_ack)
 
 
 # ─── vote ─────────────────────────────────────────────────────────────
@@ -1752,6 +1959,7 @@ def _cmd_pipe(args):
     if not prompt.strip():
         print("lope pipe: stdin was empty", file=sys.stderr)
         sys.exit(2)
+    prompt = _maybe_apply_brain_context(args, prompt)
 
     cfg, pool = _ensure_config(args)
     validator_names = [v.name for v in getattr(pool, "_validators", [])] or pool.names()
@@ -1768,6 +1976,14 @@ def _cmd_pipe(args):
         sys.exit(1)
     synth = _maybe_synthesize(args, pool, results, task=prompt, timeout=cfg.timeout)
     _render_fanout_with_synth("answer", results, synth, machine_json=args.json)
+    _print_brain_log_ack(
+        args,
+        machine_json=args.json,
+        journal_text=(
+            "[[Lope]] pipe answer (stdin → fan-out): "
+            f"{prompt.strip().splitlines()[0][:120]}. [[Makakoo OS]]"
+        ),
+    )
 
     # Partial-failure semantics
     any_error = any(e for _, _, e in results)

@@ -126,6 +126,34 @@ class MakakooAdapterValidator(Validator):
 
         return _hydrate_result(proc.stdout, self._adapter_name, duration)
 
+    def generate(self, prompt: str, timeout: int = 480) -> str:
+        """Plain-text generation for v0.7 single-shot fan-out.
+
+        Reuses the same ``makakoo adapter call`` infrastructure as
+        :meth:`validate`, then unpacks the ``raw_response`` field. This
+        lets ``lope ask --validators <adapter>`` and friends work with
+        any registered Makakoo adapter that emits text.
+
+        Adapters that only return verdict-shaped JSON (no ``raw_response``)
+        will produce an empty string here. Callers (the fan-out loop)
+        already treat empty responses as "no answer", so a clean
+        ``NotImplementedError`` is reserved for the case where the
+        Makakoo binary itself is unreachable.
+        """
+
+        if not self._bin:
+            raise NotImplementedError(
+                "MakakooAdapterValidator.generate requires the makakoo "
+                "binary on PATH; install Makakoo OS or set MAKAKOO_BIN"
+            )
+        result = self.validate(prompt, timeout=timeout)
+        if result.error and not result.raw_response:
+            raise NotImplementedError(
+                f"MakakooAdapter '{self._adapter_name}' did not return "
+                f"plain-text generation output: {result.error[:200]}"
+            )
+        return result.raw_response or ""
+
     def _infra_error(self, msg: str, duration: float) -> ValidatorResult:
         return ValidatorResult(
             validator_name=self._adapter_name,
