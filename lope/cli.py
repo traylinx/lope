@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import (
     Auditor,
@@ -94,6 +94,9 @@ def main():
     neg.add_argument("--domain", default="engineering",
                      choices=["engineering", "business", "research"],
                      help="Domain: engineering (default), business, or research")
+    neg.add_argument("--export", default=None, choices=["agtx"],
+                     help="Additional export shape (default: none). 'agtx' writes "
+                          "an AGTX task spec alongside the sprint doc.")
     _add_pool_flags(neg)
     _add_brain_flags(neg)
 
@@ -156,6 +159,11 @@ def main():
                      help="Append raw per-validator responses to consensus output")
     rev.add_argument("--remember", action="store_true",
                      help="Store consensus findings in the persistent Lope memory (v0.7)")
+    rev.add_argument("--divide", choices=["files", "hunks"], default=None,
+                     help="Divide the target before review: walk a directory of files or split a unified-diff into hunks")
+    rev.add_argument("--roles", default=None,
+                     help="Comma-separated role lenses (e.g. 'security,performance,tests'); "
+                          "round-robin-assigned to validators")
     _add_pool_flags(rev)
     _add_synth_flags(rev)
     _add_brain_flags(rev)
@@ -307,6 +315,9 @@ def main():
                        help="When to surface clarifying questions to the human (default: never)")
     delib.add_argument("--json", action="store_true",
                        help="Emit a JSON summary instead of human-readable text")
+    delib.add_argument("--export", default=None, choices=["agtx"],
+                       help="Additional export shape (default: none). 'agtx' writes "
+                            "<run-dir>/final/agtx-task.md alongside the council outputs.")
     _add_pool_flags(delib)
     _add_brain_flags(delib)
 
@@ -575,6 +586,24 @@ def _cmd_deliberate(args):
     print(f"Decision log: {out_dir / 'final' / 'decision-log.md'}")
     print(f"Trace: {out_dir / 'trace.jsonl'}")
     print(f"Rubric: {rubric_pass} PASS · {rubric_fix} NEEDS_FIX")
+
+    # ``--export agtx`` writes the AGTX-shaped task spec into the run dir
+    # alongside the council outputs.
+    if getattr(args, "export", None) == "agtx":
+        from .exporters import export_agtx_task, write_agtx_task
+
+        agtx_target = out_dir / "final" / "agtx-task.md"
+        task = export_agtx_task(
+            run.synthesis,
+            title=f"{spec.title} from {args.scenario}",
+            source_label=str(out_dir / "final" / "report.md"),
+            validation_command=(
+                f"lope review {agtx_target} --consensus --focus 'agtx-task fitness'"
+            ),
+        )
+        write_agtx_task(task, agtx_target)
+        print(f"AGTX task: {agtx_target}")
+
     if brain_ack:
         print(brain_ack)
 
@@ -1031,6 +1060,23 @@ def _cmd_negotiate(args):
         print(f"Negotiation escalated: {result}")
         sys.exit(1)
 
+    # ``--export agtx`` writes a deterministic AGTX task spec next to the
+    # sprint doc so a downstream AGTX runner can ingest the work without
+    # parsing the sprint markdown itself.
+    if isinstance(result, SprintDoc) and getattr(args, "export", None) == "agtx":
+        from .exporters import export_agtx_task, write_agtx_task
+
+        sprint_text = Path(out_path).read_text(encoding="utf-8")
+        agtx_target = Path(out_path).with_suffix(".agtx.md")
+        task = export_agtx_task(
+            sprint_text,
+            title=args.goal,
+            source_label=out_path,
+            validation_command=f"lope audit {out_path}",
+        )
+        write_agtx_task(task, agtx_target)
+        print(f"AGTX task written to: {agtx_target}")
+
     # Brain log: drop a one-liner about the negotiated sprint into the
     # journal so the team has a paper trail of what Lope produced.
     if isinstance(result, SprintDoc):
@@ -1349,6 +1395,253 @@ def _render_fanout(label, results, machine_json=False):
     print()
 
 
+def _build_report_via_divided_files(
+    args, target_path, validator_names, pool, cfg, brain_context_block
+):
+    """Walk a file tree (or single file) and produce one merged consensus report.
+
+    Each chunk goes through :func:`run_consensus_review` independently;
+    the chunk-level reports are then collapsed into a single report by
+    concatenating raw findings, dedup-merging globally, and rescoring
+    against the same validator roster.
+    """
+    from .divide import split_files
+    from .review import ReviewReport, run_consensus_review
+    from .findings import merge_findings, score_consensus
+
+    similarity = getattr(args, "similarity", 0.85)
+    min_consensus = getattr(args, "min_consensus", 0.0)
+
+    chunks, skipped = split_files(target_path)
+    if skipped and not args.json:
+        print(f"Skipped {len(skipped)} non-reviewable file(s):")
+        for entry in skipped[:10]:
+            print(f"  - {entry.path}: {entry.reason}")
+        if len(skipped) > 10:
+            print(f"  ... and {len(skipped) - 10} more")
+        print()
+
+    if not chunks:
+        print("No reviewable files found.", file=sys.stderr)
+        sys.exit(1)
+
+    chunk_reports = []
+    aggregated_findings = []
+    aggregated_errors = []
+    raw_results_combined = []
+    parse_methods_combined: Dict[str, str] = {}
+
+    for chunk in chunks:
+        if not args.json:
+            print(f"  → reviewing {chunk.label}")
+        chunk_report = run_consensus_review(
+            target=chunk.label,
+            content=chunk.content,
+            focus=args.focus,
+            validators=validator_names,
+            pool=pool,
+            timeout=cfg.timeout,
+            similarity=similarity,
+            min_consensus=0.0,  # filter at the global level once we merge
+            brain_context_block=brain_context_block,
+            source_label=chunk.path,
+        )
+        chunk_reports.append(chunk_report)
+        aggregated_findings.extend(chunk_report.findings)
+        aggregated_errors.extend(chunk_report.errors)
+        raw_results_combined.extend(chunk_report.raw_results)
+        for name, method in chunk_report.parse_methods.items():
+            parse_methods_combined.setdefault(name, method)
+
+    merged = merge_findings(aggregated_findings, similarity_threshold=similarity)
+    scored = score_consensus(merged, validator_names)
+    if min_consensus > 0:
+        scored = [s for s in scored if s.consensus_score >= min_consensus]
+
+    return ReviewReport(
+        target=f"{target_path} ({len(chunks)} chunk(s))",
+        focus=args.focus or "(default)",
+        validators=list(validator_names),
+        raw_results=raw_results_combined,
+        parse_methods=parse_methods_combined,
+        findings=aggregated_findings,
+        merged=merged,
+        scored=scored,
+        errors=aggregated_errors,
+        raw_count=len(aggregated_findings),
+        merged_count=len(merged),
+        fallback=len(aggregated_findings) == 0,
+    )
+
+
+def _build_report_via_divided_hunks(
+    args, target_path, content, validator_names, pool, cfg, brain_context_block
+):
+    """Parse a unified diff into hunks and review each one independently."""
+    from .divide import split_diff_hunks
+    from .review import ReviewReport, run_consensus_review
+    from .findings import merge_findings, score_consensus
+
+    similarity = getattr(args, "similarity", 0.85)
+    min_consensus = getattr(args, "min_consensus", 0.0)
+
+    hunks = split_diff_hunks(content)
+    if not hunks:
+        print(
+            f"--divide hunks: no diff hunks parsed from {target_path}.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    aggregated_findings = []
+    aggregated_errors = []
+    raw_results_combined = []
+    parse_methods_combined: Dict[str, str] = {}
+
+    for hunk in hunks:
+        if not args.json:
+            print(f"  → reviewing {hunk.label}")
+        chunk_report = run_consensus_review(
+            target=hunk.label,
+            content=hunk.content,
+            focus=args.focus,
+            validators=validator_names,
+            pool=pool,
+            timeout=cfg.timeout,
+            similarity=similarity,
+            min_consensus=0.0,
+            brain_context_block=brain_context_block,
+            source_label=hunk.path,
+        )
+        # Re-anchor any findings without explicit line numbers to the
+        # hunk's new-line range so SARIF / merge views point at the
+        # new file rather than the in-hunk offset.
+        for finding in chunk_report.findings:
+            if finding.line is None:
+                finding.line = hunk.new_start
+        aggregated_findings.extend(chunk_report.findings)
+        aggregated_errors.extend(chunk_report.errors)
+        raw_results_combined.extend(chunk_report.raw_results)
+        for name, method in chunk_report.parse_methods.items():
+            parse_methods_combined.setdefault(name, method)
+
+    merged = merge_findings(aggregated_findings, similarity_threshold=similarity)
+    scored = score_consensus(merged, validator_names)
+    if min_consensus > 0:
+        scored = [s for s in scored if s.consensus_score >= min_consensus]
+
+    return ReviewReport(
+        target=f"{target_path} ({len(hunks)} hunk(s))",
+        focus=args.focus or "(default)",
+        validators=list(validator_names),
+        raw_results=raw_results_combined,
+        parse_methods=parse_methods_combined,
+        findings=aggregated_findings,
+        merged=merged,
+        scored=scored,
+        errors=aggregated_errors,
+        raw_count=len(aggregated_findings),
+        merged_count=len(merged),
+        fallback=len(aggregated_findings) == 0,
+    )
+
+
+def _build_report_via_roles(
+    args, target_path, content, validator_names, pool, cfg,
+    brain_context_block, roles_spec,
+):
+    """Single target, per-validator role-tinted prompts, one merged report."""
+    from .divide import assign_roles, build_role_prompt, parse_roles
+    from .findings import merge_findings, score_consensus
+    from .review import (
+        ReviewInput,
+        ReviewReport,
+        build_review_prompt,
+        parse_responses,
+    )
+    from .redaction import redact_text
+
+    roles = parse_roles(roles_spec)
+    if not roles:
+        print(
+            f"lope review --roles: no usable role names in {roles_spec!r}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    role_assignments = assign_roles(validator_names, roles)
+
+    base_prompt = build_review_prompt(
+        ReviewInput(
+            target=str(target_path),
+            content=content,
+            focus=args.focus,
+            source_label=str(target_path),
+        ),
+        brain_context_block=brain_context_block,
+    )
+
+    similarity = getattr(args, "similarity", 0.85)
+    min_consensus = getattr(args, "min_consensus", 0.0)
+
+    name_to_validator = {v.name: v for v in getattr(pool, "_validators", [])}
+    raw: List[Tuple[str, str, Optional[str]]] = []
+    for v_name in validator_names:
+        validator = name_to_validator.get(v_name)
+        role = role_assignments.get(v_name)
+        if validator is None or role is None:
+            raw.append((v_name, "", "validator unavailable"))
+            continue
+        prompt = build_role_prompt(role, base_prompt)
+        try:
+            text = validator.generate(prompt, timeout=cfg.timeout)
+            raw.append((v_name, text or "", None))
+        except Exception as exc:
+            raw.append((v_name, "", str(exc)))
+
+    raw_results = [
+        {
+            "validator": name,
+            "answer": redact_text(answer or "").rstrip(),
+            "error": redact_text(error).strip() if error else None,
+            "role": role_assignments[name].name if name in role_assignments else None,
+        }
+        for name, answer, error in raw
+    ]
+
+    findings, parse_results, errors = parse_responses(raw, source_file=str(target_path))
+    # Stamp the role onto each finding's category so consensus output
+    # surfaces the lens the validator was wearing when it produced the
+    # finding. We only set it when the validator did not already pick
+    # a category, to honor explicit signals.
+    for f in findings:
+        if not f.category:
+            role = role_assignments.get(f.validator)
+            if role is not None:
+                f.category = role.name
+
+    merged = merge_findings(findings, similarity_threshold=similarity)
+    scored = score_consensus(merged, validator_names)
+    if min_consensus > 0:
+        scored = [s for s in scored if s.consensus_score >= min_consensus]
+
+    parse_methods = {n: r.method for n, r in parse_results.items()}
+
+    return ReviewReport(
+        target=f"{target_path} (roles: {', '.join(r.name for r in roles)})",
+        focus=args.focus or "(default)",
+        validators=list(validator_names),
+        raw_results=raw_results,
+        parse_methods=parse_methods,
+        findings=findings,
+        merged=merged,
+        scored=scored,
+        errors=errors,
+        raw_count=len(findings),
+        merged_count=len(merged),
+        fallback=len(findings) == 0,
+    )
+
+
 def _build_review_brain_journal_text(*, file_path, report, memory_summary) -> str:
     """Compose the canonical journal bullet for `lope review --brain-log`.
 
@@ -1580,20 +1873,35 @@ def _cmd_review(args):
     :mod:`lope.review` instead, which dedupes and consensus-ranks findings.
     """
     file_path = Path(args.file)
-    if not file_path.is_file():
-        print(f"File not found: {file_path}", file=sys.stderr)
-        sys.exit(1)
-    try:
-        content = file_path.read_text(encoding="utf-8", errors="replace")
-    except Exception as e:
-        print(f"Cannot read {file_path}: {e}", file=sys.stderr)
-        sys.exit(1)
+    divide_mode = getattr(args, "divide", None)
+
+    # ``--divide files`` lets the target be a directory; everything else
+    # still requires a regular file.
+    if divide_mode == "files":
+        if not file_path.exists():
+            print(f"Path not found: {file_path}", file=sys.stderr)
+            sys.exit(1)
+        content = ""  # divided path reads each chunk on its own
+    else:
+        if not file_path.is_file():
+            print(f"File not found: {file_path}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            print(f"Cannot read {file_path}: {e}", file=sys.stderr)
+            sys.exit(1)
 
     # Resolve the structured-mode decision once, then route. Specifying
-    # any non-text ``--format`` implies structured because text is the
-    # only renderer that has a meaningful raw-mode equivalent.
+    # any non-text ``--format``, ``--divide``, or ``--roles`` implies
+    # structured because the raw renderer has no equivalent of those.
     output_format = getattr(args, "output_format", "text") or "text"
-    structured_mode = bool(getattr(args, "consensus", False)) or output_format != "text"
+    structured_mode = (
+        bool(getattr(args, "consensus", False))
+        or output_format != "text"
+        or bool(divide_mode)
+        or bool(getattr(args, "roles", None))
+    )
 
     if structured_mode:
         _cmd_review_consensus(args, file_path, content, output_format)
@@ -1657,31 +1965,60 @@ def _cmd_review_consensus(args, file_path, content, output_format):
 
     is_machine = fmt in {"json", "sarif"}
 
+    # Reject incompatible mode combinations before printing any header so
+    # the user sees the error first, not after a misleading announcement.
+    divide_mode = getattr(args, "divide", None)
+    roles_spec = getattr(args, "roles", None)
+    if divide_mode and roles_spec:
+        print(
+            "lope review: --divide and --roles cannot be combined; "
+            "pick one (combination behavior is reserved for a future phase).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     if not is_machine:
         focus_preview = (args.focus or "").strip()
         if focus_preview:
             focus_label = focus_preview[:80] + ("..." if len(focus_preview) > 80 else "")
         else:
             focus_label = "(default)"
+        mode_label = (
+            f"divide={divide_mode}" if divide_mode
+            else (f"roles={roles_spec}" if roles_spec else "single")
+        )
         print(f"\nLope consensus review: {file_path}  ({len(content)} chars)")
         print(f"Validators: {', '.join(validator_names) or '—'}")
         print(f"Focus: {focus_label}")
-        print(f"Format: {fmt}")
+        print(f"Format: {fmt}  ·  Mode: {mode_label}")
         print(f"Timeout: {cfg.timeout}s per validator\n")
 
     brain_context_block = _maybe_brain_context_block(args)
 
-    report = run_consensus_review(
-        target=str(file_path),
-        content=content,
-        focus=args.focus,
-        validators=validator_names,
-        pool=pool,
-        timeout=cfg.timeout,
-        similarity=getattr(args, "similarity", 0.85),
-        min_consensus=getattr(args, "min_consensus", 0.0),
-        brain_context_block=brain_context_block,
-    )
+    if divide_mode == "files":
+        report = _build_report_via_divided_files(
+            args, file_path, validator_names, pool, cfg, brain_context_block
+        )
+    elif divide_mode == "hunks":
+        report = _build_report_via_divided_hunks(
+            args, file_path, content, validator_names, pool, cfg, brain_context_block
+        )
+    elif roles_spec:
+        report = _build_report_via_roles(
+            args, file_path, content, validator_names, pool, cfg, brain_context_block, roles_spec
+        )
+    else:
+        report = run_consensus_review(
+            target=str(file_path),
+            content=content,
+            focus=args.focus,
+            validators=validator_names,
+            pool=pool,
+            timeout=cfg.timeout,
+            similarity=getattr(args, "similarity", 0.85),
+            min_consensus=getattr(args, "min_consensus", 0.0),
+            brain_context_block=brain_context_block,
+        )
 
     if not report.raw_results and not report.errors:
         print("No validators available. Run: lope status", file=sys.stderr)
