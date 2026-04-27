@@ -19,6 +19,15 @@ Lope is a zero-dependency Python CLI that coordinates multiple AI CLIs as an ens
 - `lope/curl_parser.py` turns pasted curl examples into provider config.
 - `lope/output.py` is the v0.7 seam for rendering structured output.
 - `lope/redaction.py` is the v0.7 seam for secret scrubbing before memory, logs, and exports.
+- `lope/findings.py` is the v0.7 data spine: `Finding` / `MergedFinding` / `ConsensusFinding`, parser, three-rule deduper, consensus scorer, deterministic markdown formatter.
+- `lope/review.py` orchestrates `lope review --consensus`: prompt assembly, fan-out injection point, per-validator parser-exception isolation, multi-format renderer (text, json, markdown, markdown-pr, sarif).
+- `lope/sarif.py` emits SARIF v2.1.0 with `lope.<category>.<severity>` rule ids, conservative severity → SARIF level mapping, and rich per-result properties.
+- `lope/synthesis.py` runs the `--synth` executive summary against the primary with fail-soft semantics; anonymous mode rewrites validator names to `Response A/B/C` consistently across every prompt surface.
+- `lope/memory.py` provides the SQLite-backed `LopeMemory` store + `FindingRecord` / `ReviewSessionRecord` + `LOPE_MEMORY=off` / `LOPE_MEMORY_DB` env switches; full redaction before any column is bound.
+- `lope/makakoo_bridge.py` is the optional Makakoo OS bridge: `detect_makakoo`, `query_brain`, `write_brain_journal`, `write_auto_memory`, `build_context_block`. Pure detection, no import-time side effects.
+- `lope/deliberation.py` owns the `lope deliberate` 7-stage council with 6 built-in templates (adr, prd, rfc, build-vs-buy, migration-plan, incident-review). Single label map at session start drives anonymization across every stage.
+- `lope/divide.py` is the v0.7 chunker: directory walk + binary skip + line-anchored chunks + symlink containment vs. the original tree, unified-diff hunk parser, role lens catalog with aliases.
+- `lope/exporters.py` ships the AGTX task-spec writer plus markdown-pr / SARIF passthroughs to `lope/review.py`.
 
 ## Data paths
 

@@ -192,7 +192,7 @@ install_host() {
 }
 
 echo ""
-echo "Lope v0.6.1 — Installing skills and commands"
+echo "Lope v0.7.0 — Installing skills and commands"
 echo "─────────────────────────────────────────────"
 echo ""
 
@@ -214,11 +214,11 @@ else
 fi
 echo ""
 echo "Slash commands by host (honest state — not every host supports user slash commands):"
-echo "  Claude Code  /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team"
-echo "  Gemini CLI   /lope:negotiate  /lope:execute  /lope:audit  /lope:help  /lope:ask  /lope:review  /lope:vote  /lope:compare  /lope:pipe  /lope:team"
-echo "  OpenCode     /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team"
-echo "  pi           /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team"
-echo "  Qwen Code    /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team"
+echo "  Claude Code  /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate"
+echo "  Gemini CLI   /lope:negotiate  /lope:execute  /lope:audit  /lope:help  /lope:ask  /lope:review  /lope:vote  /lope:compare  /lope:pipe  /lope:team  /lope:memory  /lope:deliberate"
+echo "  OpenCode     /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate"
+echo "  pi           /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate"
+echo "  Qwen Code    /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate"
 echo "  Cursor       (unverified — skills written to ~/.cursor/agents/)"
 echo ""
 echo "Content-only hosts (skills loaded as context, invoke lope via natural language):"

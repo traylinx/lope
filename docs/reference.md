@@ -22,9 +22,9 @@ Repo: https://github.com/traylinx/lope · MIT · Zero Python dependencies (pure 
 
 ---
 
-## The nine modes
+## The modes
 
-Three structured sprint modes + five single-shot verbs + one roster management verb. Pick the mode that fits the shape of the work — don't force everything through `negotiate`.
+Three structured sprint modes + five single-shot verbs + one roster verb + two v0.7 verbs (`memory`, `deliberate`). Pick the mode that fits the shape of the work — don't force everything through `negotiate`.
 
 | Mode | CLI | Slash command (where supported) | What it does |
 |---|---|---|---|
@@ -32,13 +32,35 @@ Three structured sprint modes + five single-shot verbs + one roster management v
 | **Execute** | `lope execute <sprint_doc>` | `/lope-execute` | Runs the sprint phase by phase. Each phase: primary implements, then two-stage validator review (spec compliance, then code quality). NEEDS_FIX retries with fix instructions (3 attempts). PASS advances. FAIL escalates. |
 | **Audit** | `lope audit <sprint_doc>` | `/lope-audit` | Generates a scorecard from executed sprint results — per-phase verdicts, confidence scores, duration, overall status. Appends to lope's journal. |
 | **Ask** | `lope ask "<question>"` | `/lope-ask` | Fan out one question to every validator; collect N raw answers (one per model). No VERDICT parsing, no phase retry. |
-| **Review** | `lope review <file>` | `/lope-review` | Send a file + optional `--focus` to every validator; collect N critiques. |
+| **Review** | `lope review <file>` | `/lope-review` | Send a file + optional `--focus` to every validator; collect N critiques. With `--consensus` (v0.7) merges, dedupes, and ranks findings; supports `--format text\|json\|markdown\|markdown-pr\|sarif`. |
 | **Vote** | `lope vote "<q>" --options A,B,C` | `/lope-vote` | Each validator picks exactly one option label. Tally + winner. Whole-token strict parsing. |
 | **Compare** | `lope compare <a> <b>` | `/lope-compare` | Each validator picks between two files against explicit `--criteria`. Tally + winner. |
 | **Pipe** | `<cmd> \| lope pipe` | `/lope-pipe` | Read stdin as the prompt; fan out; per-validator sections. Default per-validator isolation; `--require-all` for strict. |
 | **Team** | `lope team {list,add,remove,test}` | `/lope-team` | Manage the validator roster — add local CLI binaries or OpenAI-compatible HTTP endpoints, drop teammates, smoke-test keys/URLs/binaries. No JSON editing. |
+| **Memory** *(v0.7)* | `lope memory {stats,search,file,hotspots,forget}` | — | Query the persistent finding store written by `lope review --remember`. See [docs/memory.md](memory.md). |
+| **Deliberate** *(v0.7)* | `lope deliberate <template> <scenario>` | — | Run a 7-stage Agent-Order-style council on an ADR / PRD / RFC / build-vs-buy / migration-plan / incident-review. See [docs/deliberation.md](deliberation.md). |
 
 Default flow for multi-phase work: **negotiate → execute → audit**. For single-prompt / single-file / piped work, the single-shot verbs run in one pass without a sprint doc. `team` is runtime-independent — it only edits `~/.lope/config.json` and runs 0 validators (except on `test`).
+
+### v0.7 cross-cutting flags
+
+These flags layer on top of the existing modes. They are **opt-in** — every command behaves exactly as v0.6 unless one is passed.
+
+| Flag | Available on | Effect |
+|---|---|---|
+| `--consensus` / `--structured` | `review` | Merge, dedupe, and consensus-rank findings across validators. Drives the structured renderer. |
+| `--format text\|json\|markdown\|markdown-pr\|sarif` | `review` | Pick the consensus output shape. SARIF is v2.1.0 and uploads cleanly to GitHub code-scanning. |
+| `--include-raw` | `review` | Append per-validator raw responses under the consensus block (collapsible `<details>` in PR mode). |
+| `--similarity FLOAT` / `--min-consensus FLOAT` | `review` | Tune dedup threshold and minimum consensus_score filter. |
+| `--remember` | `review` | Persist consensus findings to the local SQLite memory. |
+| `--divide files\|hunks` | `review` | Walk a directory or split a unified diff before review. Mutually exclusive with `--roles`. |
+| `--roles security,performance,tests,...` | `review` | Round-robin role lenses across validators (8 built-in lenses + 13 aliases). |
+| `--synth` | `ask`, `review`, `pipe`, `vote`, `compare` | Roll N answers (or merged findings) into one executive-summary synthesis. |
+| `--anonymous` | `ask`, `review`, `pipe`, `vote`, `compare` | Strip validator names from the synthesis prompt (`Response A/B/C` labels). |
+| `--brain-context QUERY` | `ask`, `review`, `pipe`, `negotiate`, `deliberate` | Pull `makakoo search QUERY` and prepend to the validator prompts. |
+| `--brain-budget N` | same as above | Approximate token budget for brain context (default 1200). |
+| `--brain-log` | same as above | Append a `[[Lope]]` / `[[Makakoo OS]]` bullet to today's Brain journal. |
+| `--export agtx` | `negotiate`, `deliberate` | Write a deterministic AGTX task spec alongside normal output. |
 
 ---
 

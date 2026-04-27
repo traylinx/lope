@@ -31,6 +31,17 @@ echo "review this" | lope pipe --json                    # structured output for
 cat file.txt | lope pipe --require-all                   # strict: exit 1 if any validator errors
 ```
 
+## v0.7 superpowers (opt-in)
+
+```bash
+# Synthesis — roll N answers into one executive summary
+gh pr diff | lope pipe --synth
+gh pr diff | lope pipe --synth --anonymous
+
+# Brain-aware pipe (Makakoo OS only)
+cat plan.md | lope pipe --brain-context "prior plans" --brain-log
+```
+
 ## Output shape
 
 Same as `/lope-ask` — one `━━━ <name> ━━━` section per validator. In `--json` mode, you get `[{"validator": ..., "answer": ..., "error": ...}]`.

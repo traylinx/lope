@@ -33,6 +33,55 @@ lope review <file> --validators claude,opencode  # restrict the pool
 lope review <file> --timeout 120          # per-validator timeout
 ```
 
+## v0.7 superpowers (opt-in)
+
+The default invocation above is the v0.6 raw fan-out. v0.7 layers a structured-mode
+pipeline on top. None of these flags change behavior unless explicitly passed.
+
+```bash
+# Consensus review — merge, dedupe, and rank findings across N validators
+lope review auth.py --consensus
+lope review auth.py --consensus --format markdown-pr   # PR-comment-shaped output
+lope review auth.py --consensus --format sarif > review.sarif   # CI upload
+lope review auth.py --consensus --json
+lope review auth.py --consensus --include-raw          # also dump raw answers
+
+# Tune the merger
+lope review auth.py --consensus --similarity 0.9 --min-consensus 0.5
+
+# Synthesis — primary rolls N answers into one executive summary
+lope review auth.py --consensus --synth
+lope review auth.py --consensus --synth --anonymous    # strip validator names
+
+# Persistent memory — stores findings for cross-session recall
+lope review auth.py --consensus --remember
+# Then: lope memory hotspots / lope memory file auth.py / lope memory search "..."
+
+# Divide a directory into per-file reviews, merge findings globally
+lope review src/ --divide files --consensus
+
+# Diff hunks — review each hunk and re-anchor findings onto post-change lines
+lope review pr.diff --divide hunks --consensus --format sarif
+
+# Role lenses — round-robin security/performance/tests/etc. across validators
+lope review auth.py --roles security,performance,tests --consensus
+
+# Brain-aware review (Makakoo OS only)
+lope review auth.py --consensus --brain-context "auth decisions" --brain-log
+```
+
+`--divide` and `--roles` are mutually exclusive. Pass one or the other; the
+combination is reserved for a future phase and the CLI rejects it.
+
+When the user says "give me the consensus view", "rank findings across the
+council", "post this as a PR comment", "upload to GitHub code-scanning",
+"which file keeps getting flagged?", "executive summary across models",
+"strip the model names" — recognize and invoke the relevant flags above.
+
+For the formats, see [docs/ci.md](../../docs/ci.md) (SARIF + PR comment).
+For memory, see [skill: lope-memory](../lope-memory/SKILL.md).
+For Brain integration, see [docs/makakoo.md](../../docs/makakoo.md).
+
 ## When to use `review` vs `execute` vs `ask`
 
 - **`review`**: the user has an artifact (file) they want critiqued. Output = N critiques, not a code diff.

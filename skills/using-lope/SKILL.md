@@ -1,11 +1,11 @@
 ---
 name: using-lope
-description: "You MUST consider using lope whenever cross-model perspective would help — multi-phase sprints (negotiate/execute/audit), one-off cross-model questions (ask), cross-model file review (review), structured votes (vote), A/B file comparison (compare), stdin-fed fan-out (pipe), or team management (team: add/list/remove/test validators via chat without editing JSON). Trigger on any of: 3+ phases, consequential multi-file work, 'what do the other models think', review/critique of an artifact, 'A or B?', 'yes/no from all the CLIs', piping output to multiple models, 'add X to lope', 'remove X from the team', 'test if my new validator works'. Skip for trivial single edits, pure conversation, urgent fire-fighting."
+description: "You MUST consider using lope whenever cross-model perspective would help — multi-phase sprints (negotiate/execute/audit), one-off cross-model questions (ask), cross-model file review (review), consensus-ranked review with SARIF/PR-comment export (review --consensus, v0.7), executive synthesis (--synth), persistent finding memory (lope memory), council deliberation (lope deliberate), Brain-aware integration (--brain-context / --brain-log), directory + diff review (--divide files / hunks), role lenses (--roles), AGTX task export (--export agtx), structured votes (vote), A/B file comparison (compare), stdin-fed fan-out (pipe), or team management (team). Trigger on any of: 3+ phases, consequential multi-file work, 'what do the other models think', review/critique of an artifact, 'rank the findings', 'consensus across the council', 'PR comment shape', 'SARIF for CI', 'is this a recurring issue', 'memory hotspots', 'should we adopt X' / 'review this ADR/PRD/RFC', 'build vs buy', 'plan the migration', 'incident review', 'A or B?', 'yes/no from all the CLIs', piping output to multiple models, 'add X to lope', 'remove X from the team'. Skip for trivial single edits, pure conversation, urgent fire-fighting."
 ---
 
 # Using Lope
 
-Lope is a multi-CLI ensemble for AI work. Any AI CLI drafts, any AI CLI validates, multiple perspectives cover each other's blind spots. Core philosophy: **no single-model blindspot**. Nine modes — three for structured sprint work, five for single-shot multi-model tasks, one for roster management:
+Lope is a multi-CLI ensemble for AI work. Any AI CLI drafts, any AI CLI validates, multiple perspectives cover each other's blind spots. Core philosophy: **no single-model blindspot**. Eleven modes — three for structured sprint work, five single-shot verbs, one roster verb, two v0.7 verbs:
 
 | Mode | Skill | Shape of input/output |
 |---|---|---|
@@ -13,15 +13,17 @@ Lope is a multi-CLI ensemble for AI work. Any AI CLI drafts, any AI CLI validate
 | `execute`   | [lope-execute]   | Sprint doc → implemented deliverables with per-phase review |
 | `audit`     | [lope-audit]     | Sprint doc → scorecard |
 | `ask`       | [lope-ask]       | One question → N raw answers (one per model) |
-| `review`    | [lope-review]    | One file + focus → N raw critiques |
+| `review`    | [lope-review]    | One file + focus → N raw critiques **or** consensus-ranked findings (`--consensus`, v0.7) |
 | `vote`      | [lope-vote]      | Question + options → tally + winner |
 | `compare`   | [lope-compare]   | Two files + criteria → tally + winner |
 | `pipe`      | [lope-pipe]      | stdin → N raw answers (composable shell verb) |
 | `team`      | [lope-team]      | Natural-language roster management (add/list/remove/test) |
+| `memory` *(v0.7)* | [lope-memory] | Persistent finding store: stats / search / file / hotspots / forget |
+| `deliberate` *(v0.7)* | [lope-deliberate] | Scenario file + template (ADR/PRD/RFC/build-vs-buy/migration/incident) → 7-stage council artifact |
 
-`ask`, `review`, `vote`, `compare`, and `pipe` are the lightweight verbs — no sprint, no phases, no validator retry loop. Use them whenever the user wants multi-model output on a single prompt or artifact. `team` is the management verb — use it whenever the user wants to add, remove, or test a validator without editing JSON.
+`ask`, `review`, `vote`, `compare`, and `pipe` are the lightweight verbs — no sprint, no phases, no validator retry loop. `team` manages the roster. `memory` and `deliberate` are the v0.7 verbs that turn raw fan-out into durable judgment. The cross-cutting flags `--consensus`, `--synth`, `--remember`, `--brain-context`, `--brain-log`, `--divide`, `--roles`, `--export agtx` layer on top of the existing modes — every one is opt-in.
 
-When this skill triggers, consider which of the nine modes fits — don't force every request into `negotiate`.
+When this skill triggers, consider which of the eleven modes fits — don't force every request into `negotiate`.
 
 ## How the user will invoke lope
 

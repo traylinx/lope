@@ -32,6 +32,23 @@ lope ask "<question>" --validators claude,gemini  # override the pool
 lope ask "<question>" --timeout 60      # per-validator timeout
 ```
 
+## v0.7 superpowers (opt-in)
+
+```bash
+# Synthesis — primary rolls N answers into one executive summary
+lope ask "Should we adopt X?" --synth
+lope ask "Should we adopt X?" --synth --anonymous   # strip validator names
+
+# Brain-aware ask (Makakoo OS only)
+lope ask "What should we do next?" --brain-context "lope roadmap" --synth
+lope ask "Is this still the plan?" --brain-context "auth decisions" --brain-log
+```
+
+`--synth` produces a 4-section executive summary (Consensus, Disagreements,
+Highest-risk item, Recommended action) plus optional Follow-up questions.
+`--anonymous` rewrites validator names to `Response A/B/C` so the synthesizer
+cannot bias on identity.
+
 ## When to use `ask` vs `negotiate`
 
 - **`ask`**: user has a single question or wants multi-model perspectives. Short-to-medium prompts. No structured deliverable expected.

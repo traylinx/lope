@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.7.0 — Superpowers (consensus intelligence + Makakoo bridge)
+
+> **Lope v0.7 turns N raw model opinions into one durable, consensus-ranked, Brain-aware action report — still zero dependencies, still inside every CLI you already use.**
+
+v0.7 is the biggest release since the original sprint runner. Eight phases shipped surgically over a single session, each gated by `lope review --validators pi,kimi`. The result is a multi-agent **judgment engine**, not just a multi-CLI fan-out.
+
+Where v0.6 said *"Claude says X, Gemini says Y, Codex says Z,"* v0.7 says *"Three validators independently found the same security bug at `auth.py:42`; confidence 0.86; this file has been flagged twice before; recommended fix is rate limiting + regression test; here is SARIF for CI; logged to Makakoo Brain."*
+
+### Headline additions
+
+- **Structured findings core** (`lope/findings.py`) — first-class `Finding` / `MergedFinding` / `ConsensusFinding` model with parser (bracket-bullet, severity-prefix, category-prefix, JSON-array, fallback bullet), three-rule deduplicator, and consensus-level scoring. Stdlib only.
+- **`lope review --consensus`** — turns N raw critiques into one merged, deduped, ranked review. `--format text|json|markdown|markdown-pr|sarif`, `--min-consensus`, `--similarity`, `--include-raw`. SARIF v2.1.0 emitter (`lope/sarif.py`) with `lope.<category>.<severity>` rule ids.
+- **`--synth`** — agreement / disagreements / highest-risk / recommended action synthesis on `ask`, `review`, `pipe`, `vote`, `compare`. `--anonymous` strips validator identity from the prompt. Fail-soft when the primary errors.
+- **Persistent memory** (`lope/memory.py` + `lope memory {stats|search|file|hotspots|forget}`) — local SQLite store, `--remember` writes consensus findings, `LOPE_MEMORY=off` kill switch, `LOPE_MEMORY_DB` path override, full redaction before storage.
+- **Makakoo bridge** (`lope/makakoo_bridge.py`) — `--brain-context QUERY` pulls `makakoo search` output into the validator prompts, `--brain-log` writes a `[[Lope]]` / `[[Makakoo OS]]` bullet to today's journal, `LOPE_BRAIN_AUTOMEMORY=1` opt-in for curated lesson files. Optional adapter; public Lope still works without Makakoo.
+- **Council deliberation** (`lope/deliberation.py` + `lope deliberate <template> <scenario>`) — 7-stage protocol (positions → anonymized critique → revision → synthesis → rubric → minority report → decision log) with 6 built-in templates: `adr`, `prd`, `rfc`, `build-vs-buy`, `migration-plan`, `incident-review`.
+- **Divide & roles** (`lope/divide.py`) — `--divide files` walks a tree (binary skip, oversized skip, sorted, line-anchored chunking, symlink containment vs. the original tree root); `--divide hunks` parses unified diffs and re-anchors findings onto post-change lines; `--roles security,performance,tests` round-robins eight built-in lenses across validators. Combination of `--divide` + `--roles` is rejected with a usage error.
+- **Ecosystem exports** (`lope/exporters.py`) — deterministic AGTX task spec via `lope negotiate ... --export agtx` and `lope deliberate ... --export agtx`. Markdown-PR + SARIF passthroughs to the Phase 3 renderer.
+- **Adapter generate** — `MakakooAdapterValidator.generate()` now plumbs through `makakoo adapter call` so any registered adapter participates in single-shot fan-out, not just sprint validation. Missing binary raises `NotImplementedError` with actionable text instead of returning silent empty output.
+
+### Defaults preserved
+
+Every existing command behaves exactly as v0.6 unless an opt-in flag is passed. `lope review file.py`, `lope ask "..."`, `lope vote`, `lope compare`, `lope pipe`, `lope negotiate`, `lope execute`, `lope audit` — same shape, same output, same exit codes. The new behaviours are additive.
+
+### Configuration surface
+
+| Env var | Effect |
+|---|---|
+| `LOPE_MEMORY=off` | Disables `--remember`; `lope memory <verb>` exits 2 with a visible note. |
+| `LOPE_MEMORY_DB=/path/to/memory.db` | Relocate the SQLite store. Default `~/.lope/memory.db`. |
+| `MAKAKOO_BIN=/path/to/makakoo` | Force a specific Makakoo binary; otherwise resolved via `PATH`. |
+| `MAKAKOO_HOME=/path/to/Makakoo` | Required for `--brain-log` and Brain auto-memory writes. |
+| `LOPE_BRAIN_AUTOMEMORY=1` | Opt-in for `data/auto-memory/lope-*.md` writes. Off by default. |
+
+### Tests
+
+The suite went from 196 (pre-sprint) to **441 passing**, all stdlib-hermetic. Eight new test modules: `test_findings.py`, `test_review_consensus.py`, `test_sarif.py`, `test_synthesis.py`, `test_memory.py`, `test_makakoo_bridge.py`, `test_deliberation.py`, `test_divide.py`, `test_exporters.py`. Plus the original `test_redaction.py` from Phase 1.
+
+### Validation log
+
+Every phase ran `lope review <module> --validators pi,kimi --timeout 540 --json` before commit. Real blockers caught and fixed:
+
+- Phase 2: greedy `_JSON_ARRAY_RE` mishandled prose preludes containing `[HIGH]`-style bracket tags. Fixed with `JSONDecoder.raw_decode`.
+- Phase 3: parser exceptions could kill the whole review; `--include-raw` was a no-op for `markdown-pr`. Both wired correctly.
+- Phase 4: anonymous label inconsistency (positional vs. encounter-order) leaked validator names into the synthesis prompt; `REQUIRED_SECTIONS` constants were dead. Both fixed.
+- Phase 5: `forget(file=...)` ordering bug orphaned junction rows; `disputed=2` contradicted the docstring; `target_path`/`file`/`category` columns bypassed redaction. All three fixed.
+- Phase 8: symlink containment used the recursive subdir as root instead of the original tree root; `build_role_prompt` redacted base only, not prefix. Both fixed.
+
+### Backwards compatibility
+
+No breaking changes. No new Python dependencies. Skill installer still writes the existing nine skills plus the two new v0.7 ones (`lope-memory`, `lope-deliberate`).
+
+### Anti-goals
+
+Lope still does not own:
+
+- a TUI / kanban / persistent worktree (AGTX owns that — Lope exports task specs to it).
+- a daemon (memory is SQLite, not a background service).
+- a hosted vector DB (Makakoo Brain handles retrieval when present; public Lope memory stays SQLite/LIKE).
+- automatic Makakoo writes (every Brain write is opt-in via flag or env).
+
+---
+
 ## 0.4.7 — Run lock (concurrent-run bottleneck fix)
 
 **Bug: two parallel `lope negotiate` or `lope execute` invocations trample each other.**

@@ -19,9 +19,41 @@
 
 One AI CLI drafts. Others validate. No single-model blindspot. Works for multi-phase sprints (negotiate → execute → audit) **and** for single-shot multi-model tasks: ask a question to N CLIs, review a file across models, vote on options, A/B-compare two files, or pipe stdin to every validator. Add or remove teammates from any chat window — no JSON editing.
 
+> **v0.7 — Superpowers.** Lope is now a **multi-agent judgment engine**. `lope review --consensus` merges, deduplicates, and consensus-ranks findings across N validators with SARIF export for CI. `--synth` rolls those findings into one executive summary. `lope memory` remembers recurring issues across sessions. `lope deliberate` runs Agent-Order-style councils on ADR / PRD / RFC / build-vs-buy / migration / incident decisions. `--brain-context` and `--brain-log` plug into Makakoo OS Brain. `--divide files` walks directories; `--divide hunks` reviews diffs; `--roles` runs the same artifact through security / performance / tests lenses. See **[v0.7 superpowers](#v07-superpowers)** below.
+
 > **Not just for code.** Lope works for **engineering, business (marketing, finance, ops, consulting), and research (systematic reviews, protocols, academic work)**. The same validator loop that catches bugs in code also catches gaps in budgets, timeline assumptions, methodology rigor, and audience targeting. See [Use cases](#use-cases) for 9 worked examples across all three domains.
 
 > Zero external dependencies. Pure Python stdlib. MIT license.
+
+### v0.7 superpowers
+
+```bash
+# Consensus review — merge, dedupe, rank, export
+lope review auth.py --consensus --synth --remember
+lope review src/ --divide files --consensus --format sarif > review.sarif
+lope review patch.diff --divide hunks --consensus --format markdown-pr
+lope review auth.py --roles security,performance,tests --consensus
+
+# Cross-session memory
+lope memory stats
+lope memory hotspots --days 30
+lope memory search "rate limit"
+lope memory file auth.py
+
+# Makakoo Brain bridge (optional; activates only when MAKAKOO_BIN/MAKAKOO_HOME set)
+lope review auth.py --consensus --brain-context "auth decisions" --brain-log
+lope ask "What should we do next?" --brain-context "lope roadmap" --synth
+
+# Council deliberation
+lope deliberate adr scenario.md --depth quick
+lope deliberate prd scenario.md --depth standard
+lope deliberate build-vs-buy scenario.md --synth --export agtx
+
+# Ecosystem export
+lope negotiate "Add JWT auth" --export agtx
+```
+
+Every v0.7 feature is **opt-in**. Default `lope review file.py` and friends behave exactly as v0.6.
 
 ---
 
