@@ -1,0 +1,4 @@
+[
+  {"severity": "high", "file": "auth.py", "line": 42, "message": "No rate limiter guards the login endpoint", "confidence": 0.82},
+  {"severity": "nit", "file": "auth.py", "line": 12, "message": "Prefer named constant for retry count", "confidence": 0.40}
+]

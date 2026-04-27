@@ -30,9 +30,9 @@ def main():
         prog="lope",
         description=(
             "Autonomous sprint runner with multi-CLI validator ensemble. "
-            "Any AI CLI implements, any AI CLI validates. Supports 12 built-in CLIs "
+            "Any AI CLI implements, any AI CLI validates. Supports 14 built-in CLIs "
             "(claude, opencode, gemini, codex, vibe, aider, ollama, goose, interpreter, "
-            "llama-cpp, gh-copilot, amazon-q) plus infinite custom providers via JSON. "
+            "llama-cpp, gh-copilot, amazon-q, pi, qwen) plus infinite custom providers via JSON. "
             "Three domains: engineering, business, research. "
             "Caveman mode (LOPE_CAVEMAN env var) compresses validator prompts 50-65%."
         ),
@@ -934,19 +934,18 @@ def _fanout_generate(pool, prompt, timeout):
 
 def _render_fanout(label, results, machine_json=False):
     """Format fan-out results for stdout. Human-readable by default."""
+    from .output import fanout_payload, print_json
+    from .redaction import redact_text
+
     if machine_json:
-        import json as _j
-        payload = [
-            {"validator": n, label: a, "error": e} for n, a, e in results
-        ]
-        print(_j.dumps(payload, indent=2))
+        print_json(fanout_payload(label, results))
         return
     for name, answer, error in results:
         print(f"\n━━━ {name} ━━━")
         if error:
-            print(f"[ERROR] {error}")
+            print(f"[ERROR] {redact_text(error)}")
         elif answer.strip():
-            print(answer.rstrip())
+            print(redact_text(answer).rstrip())
         else:
             print("[empty response]")
     print()

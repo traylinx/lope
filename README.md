@@ -209,7 +209,7 @@ Lope has two shapes: **structured sprint mode** (negotiate → execute → audit
         └──────────────────────┘
 ```
 
-Each verb shares the same parallel fan-out primitive (`EnsemblePool.validate`). No sprint doc, no phase retries, no majority-vote on verdicts. You get each model's actual response; synthesis is your call (or optional with `--json`).
+Each verb shares the same parallel fan-out primitive (`EnsemblePool.validate`). This fan-out already runs concurrently; v0.7 builds consensus and synthesis on top of it rather than adding parallelism from scratch. No sprint doc, no phase retries, no majority-vote on verdicts. You get each model's actual response; synthesis is your call (or optional with `--json`).
 
 **Nine modes in total:** `negotiate`, `execute`, `audit`, `ask`, `review`, `vote`, `compare`, `pipe`, `team`.
 
@@ -224,7 +224,7 @@ Each verb shares the same parallel fan-out primitive (`EnsemblePool.validate`). 
 | Claude Code | `claude` | `claude --print` |
 | OpenCode | `opencode` | `opencode run --format json` |
 | Gemini CLI | `gemini` | `gemini --prompt` |
-| Codex (OpenAI) | `codex` | `codex exec --quiet` |
+| Codex (OpenAI) | `codex` | `codex exec` |
 | Mistral Vibe | `vibe` | `vibe run "{prompt}"` |
 | Aider | `aider` | `aider --message --no-git --yes` |
 | Ollama | `ollama` | local, zero auth |

@@ -1,0 +1,3 @@
+- [HIGH] auth.py:42 — Missing rate limiting before password check (confidence: 0.86)
+- [MEDIUM] auth.py:88 — Token expiry edge case is not tested (confidence: 0.62)
+- [LOW] docs/auth.md — Document lockout behavior for operators (confidence: 0.50)

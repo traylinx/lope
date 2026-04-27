@@ -1,0 +1,3 @@
+CRITICAL: middleware/auth.go:142 — Token expiry check missing
+security auth.py:42: login route lacks throttle middleware
+warning auth.py:88: add test for expired token boundary
