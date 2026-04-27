@@ -278,6 +278,38 @@ def main():
     t_test.add_argument("--timeout", type=int, default=60,
                         help="Timeout in seconds (default: 60)")
 
+    # deliberate — Agent-Order-style council for ADR / PRD / RFC / build-vs-buy
+    # / migration-plan / incident-review. Structured adversarial reasoning,
+    # NOT code execution. Optional `--brain-context` pulls Makakoo Brain
+    # background; output dir layout matches `lope-runs/<timestamp>-<template>/`.
+    delib = sub.add_parser(
+        "deliberate",
+        help="Run a council deliberation (ADR/PRD/RFC/build-vs-buy/migration/incident)",
+    )
+    delib.add_argument(
+        "template",
+        choices=["adr", "prd", "rfc", "build-vs-buy", "migration-plan", "incident-review"],
+        help="Deliberation template",
+    )
+    delib.add_argument("scenario", help="Path to scenario file (or '-' for stdin)")
+    delib.add_argument("--depth", default="standard",
+                       choices=["quick", "standard", "deep"],
+                       help="Council depth (default: standard)")
+    delib.add_argument("--out", default=None,
+                       help="Output directory (default: lope-runs/<timestamp>-<template>/)")
+    delib.add_argument("--no-anonymize", dest="anonymize", action="store_false",
+                       help="Disable anonymized critique (validator names will leak)")
+    delib.set_defaults(anonymize=True)
+    delib.add_argument("--minority-report", dest="minority_report", action="store_true",
+                       help="Force minority report output even when council is unanimous (default: always emitted)")
+    delib.add_argument("--human-questions", default="never",
+                       choices=["never", "blocking", "always"],
+                       help="When to surface clarifying questions to the human (default: never)")
+    delib.add_argument("--json", action="store_true",
+                       help="Emit a JSON summary instead of human-readable text")
+    _add_pool_flags(delib)
+    _add_brain_flags(delib)
+
     # memory — persistent finding store. Subcommands: stats / search / file
     # / hotspots / forget. Default subcommand is `stats`.
     mem = sub.add_parser(
@@ -382,6 +414,10 @@ def main():
         _cmd_memory(args)
         return
 
+    if args.command == "deliberate":
+        _cmd_deliberate(args)
+        return
+
     if args.command == "negotiate":
         from .runlock import acquire as _runlock
         with _runlock("negotiate"):
@@ -421,6 +457,126 @@ def main():
     if args.command == "team":
         _cmd_team(args)
         return
+
+
+def _cmd_deliberate(args):
+    """Dispatch ``lope deliberate <template> <scenario>``."""
+
+    from .deliberation import (
+        DeliberationRun,
+        default_output_dir,
+        get_template,
+        run_deliberation,
+    )
+
+    spec = get_template(args.template)
+
+    # Scenario intake: path or '-' for stdin.
+    if args.scenario == "-":
+        if sys.stdin.isatty():
+            print("lope deliberate: '-' requires piped stdin", file=sys.stderr)
+            sys.exit(2)
+        scenario = sys.stdin.read()
+    else:
+        scenario_path = Path(args.scenario)
+        if not scenario_path.is_file():
+            print(f"Scenario file not found: {scenario_path}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            scenario = scenario_path.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            print(f"Cannot read {scenario_path}: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    if not scenario.strip():
+        print("lope deliberate: scenario is empty", file=sys.stderr)
+        sys.exit(2)
+
+    # Optional Brain context — fail-clear outside Makakoo, otherwise prepend.
+    brain_block = _maybe_brain_context_block(args)
+    if brain_block:
+        scenario = f"{brain_block}\n{scenario}"
+
+    cfg, pool = _ensure_config(args)
+    validator_names = [v.name for v in getattr(pool, "_validators", [])] or pool.names()
+    if not validator_names:
+        print("No validators available. Run: lope status", file=sys.stderr)
+        sys.exit(1)
+
+    primary = pool.primary_validator()
+    primary_name = primary.name
+
+    name_to_validator = {v.name: v for v in getattr(pool, "_validators", [])}
+    if primary_name not in name_to_validator:
+        name_to_validator[primary_name] = primary
+
+    # Build a single ``generate`` callable that dispatches to the right
+    # validator. Failures propagate as plain RuntimeErrors so the orchestrator
+    # records them in the trace; the council protocol does not treat one
+    # validator's flake as a fatal session error.
+    def _generate(name: str, prompt: str, timeout: int) -> str:
+        validator = name_to_validator.get(name)
+        if validator is None:
+            return f"[validator {name} unavailable]"
+        try:
+            return validator.generate(prompt, timeout=timeout)
+        except NotImplementedError as exc:
+            return f"[validator {name} cannot generate: {exc}]"
+        except Exception as exc:  # pragma: no cover — defensive
+            return f"[validator {name} errored: {type(exc).__name__}: {exc}]"
+
+    out_dir = Path(args.out) if args.out else default_output_dir(spec)
+
+    if not args.json:
+        print(f"\nLope deliberate: {spec.title}")
+        print(f"Council: {', '.join(validator_names)}")
+        print(f"Primary: {primary_name}")
+        print(f"Depth: {args.depth}  ·  Anonymous: {args.anonymize}")
+        print(f"Output: {out_dir}\n")
+
+    run = run_deliberation(
+        template=spec,
+        scenario=scenario,
+        validators=validator_names,
+        primary=primary_name,
+        generate=_generate,
+        depth=args.depth,
+        timeout=cfg.timeout,
+        anonymous=args.anonymize,
+        output_dir=out_dir,
+    )
+
+    # Optional brain log: drop a one-liner pointing at the run directory.
+    brain_ack = _maybe_emit_brain_log(
+        args,
+        journal_text=(
+            f"[[Lope]] deliberated {spec.name} from `{args.scenario}` → "
+            f"`{out_dir}`. Council: {len(run.validators)}. "
+            f"Rubric: "
+            f"{sum(1 for r in run.rubric if r.status == 'PASS')} PASS, "
+            f"{sum(1 for r in run.rubric if r.status == 'NEEDS_FIX')} NEEDS_FIX. "
+            "[[Makakoo OS]]"
+        ),
+    )
+
+    if args.json:
+        import json as _j
+        payload = run.to_dict()
+        if brain_ack:
+            payload["brain"] = {"note": brain_ack}
+        print(_j.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    rubric_pass = sum(1 for r in run.rubric if r.status == "PASS")
+    rubric_fix = sum(1 for r in run.rubric if r.status == "NEEDS_FIX")
+
+    print(f"Synthesis: {out_dir / 'final' / 'report.md'}")
+    print(f"Minority report: {out_dir / 'final' / 'minority-report.md'}")
+    print(f"Decision log: {out_dir / 'final' / 'decision-log.md'}")
+    print(f"Trace: {out_dir / 'trace.jsonl'}")
+    print(f"Rubric: {rubric_pass} PASS · {rubric_fix} NEEDS_FIX")
+    if brain_ack:
+        print(brain_ack)
 
 
 def _cmd_memory(args):
