@@ -236,6 +236,57 @@ def test_review_rejects_divide_plus_roles_combination(
     assert "cannot be combined" in captured.err
 
 
+def test_review_roles_works_with_single_validator_pool(monkeypatch, capsys):
+    """Regression: single-validator runs build a ValidatorPool (not
+    EnsemblePool), and the roles handler used to look up validators on
+    the EnsemblePool-only ``_validators`` attribute, mis-reporting every
+    validator as ``validator unavailable``. Lock the lookup.
+    """
+
+    sample_response = (
+        "- [HIGH] sample_auth.py:13 — Missing rate limiting on login "
+        "(confidence: 0.9)\n"
+    )
+
+    class _FakeValidator:
+        name = "claude"
+
+        def generate(self, prompt, timeout):
+            return sample_response
+
+    import lope.cli as cli_module
+
+    real_ensure = cli_module._ensure_config
+
+    def fake_ensure(args):
+        cfg, _ = real_ensure(args)
+        from lope.validators import ValidatorPool
+
+        return cfg, ValidatorPool([_FakeValidator()], primary="claude")
+
+    monkeypatch.setattr(cli_module, "_ensure_config", fake_ensure)
+
+    code = _run_main(
+        monkeypatch,
+        "review",
+        str(SAMPLE_AUTH),
+        "--consensus",
+        "--roles",
+        "security",
+        "--validators",
+        "claude",
+        "--format",
+        "json",
+    )
+    captured = capsys.readouterr()
+    assert code == 0
+    parsed = json.loads(captured.out)
+    # Regression check: at least one finding parsed; "validator
+    # unavailable" would zero this out.
+    assert parsed["raw_count"] >= 1
+    assert parsed["merged_count"] >= 1
+
+
 # ---------------------------------------------------------------------------
 # Deliberation
 # ---------------------------------------------------------------------------
@@ -287,7 +338,6 @@ def test_using_lope_skill_advertises_v07_modes():
         "--brain-context",
         "--divide",
         "--roles",
-        "--export agtx",
     ):
         assert needle in text, f"missing trigger in using-lope SKILL.md: {needle}"
 

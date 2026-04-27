@@ -60,7 +60,6 @@ These flags layer on top of the existing modes. They are **opt-in** — every co
 | `--brain-context QUERY` | `ask`, `review`, `pipe`, `negotiate`, `deliberate` | Pull `makakoo search QUERY` and prepend to the validator prompts. |
 | `--brain-budget N` | same as above | Approximate token budget for brain context (default 1200). |
 | `--brain-log` | same as above | Append a `[[Lope]]` / `[[Makakoo OS]]` bullet to today's Brain journal. |
-| `--export agtx` | `negotiate`, `deliberate` | Write a deterministic AGTX task spec alongside normal output. |
 
 ---
 

@@ -27,7 +27,7 @@ Lope is a zero-dependency Python CLI that coordinates multiple AI CLIs as an ens
 - `lope/makakoo_bridge.py` is the optional Makakoo OS bridge: `detect_makakoo`, `query_brain`, `write_brain_journal`, `write_auto_memory`, `build_context_block`. Pure detection, no import-time side effects.
 - `lope/deliberation.py` owns the `lope deliberate` 7-stage council with 6 built-in templates (adr, prd, rfc, build-vs-buy, migration-plan, incident-review). Single label map at session start drives anonymization across every stage.
 - `lope/divide.py` is the v0.7 chunker: directory walk + binary skip + line-anchored chunks + symlink containment vs. the original tree, unified-diff hunk parser, role lens catalog with aliases.
-- `lope/exporters.py` ships the AGTX task-spec writer plus markdown-pr / SARIF passthroughs to `lope/review.py`.
+- `lope/exporters.py` ships markdown-pr / SARIF passthroughs to `lope/review.py` so callers have one consistent module entry point for export shapes.
 
 ## Data paths
 

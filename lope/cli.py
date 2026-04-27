@@ -94,9 +94,6 @@ def main():
     neg.add_argument("--domain", default="engineering",
                      choices=["engineering", "business", "research"],
                      help="Domain: engineering (default), business, or research")
-    neg.add_argument("--export", default=None, choices=["agtx"],
-                     help="Additional export shape (default: none). 'agtx' writes "
-                          "an AGTX task spec alongside the sprint doc.")
     _add_pool_flags(neg)
     _add_brain_flags(neg)
 
@@ -315,9 +312,6 @@ def main():
                        help="When to surface clarifying questions to the human (default: never)")
     delib.add_argument("--json", action="store_true",
                        help="Emit a JSON summary instead of human-readable text")
-    delib.add_argument("--export", default=None, choices=["agtx"],
-                       help="Additional export shape (default: none). 'agtx' writes "
-                            "<run-dir>/final/agtx-task.md alongside the council outputs.")
     _add_pool_flags(delib)
     _add_brain_flags(delib)
 
@@ -517,7 +511,13 @@ def _cmd_deliberate(args):
     primary = pool.primary_validator()
     primary_name = primary.name
 
-    name_to_validator = {v.name: v for v in getattr(pool, "_validators", [])}
+    # EnsemblePool exposes `_validators`; ValidatorPool exposes `_ordered`.
+    pool_validators = (
+        getattr(pool, "_validators", None)
+        or getattr(pool, "_ordered", None)
+        or []
+    )
+    name_to_validator = {v.name: v for v in pool_validators}
     if primary_name not in name_to_validator:
         name_to_validator[primary_name] = primary
 
@@ -586,23 +586,6 @@ def _cmd_deliberate(args):
     print(f"Decision log: {out_dir / 'final' / 'decision-log.md'}")
     print(f"Trace: {out_dir / 'trace.jsonl'}")
     print(f"Rubric: {rubric_pass} PASS · {rubric_fix} NEEDS_FIX")
-
-    # ``--export agtx`` writes the AGTX-shaped task spec into the run dir
-    # alongside the council outputs.
-    if getattr(args, "export", None) == "agtx":
-        from .exporters import export_agtx_task, write_agtx_task
-
-        agtx_target = out_dir / "final" / "agtx-task.md"
-        task = export_agtx_task(
-            run.synthesis,
-            title=f"{spec.title} from {args.scenario}",
-            source_label=str(out_dir / "final" / "report.md"),
-            validation_command=(
-                f"lope review {agtx_target} --consensus --focus 'agtx-task fitness'"
-            ),
-        )
-        write_agtx_task(task, agtx_target)
-        print(f"AGTX task: {agtx_target}")
 
     if brain_ack:
         print(brain_ack)
@@ -1059,23 +1042,6 @@ def _cmd_negotiate(args):
     else:
         print(f"Negotiation escalated: {result}")
         sys.exit(1)
-
-    # ``--export agtx`` writes a deterministic AGTX task spec next to the
-    # sprint doc so a downstream AGTX runner can ingest the work without
-    # parsing the sprint markdown itself.
-    if isinstance(result, SprintDoc) and getattr(args, "export", None) == "agtx":
-        from .exporters import export_agtx_task, write_agtx_task
-
-        sprint_text = Path(out_path).read_text(encoding="utf-8")
-        agtx_target = Path(out_path).with_suffix(".agtx.md")
-        task = export_agtx_task(
-            sprint_text,
-            title=args.goal,
-            source_label=out_path,
-            validation_command=f"lope audit {out_path}",
-        )
-        write_agtx_task(task, agtx_target)
-        print(f"AGTX task written to: {agtx_target}")
 
     # Brain log: drop a one-liner about the negotiated sprint into the
     # journal so the team has a paper trail of what Lope produced.
@@ -1583,7 +1549,13 @@ def _build_report_via_roles(
     similarity = getattr(args, "similarity", 0.85)
     min_consensus = getattr(args, "min_consensus", 0.0)
 
-    name_to_validator = {v.name: v for v in getattr(pool, "_validators", [])}
+    # EnsemblePool exposes `_validators`; ValidatorPool exposes `_ordered`.
+    pool_validators = (
+        getattr(pool, "_validators", None)
+        or getattr(pool, "_ordered", None)
+        or []
+    )
+    name_to_validator = {v.name: v for v in pool_validators}
     raw: List[Tuple[str, str, Optional[str]]] = []
     for v_name in validator_names:
         validator = name_to_validator.get(v_name)

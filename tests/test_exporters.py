@@ -1,155 +1,17 @@
-"""Tests for ``lope.exporters`` — AGTX task spec + review-report passthroughs.
+"""Tests for ``lope.exporters`` — review-report passthroughs.
 
-The AGTX exporter is pure text — no LLM, no network. Tests pin
-deterministic output and section ordering, exhaustive redaction, and
-that the passthroughs match the Phase 3 renderer output byte-for-byte.
+These wrappers must match the Phase 3 renderer output byte-for-byte;
+the tests here pin that contract so a future refactor of the renderers
+cannot silently diverge from the export surface.
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
-import pytest
-
-from lope import __version__ as LOPE_VERSION
-from lope.exporters import (
-    AgtxTask,
-    export_agtx_task,
-    export_markdown_pr,
-    export_sarif,
-    write_agtx_task,
-)
+from lope.exporters import export_markdown_pr, export_sarif
 from lope.findings import ConsensusFinding, ConsensusLevel
 from lope.review import ReviewReport
-
-
-# ---------------------------------------------------------------------------
-# AGTX export
-# ---------------------------------------------------------------------------
-
-
-def test_export_agtx_task_uses_required_section_order():
-    task = export_agtx_task(
-        "source body",
-        title="Add JWT auth",
-        source_label="SPRINT-JWT-AUTH.md",
-    )
-    body = task.body
-    headers = [
-        "## Source",
-        "## Objective",
-        "## Phases",
-        "## Acceptance Criteria",
-        "## Suggested Plugin",
-        "## Lope Validation Requirements",
-    ]
-    last = -1
-    for h in headers:
-        idx = body.find(h)
-        assert idx != -1, f"Missing header: {h}"
-        assert idx > last, f"Section {h} out of order"
-        last = idx
-
-
-def test_export_agtx_task_is_deterministic():
-    a = export_agtx_task("body", title="x", source_label="src.md")
-    b = export_agtx_task("body", title="x", source_label="src.md")
-    assert a.body == b.body
-
-
-def test_export_agtx_task_includes_lope_version_provenance():
-    task = export_agtx_task("body", title="x", source_label="src.md")
-    assert f"Lope v{LOPE_VERSION}" in task.body
-
-
-def test_export_agtx_task_uses_provided_objective_and_phases():
-    task = export_agtx_task(
-        "raw",
-        title="Migration",
-        source_label="MIGRATION.md",
-        objective="Cut over from MySQL to Postgres without downtime.",
-        phases=["Stand up replica", "Dual-write", "Cut over reads", "Decommission MySQL"],
-        acceptance_criteria=["No P1 incidents", "Read latency stable", "Replica lag < 1s"],
-    )
-    assert "Cut over from MySQL" in task.body
-    assert "Stand up replica" in task.body
-    assert "Read latency stable" in task.body
-
-
-def test_export_agtx_task_falls_back_when_optional_sections_missing():
-    task = export_agtx_task(
-        "body",
-        title="x",
-        source_label="src.md",
-    )
-    assert "## Phases" in task.body
-    assert "Inherit phase ordering" in task.body
-    assert "## Acceptance Criteria" in task.body
-
-
-def test_export_agtx_task_redacts_every_text_input():
-    secret = "Bearer abcdefghijklmnopqrstuvwxyz123456"
-    task = export_agtx_task(
-        f"raw body with {secret}",
-        title=f"Add JWT {secret}",
-        source_label=f"SPRINT-{secret}.md",
-        objective=f"Roll out {secret}",
-        phases=[f"Use {secret}"],
-        acceptance_criteria=[f"Verify {secret} not logged"],
-        validation_command=f"lope review src/ --consensus  # {secret}",
-        suggested_plugin=f"agtx-{secret}",
-        extra_sections={"Notes": f"Watch for {secret} regressions."},
-    )
-    assert "abcdefghijklmnop" not in task.body
-    assert "Bearer <redacted>" in task.body or "<redacted>" in task.body
-
-
-def test_export_agtx_task_includes_extra_sections_after_required_ones():
-    task = export_agtx_task(
-        "body",
-        title="x",
-        source_label="src.md",
-        extra_sections={"Risk Notes": "- DB lock during migration"},
-    )
-    assert "## Risk Notes" in task.body
-    risk_idx = task.body.index("## Risk Notes")
-    val_idx = task.body.index("## Lope Validation Requirements")
-    assert risk_idx > val_idx
-
-
-def test_export_agtx_task_default_validation_command_is_lope_review():
-    task = export_agtx_task("body", title="x", source_label="src.md")
-    assert "lope review" in task.body
-    assert "--consensus" in task.body
-
-
-def test_export_agtx_task_returns_dataclass_with_metadata():
-    task = export_agtx_task(
-        "body",
-        title="JWT auth",
-        source_label="SPRINT-JWT-AUTH.md",
-    )
-    assert isinstance(task, AgtxTask)
-    assert task.title == "JWT auth"
-    assert task.source_label == "SPRINT-JWT-AUTH.md"
-    assert task.suggested_plugin == "agtx"
-    payload = task.to_dict()
-    assert payload["title"] == "JWT auth"
-    assert int(payload["body_chars"]) > 0
-
-
-def test_write_agtx_task_creates_parent_dirs(tmp_path):
-    task = export_agtx_task("body", title="x", source_label="src.md")
-    target = tmp_path / "deep" / "nested" / "out.md"
-    written = write_agtx_task(task, target)
-    assert written == target
-    assert target.read_text(encoding="utf-8") == task.body
-
-
-# ---------------------------------------------------------------------------
-# Review-report passthroughs
-# ---------------------------------------------------------------------------
 
 
 def _consensus_report():

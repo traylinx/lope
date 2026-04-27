@@ -55,9 +55,6 @@ cat scenario.md | lope deliberate adr -
 
 # Brain-aware deliberation (Makakoo OS only)
 lope deliberate adr scenario.md --brain-context "prior auth decisions" --brain-log
-
-# Export an AGTX task spec alongside the council output
-lope deliberate prd specs/agent-stream-v2.md --export agtx
 ```
 
 ## What gets written
@@ -74,7 +71,6 @@ lope-runs/<timestamp>-<template>/
     report.md           # synthesis with template sections
     minority-report.md  # preserved dissent (or "unanimous" note)
     decision-log.md     # template + council size + verdicts + timestamps
-    agtx-task.md        # only if --export agtx was passed
 ```
 
 ## Hard rules
@@ -94,6 +90,5 @@ lope-runs/<timestamp>-<template>/
 ## Pairing with other v0.7 verbs
 
 - `--brain-context "..."` and `--brain-log` plug into Makakoo OS Brain.
-- `--export agtx` writes a deterministic AGTX task spec to `<run-dir>/final/agtx-task.md`.
 
 For full details: `lope docs` ([docs/deliberation.md](../../docs/deliberation.md)).

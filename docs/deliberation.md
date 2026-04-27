@@ -79,9 +79,8 @@ lope deliberate adr docs/samples/jwt-rotation.md --depth quick
 # Standard PRD with the default council
 lope deliberate prd specs/agent-stream-v2.md
 
-# Build-vs-buy with a synthesis pass and AGTX export
-lope deliberate build-vs-buy decisions/secrets-vault.md \
-  --synth --export agtx
+# Build-vs-buy with a synthesis pass on top of the council outputs
+lope deliberate build-vs-buy decisions/secrets-vault.md --synth
 
 # Incident review pulling Brain context for prior incidents
 lope deliberate incident incidents/2026-04-21.md \
@@ -116,7 +115,6 @@ A council that votes unanimous PASS still gets a minority report file — it jus
 
 - **No source-file modification.** The verb is read-only against your tree. Tests pin this with a sentinel file.
 - **No git mutations.** No commit, no branch, no stash.
-- **No automatic AGTX execution.** `--export agtx` writes a task spec to `<run-dir>/final/agtx-task.md`; running the task is a separate step.
 - **No Brain writes unless asked.** `--brain-log` and Brain auto-memory are explicit opt-ins.
 
 For broader v0.7 context, see [reference.md](reference.md). For implementation deep-dive, see `lope/deliberation.py` and `tests/test_deliberation.py`.

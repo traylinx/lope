@@ -47,10 +47,7 @@ lope ask "What should we do next?" --brain-context "lope roadmap" --synth
 # Council deliberation
 lope deliberate adr scenario.md --depth quick
 lope deliberate prd scenario.md --depth standard
-lope deliberate build-vs-buy scenario.md --synth --export agtx
-
-# Ecosystem export
-lope negotiate "Add JWT auth" --export agtx
+lope deliberate build-vs-buy scenario.md --synth
 ```
 
 Every v0.7 feature is **opt-in**. Default `lope review file.py` and friends behave exactly as v0.6.

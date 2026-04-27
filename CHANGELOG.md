@@ -17,7 +17,7 @@ Where v0.6 said *"Claude says X, Gemini says Y, Codex says Z,"* v0.7 says *"Thre
 - **Makakoo bridge** (`lope/makakoo_bridge.py`) — `--brain-context QUERY` pulls `makakoo search` output into the validator prompts, `--brain-log` writes a `[[Lope]]` / `[[Makakoo OS]]` bullet to today's journal, `LOPE_BRAIN_AUTOMEMORY=1` opt-in for curated lesson files. Optional adapter; public Lope still works without Makakoo.
 - **Council deliberation** (`lope/deliberation.py` + `lope deliberate <template> <scenario>`) — 7-stage protocol (positions → anonymized critique → revision → synthesis → rubric → minority report → decision log) with 6 built-in templates: `adr`, `prd`, `rfc`, `build-vs-buy`, `migration-plan`, `incident-review`.
 - **Divide & roles** (`lope/divide.py`) — `--divide files` walks a tree (binary skip, oversized skip, sorted, line-anchored chunking, symlink containment vs. the original tree root); `--divide hunks` parses unified diffs and re-anchors findings onto post-change lines; `--roles security,performance,tests` round-robins eight built-in lenses across validators. Combination of `--divide` + `--roles` is rejected with a usage error.
-- **Ecosystem exports** (`lope/exporters.py`) — deterministic AGTX task spec via `lope negotiate ... --export agtx` and `lope deliberate ... --export agtx`. Markdown-PR + SARIF passthroughs to the Phase 3 renderer.
+- **Ecosystem exports** (`lope/exporters.py`) — Markdown-PR + SARIF passthroughs to the Phase 3 renderer so callers have one consistent module entry point.
 - **Adapter generate** — `MakakooAdapterValidator.generate()` now plumbs through `makakoo adapter call` so any registered adapter participates in single-shot fan-out, not just sprint validation. Missing binary raises `NotImplementedError` with actionable text instead of returning silent empty output.
 
 ### Defaults preserved
@@ -56,7 +56,7 @@ No breaking changes. No new Python dependencies. Skill installer still writes th
 
 Lope still does not own:
 
-- a TUI / kanban / persistent worktree (AGTX owns that — Lope exports task specs to it).
+- a TUI / kanban / persistent worktree (out of scope — Lope stays ephemeral).
 - a daemon (memory is SQLite, not a background service).
 - a hosted vector DB (Makakoo Brain handles retrieval when present; public Lope memory stays SQLite/LIKE).
 - automatic Makakoo writes (every Brain write is opt-in via flag or env).

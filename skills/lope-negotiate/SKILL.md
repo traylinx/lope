@@ -65,15 +65,10 @@ PYTHONPATH=~/.lope python3 -m lope negotiate "Systematic review of X" --domain r
 ```bash
 # Brain-aware negotiate (Makakoo OS only) — Brain context flows into every drafter+reviewer round
 lope negotiate "Add JWT auth" --brain-context "prior auth incidents" --brain-log
-
-# Export an AGTX task spec next to the sprint doc
-lope negotiate "Add JWT auth" --export agtx
-# → SPRINT-ADD-JWT-AUTH.md  +  SPRINT-ADD-JWT-AUTH.agtx.md
 ```
 
 `--brain-context` exits 2 outside Makakoo with an actionable error — public
-Lope still works without Makakoo OS. `--export agtx` is a deterministic text
-transform; no AGTX dependency at runtime.
+Lope still works without Makakoo OS.
 
 ## Dynamic sprint mode
 
