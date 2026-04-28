@@ -142,6 +142,31 @@ See [`skills/using-lope/SKILL.md`](skills/using-lope/SKILL.md) for the full trig
 
 ---
 
+
+### Objective evidence gates
+
+Lope can now run project-defined evidence gates without becoming a code analyzer. Put deterministic checks in `./.lope/rules.json`:
+
+```json
+{
+  "gates": [
+    {"name": "tests", "cmd": "python -m pytest tests -q", "type": "exit"},
+    {"name": "coverage", "cmd": "python -m coverage json -o -", "type": "json_number", "path": "totals.percent_covered", "min_delta": 0}
+  ]
+}
+```
+
+Then use them as a harness signal:
+
+```bash
+lope gate save
+# ... agent changes code ...
+lope gate check --json
+lope execute SPRINT.md --gates
+```
+
+Gates are opt-in, stdlib-only, and command-based: tests, lint, typecheck, build, coverage, or custom scripts provide the evidence; Lope coordinates baselines, comparisons, retries, and memory.
+
 ## Install — paste one line into any AI agent
 
 Open your AI agent (Claude Code, Codex, Cursor, Gemini CLI, OpenCode, GitHub Copilot CLI — whichever you already use) and paste this prompt:

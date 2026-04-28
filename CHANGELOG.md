@@ -8,6 +8,13 @@ This is the first PATCH release that actually matters on PyPI — earlier 0.7.x 
 
 No CLI surface change. No new dependencies.
 
+## Unreleased — Generic evidence gates
+
+- Added `lope gate save`, `lope gate check`, and `lope check` for dependency-free objective evidence gates driven by `./.lope/rules.json`. Gate types: exit status, JSON numeric path, regex numeric capture.
+- Added optional `lope execute --gates` / `--gate-config` so failed objective gates are included in quality-review prompts and can downgrade a validator PASS to NEEDS_FIX with concrete retry context.
+- Added gate-session storage to existing Lope memory plus `lope memory gates`.
+- Preserved default behavior: gates are opt-in, command-based, stdlib-only, and Lope does not become a static-analysis engine.
+
 ## 0.7.2 — Hotfix: SKILL.md description fits Codex's 1024-char cap + missing slash-command wrappers
 
 `skills/using-lope/SKILL.md` had a 1182-character description, which Codex (and other strict skill loaders) reject with `invalid description: exceeds maximum length of 1024 characters` — silently dropping the skill. v0.7.2 trims the description to 914 characters while preserving every release-criteria trigger (`lope memory`, `lope deliberate`, `--consensus`, `--synth`, `--brain-context`, `--divide`, `--roles`).

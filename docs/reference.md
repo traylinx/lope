@@ -37,6 +37,8 @@ Three structured sprint modes + five single-shot verbs + one roster verb + two v
 | **Compare** | `lope compare <a> <b>` | `/lope-compare` | Each validator picks between two files against explicit `--criteria`. Tally + winner. |
 | **Pipe** | `<cmd> \| lope pipe` | `/lope-pipe` | Read stdin as the prompt; fan out; per-validator sections. Default per-validator isolation; `--require-all` for strict. |
 | **Team** | `lope team {list,add,remove,test}` | `/lope-team` | Manage the validator roster — add local CLI binaries or OpenAI-compatible HTTP endpoints, drop teammates, smoke-test keys/URLs/binaries. No JSON editing. |
+| **Gate** | `lope gate {save,check}` | — | Run project-defined objective evidence gates, save a baseline, and compare later runs for regressions. |
+| **Check** | `lope check` | — | CI-friendly one-shot run of project-defined objective evidence gates. |
 | **Memory** *(v0.7)* | `lope memory {stats,search,file,hotspots,forget}` | — | Query the persistent finding store written by `lope review --remember`. See [docs/memory.md](memory.md). |
 | **Deliberate** *(v0.7)* | `lope deliberate <template> <scenario>` | — | Run a 7-stage Agent-Order-style council on an ADR / PRD / RFC / build-vs-buy / migration-plan / incident-review. See [docs/deliberation.md](deliberation.md). |
 
@@ -244,6 +246,47 @@ Flags:
 **Partial-failure semantics.** The default is per-validator isolation — one timeout does not kill the others; `[ERROR]` appears only in that validator's section. `--require-all` opts in to strict exit-non-zero for CI pipelines or workflows where you need all-N assurance.
 
 **Stdin validation.** If stdin is a TTY (no pipe), lope pipe exits 2 with a usage hint. If stdin is empty, exits 2.
+
+
+### `lope gate {save,check}` and `lope check`
+
+Objective evidence gates are user-authored project commands. Lope does not analyze code itself; it runs deterministic checks (tests, lint, coverage, build, custom JSON score scripts), stores a baseline, compares later runs, and can feed regressions into `lope execute --gates`.
+
+Project config lives at `./.lope/rules.json` by default:
+
+```json
+{
+  "gates": [
+    {"name": "tests", "cmd": "python -m pytest tests -q", "type": "exit", "required": true},
+    {"name": "coverage", "cmd": "python -m coverage json -o -", "type": "json_number", "path": "totals.percent_covered", "min_delta": 0.0}
+  ]
+}
+```
+
+```
+Usage: lope gate save  [--config PATH] [--baseline PATH] [--timeout SECS] [--json] [--remember]
+       lope gate check [--config PATH] [--baseline PATH] [--timeout SECS] [--json] [--remember]
+       lope check      [--config PATH] [--timeout SECS] [--json] [--remember]
+```
+
+Gate types:
+
+- `exit` — pass when the command exits 0.
+- `json_number` — parse stdout as JSON and extract a numeric dot-path (`path`).
+- `regex_number` — extract a numeric value from stdout/stderr using the first regex capture.
+
+Thresholds:
+
+- `min_value` / `max_value` constrain the current value.
+- `min_delta` constrains `after - before` during `gate check`.
+- `max_delta_drop` constrains `before - after` during `gate check`.
+- `required: false` records an optional gate without failing the run.
+
+Exit codes: `0` all required gates pass; `1` at least one required gate fails/regresses; `2` config or usage error. `--json` keeps stdout parseable for CI and agentic apps. `--remember` stores the run in Lope memory; `lope memory gates` lists recent gate sessions.
+
+Security note: gate commands are project-authored shell commands and run with the caller's permissions. Treat `.lope/rules.json` like CI configuration. Lope redacts captured output before display/storage, but it does not sandbox the commands.
+
+`lope execute --gates [--gate-config PATH]` saves a baseline before execution, runs gates after each implementation attempt, includes the gate report in the quality-validation prompt, and downgrades a validator PASS to NEEDS_FIX when a required gate regresses. Default `lope execute` behavior is unchanged unless `--gates` is passed.
 
 ### `lope team {list,add,remove,test}`
 

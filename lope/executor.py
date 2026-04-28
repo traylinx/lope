@@ -77,6 +77,7 @@ class PhaseExecutor:
         on_start=None,
         on_phase=None,
         on_end=None,
+        gate_runner=None,
     ):
         if validator_pool is None:
             raise ValueError("PhaseExecutor needs a validator_pool")
@@ -93,6 +94,7 @@ class PhaseExecutor:
         self._on_start = on_start
         self._on_phase = on_phase
         self._on_end = on_end
+        self._gate_runner = gate_runner
 
     def run(self, sprint_doc: SprintDoc) -> ExecutionReport:
         """Walk every phase. Returns ExecutionReport (never raises)."""
@@ -212,9 +214,15 @@ class PhaseExecutor:
             if single_stage:
                 return None
 
+            # ── Optional objective gate check ─────────────────────
+            gate_run = None
+            if self._gate_runner is not None:
+                gate_run = self._gate_runner(phase=phase, attempt=attempt)
+
             # ── Stage 2: code quality ────────────────────────────
             stage2_prompt = _build_validation_prompt(
                 phase, impl_result, domain=self._domain, stage="quality",
+                gate_report=gate_run,
             )
             stage2_result = self._pool.validate(stage2_prompt, timeout=self._timeout)
             stage2_verdict = replace(stage2_result.verdict, stage="quality")
@@ -224,6 +232,28 @@ class PhaseExecutor:
             phase.verdict = stage2_verdict
 
             if stage2_verdict.status == VerdictStatus.PASS:
+                gate_failures = _gate_failures(gate_run)
+                if gate_failures:
+                    if attempt >= self._max_rounds:
+                        downgraded = replace(
+                            stage2_verdict,
+                            status=VerdictStatus.NEEDS_FIX,
+                            required_fixes=gate_failures,
+                            rationale=(stage2_verdict.rationale + " Objective gates failed: " + "; ".join(gate_failures[:3])).strip(),
+                        )
+                        phase.verdict = downgraded
+                        return EscalationRequired(
+                            phase_index=phase.index,
+                            phase_name=phase.name,
+                            reason=f"{self._max_rounds} NEEDS_FIX rounds exhausted on objective gates",
+                            last_verdict=downgraded,
+                        )
+                    fix_context = list(gate_failures)
+                    log.info(
+                        f"[executor] phase {phase.index} gates NEEDS_FIX — retrying with "
+                        f"{len(fix_context)} gate fix(es)"
+                    )
+                    continue
                 log.info(
                     f"[executor] phase {phase.index} quality PASS "
                     f"conf={stage2_verdict.confidence:.2f}"
@@ -287,6 +317,7 @@ def _build_validation_prompt(
     impl: ImplementationResult,
     domain: str = "engineering",
     stage: Optional[str] = None,
+    gate_report=None,
 ) -> str:
     """Render a domain-aware validator prompt for a phase + its implementation result.
 
@@ -316,6 +347,13 @@ def _build_validation_prompt(
     check_block = "\n".join(check_lines) or "  (none)"
 
     summary = impl.summary or "(implementation returned no summary)"
+    gate_block = ""
+    if gate_report is not None:
+        try:
+            from .gates import prompt_summary as _gate_prompt_summary
+            gate_block = "\n" + _gate_prompt_summary(gate_report) + "\n"
+        except Exception:
+            gate_block = "\n## Objective gate report\n- Gate report unavailable.\n"
 
     if stage == "spec":
         review_task = (
@@ -372,7 +410,7 @@ Review phase {phase.index} of sprint. Be critical. Verify claims. No rubber-stam
 
 ## {dc['check_label']}
 {check_block}
-
+{gate_block}
 ## Task
 
 {review_task}{evidence_instruction}
@@ -390,3 +428,13 @@ required_fixes:
 
 PASS=advance. NEEDS_FIX=list fixes. FAIL=escalate. Conf<0.7 on PASS→NEEDS_FIX.
 """
+
+
+def _gate_failures(gate_run) -> list:
+    if gate_run is None:
+        return []
+    try:
+        failures = gate_run.blocking_failures()
+    except Exception:
+        return ["Objective gate check failed but could not be summarized"]
+    return ["Objective gate failed: " + f for f in failures]

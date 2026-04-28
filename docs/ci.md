@@ -146,3 +146,40 @@ Set `LOPE_MEMORY_DB=/tmp/lope-memory.db` to relocate the file if you'd rather ke
 - **Redaction.** Every text path through Lope passes through `lope.redaction.redact_text` before reaching disk or stdout. Bearer tokens, sk-* keys, GitHub PATs, and PEM blocks are scrubbed automatically.
 
 For the broader command surface and flag glossary, see [reference.md](reference.md).
+
+
+## Objective gates in CI
+
+For pass/fail checks that should not require model calls, use `lope check`. The commands come from `./.lope/rules.json` and can wrap your existing test/lint/build/coverage scripts.
+
+```json
+{
+  "gates": [
+    {"name": "tests", "cmd": "python -m pytest tests -q", "type": "exit", "required": true},
+    {"name": "coverage", "cmd": "python -m coverage json -o -", "type": "json_number", "path": "totals.percent_covered", "min_value": 80}
+  ]
+}
+```
+
+```yaml
+- name: Run Lope objective gates
+  run: lope check --json > /tmp/lope-gates.json
+
+- name: Upload gate report
+  uses: actions/upload-artifact@v4
+  if: always()
+  with:
+    name: lope-gates
+    path: /tmp/lope-gates.json
+```
+
+To compare against a saved baseline in a longer agentic workflow:
+
+```bash
+lope gate save --json > /tmp/gates-before.json
+# run agent / lope execute / migration
+lope gate check --json > /tmp/gates-after.json
+```
+
+Gate commands are project-authored shell commands. Treat `.lope/rules.json` like CI config: trusted repo input, deterministic commands, bounded timeouts.
+

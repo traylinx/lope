@@ -252,11 +252,24 @@ class LopeMemory:
         PRIMARY KEY (session_id, finding_hash)
     );
 
+    CREATE TABLE IF NOT EXISTS gate_sessions (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        task            TEXT NOT NULL DEFAULT '',
+        mode            TEXT NOT NULL DEFAULT '',
+        baseline_path   TEXT NOT NULL DEFAULT '',
+        created_at      TEXT NOT NULL,
+        passed          INTEGER NOT NULL DEFAULT 0,
+        gate_count      INTEGER NOT NULL DEFAULT 0,
+        failed_count    INTEGER NOT NULL DEFAULT 0,
+        payload_json    TEXT NOT NULL DEFAULT '{}'
+    );
+
     CREATE INDEX IF NOT EXISTS idx_findings_hash         ON findings(hash);
     CREATE INDEX IF NOT EXISTS idx_findings_file         ON findings(file);
     CREATE INDEX IF NOT EXISTS idx_findings_score        ON findings(consensus_score DESC);
     CREATE INDEX IF NOT EXISTS idx_findings_last_seen    ON findings(last_seen_at DESC);
     CREATE INDEX IF NOT EXISTS idx_session_findings_hash ON session_findings(finding_hash);
+    CREATE INDEX IF NOT EXISTS idx_gate_sessions_created ON gate_sessions(created_at DESC);
     """
 
     def __init__(self, db_path: Optional[Path] = None):
@@ -325,6 +338,62 @@ class LopeMemory:
             conn.commit()
 
         return session_id, stored
+
+
+    def store_gate_session(
+        self,
+        *,
+        task: str,
+        mode: str,
+        baseline_path: str,
+        passed: bool,
+        gate_count: int,
+        failed_count: int,
+        payload: Dict[str, Any],
+    ) -> int:
+        """Persist one objective gate run."""
+        now = _now_iso()
+        clean_payload = json.loads(redact_text(json.dumps(payload, sort_keys=True)))
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO gate_sessions "
+                "(task, mode, baseline_path, created_at, passed, gate_count, failed_count, payload_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    redact_text(task or '').strip(),
+                    redact_text(mode or '').strip(),
+                    redact_text(baseline_path or '').strip(),
+                    now,
+                    1 if passed else 0,
+                    int(gate_count or 0),
+                    int(failed_count or 0),
+                    json.dumps(clean_payload, sort_keys=True),
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def gate_sessions(self, *, limit: int = 20) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM gate_sessions ORDER BY created_at DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        out = []
+        for r in rows:
+            payload = json.loads(r['payload_json'] or '{}')
+            out.append({
+                'id': int(r['id']),
+                'task': r['task'],
+                'mode': r['mode'],
+                'baseline_path': r['baseline_path'],
+                'created_at': r['created_at'],
+                'passed': bool(r['passed']),
+                'gate_count': int(r['gate_count']),
+                'failed_count': int(r['failed_count']),
+                'payload': payload,
+            })
+        return out
 
     def _upsert_finding(
         self,
@@ -482,6 +551,9 @@ class LopeMemory:
             sessions = conn.execute(
                 "SELECT COUNT(*) FROM review_sessions"
             ).fetchone()[0]
+            gate_sessions = conn.execute(
+                "SELECT COUNT(*) FROM gate_sessions"
+            ).fetchone()[0]
             confirmed = conn.execute(
                 "SELECT COUNT(*) FROM findings WHERE consensus_level = 'confirmed'"
             ).fetchone()[0]
@@ -498,6 +570,7 @@ class LopeMemory:
             "db_path": str(self.db_path),
             "total_findings": int(total),
             "total_sessions": int(sessions),
+            "total_gate_sessions": int(gate_sessions),
             "confirmed_findings": int(confirmed),
             "recurring_findings": int(recurring),
             "flagged_files": int(files),
@@ -552,6 +625,7 @@ class LopeMemory:
 
         with self._connect() as conn:
             conn.execute("DELETE FROM session_findings")
+            conn.execute("DELETE FROM gate_sessions")
             conn.execute("DELETE FROM review_sessions")
             conn.execute("DELETE FROM findings")
             conn.commit()

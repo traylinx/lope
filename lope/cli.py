@@ -105,6 +105,10 @@ def main():
                      help="Human-in-the-loop mode: wait for Enter between phases "
                           "(legacy pre-v0.4.0 behavior). Default is autonomous "
                           "via primary validator's generate() method.")
+    exe.add_argument("--gates", action="store_true",
+                     help="Run objective evidence gates before/after each phase (opt-in)")
+    exe.add_argument("--gate-config", dest="gate_config", default=None,
+                     help="Path to .lope/rules.json gate config")
     _add_pool_flags(exe)
 
     # audit
@@ -360,6 +364,31 @@ def main():
     mem_forget.add_argument("--file", default=None,
                             help="File path; removes every finding stored for it")
 
+    mem_gates = mem_sub.add_parser("gates", help="Show recent objective gate sessions")
+    mem_gates.add_argument("--limit", type=int, default=20, help="Maximum rows to return")
+    mem_gates.add_argument("--json", action="store_true", help="Emit JSON")
+
+    gate = sub.add_parser("gate", help="Save or compare objective evidence gate baselines")
+    gate_sub = gate.add_subparsers(dest="gate_cmd")
+    gate_save = gate_sub.add_parser("save", help="Run gates and save baseline")
+    gate_save.add_argument("--config", default=None, help="Path to .lope/rules.json")
+    gate_save.add_argument("--baseline", default=None, help="Baseline file path")
+    gate_save.add_argument("--timeout", type=int, default=480, help="Default per-gate timeout")
+    gate_save.add_argument("--json", action="store_true", help="Emit JSON")
+    gate_save.add_argument("--remember", action="store_true", help="Persist run in Lope memory")
+    gate_check = gate_sub.add_parser("check", help="Run gates and compare with baseline")
+    gate_check.add_argument("--config", default=None, help="Path to .lope/rules.json")
+    gate_check.add_argument("--baseline", default=None, help="Baseline file path")
+    gate_check.add_argument("--timeout", type=int, default=480, help="Default per-gate timeout")
+    gate_check.add_argument("--json", action="store_true", help="Emit JSON")
+    gate_check.add_argument("--remember", action="store_true", help="Persist run in Lope memory")
+
+    chk = sub.add_parser("check", help="Run objective evidence gates without a baseline")
+    chk.add_argument("--config", default=None, help="Path to .lope/rules.json")
+    chk.add_argument("--timeout", type=int, default=480, help="Default per-gate timeout")
+    chk.add_argument("--json", action="store_true", help="Emit JSON")
+    chk.add_argument("--remember", action="store_true", help="Persist run in Lope memory")
+
     # status
     sub.add_parser("status", help="Show available validators and config")
 
@@ -419,6 +448,14 @@ def main():
         _cmd_memory(args)
         return
 
+    if args.command == "gate":
+        _cmd_gate(args)
+        return
+
+    if args.command == "check":
+        _cmd_check(args)
+        return
+
     if args.command == "deliberate":
         _cmd_deliberate(args)
         return
@@ -462,6 +499,138 @@ def main():
     if args.command == "team":
         _cmd_team(args)
         return
+
+
+
+
+def _cmd_gate(args):
+    from .gates import (
+        GateConfigError, build_run, compare_results, default_baseline_path,
+        load_baseline, load_gate_specs, run_gates, save_baseline,
+    )
+    import time as _time
+    sub_cmd = getattr(args, 'gate_cmd', None) or 'check'
+    started = _time.perf_counter_ns()
+    try:
+        specs, config_path = load_gate_specs(args.config)
+        baseline = Path(args.baseline).expanduser() if args.baseline else default_baseline_path()
+        results = run_gates(specs, default_timeout=args.timeout)
+        comparisons = []
+        if sub_cmd == 'save':
+            save_baseline(results, baseline)
+        elif specs:
+            before = load_baseline(baseline)
+            comparisons = compare_results(specs, before, results)
+        else:
+            comparisons = []
+        run = build_run(sub_cmd, specs, config_path, baseline, results, comparisons, started)
+    except GateConfigError as exc:
+        print(f"lope gate: {exc}", file=sys.stderr)
+        sys.exit(2)
+    if getattr(args, 'remember', False):
+        _remember_gate_run(run, task=f"gate {sub_cmd}")
+    _print_gate_run(run, json_mode=getattr(args, 'json', False))
+    sys.exit(0 if run.passed else 1)
+
+
+def _cmd_check(args):
+    from .gates import GateConfigError, build_run, default_baseline_path, load_gate_specs, run_gates
+    import time as _time
+    started = _time.perf_counter_ns()
+    try:
+        specs, config_path = load_gate_specs(args.config)
+        baseline = default_baseline_path()
+        results = run_gates(specs, default_timeout=args.timeout)
+        run = build_run('check', specs, config_path, baseline, results, [], started)
+    except GateConfigError as exc:
+        print(f"lope check: {exc}", file=sys.stderr)
+        sys.exit(2)
+    if getattr(args, 'remember', False):
+        _remember_gate_run(run, task='check')
+    _print_gate_run(run, json_mode=getattr(args, 'json', False))
+    sys.exit(0 if run.passed else 1)
+
+
+def _print_gate_run(run, json_mode=False):
+    if json_mode:
+        import json as _j
+        print(_j.dumps(run.to_dict(), indent=2, sort_keys=True))
+        return
+    print(f"\nLope {run.mode}: {'PASS' if run.passed else 'FAIL'}")
+    print("-" * 40)
+    if run.comparisons:
+        for c in run.comparisons:
+            status = 'PASS' if c.passed else 'FAIL'
+            req = '' if c.required else ' (optional)'
+            if c.before and c.before.value is not None and c.after.value is not None:
+                print(f"  {status:<4} {c.name}{req}: {c.before.value:.4g} -> {c.after.value:.4g}  {c.reason}")
+            else:
+                print(f"  {status:<4} {c.name}{req}: {c.reason}")
+    else:
+        for r in run.results:
+            status = 'PASS' if r.ok else 'FAIL'
+            req = '' if r.required else ' (optional)'
+            value = '' if r.value is None else f" value={r.value:.4g}"
+            reason = '' if r.ok else f" — {r.error or 'failed'}"
+            print(f"  {status:<4} {r.name}{req}{value}{reason}")
+    print(f"Baseline: {run.baseline_path}")
+    print()
+
+
+def _remember_gate_run(run, task=''):
+    from .memory import open_memory
+    store = open_memory()
+    if store is None:
+        return
+    failed = len(run.blocking_failures())
+    store.store_gate_session(
+        task=task,
+        mode=run.mode,
+        baseline_path=run.baseline_path,
+        passed=run.passed,
+        gate_count=len(run.results),
+        failed_count=failed,
+        payload=run.to_dict(),
+    )
+
+
+def _make_execute_gate_runner(args, timeout):
+    from .gates import (
+        GateConfigError, build_run, compare_results, default_baseline_path,
+        load_baseline, load_gate_specs, run_gates, save_baseline,
+    )
+    import time as _time
+    try:
+        specs, config_path = load_gate_specs(getattr(args, 'gate_config', None))
+    except GateConfigError as exc:
+        print(f"lope execute --gates: {exc}", file=sys.stderr)
+        sys.exit(2)
+    baseline = default_baseline_path()
+    if specs:
+        initial = run_gates(specs, default_timeout=timeout)
+        save_baseline(initial, baseline)
+        print(f"Objective gate baseline saved: {baseline}")
+    else:
+        print("Objective gates enabled, but no gates configured.")
+    def _runner(phase=None, attempt=1):
+        started = _time.perf_counter_ns()
+        results = run_gates(specs, default_timeout=timeout)
+        comparisons = []
+        if specs:
+            try:
+                before = load_baseline(baseline)
+                comparisons = compare_results(specs, before, results)
+            except GateConfigError:
+                comparisons = []
+        run = build_run('execute', specs, config_path, baseline, results, comparisons, started)
+        _remember_gate_run(run, task=f"execute phase {getattr(phase, 'index', '?')} attempt {attempt}")
+        failures = run.blocking_failures()
+        if failures:
+            print(f"Objective gates: FAIL ({len(failures)} blocking)")
+        else:
+            print("Objective gates: PASS")
+        return run
+    return _runner
 
 
 def _cmd_deliberate(args):
@@ -615,6 +784,8 @@ def _cmd_memory(args):
         _memory_hotspots(store, args)
     elif sub_cmd == "forget":
         _memory_forget(store, args)
+    elif sub_cmd == "gates":
+        _memory_gates(store, args)
     else:
         _memory_stats(store, args)
 
@@ -632,6 +803,8 @@ def _memory_stats(store, args):
     print(f"  Findings (confirmed)  {payload['confirmed_findings']:>5}")
     print(f"  Files flagged         {payload['flagged_files']:>5}")
     print(f"  Sessions stored       {payload['total_sessions']:>5}")
+    if 'total_gate_sessions' in payload:
+        print(f"  Gate sessions         {payload['total_gate_sessions']:>5}")
     if payload["last_session_at"]:
         print(f"  Last session          {payload['last_session_at']}")
     print()
@@ -700,6 +873,23 @@ def _memory_hotspots(store, args):
             f"{row['detection_count']:>3} detections  "
             f"avg {row['avg_score']:.2f}   {row['file']}"
         )
+    print()
+
+
+def _memory_gates(store, args):
+    rows = store.gate_sessions(limit=args.limit)
+    if getattr(args, "json", False):
+        import json as _j
+        print(_j.dumps(rows, indent=2, sort_keys=True))
+        return
+    if not rows:
+        print("No stored gate sessions.")
+        return
+    print(f"\nLope gate sessions: {len(rows)}")
+    print("-" * 60)
+    for r in rows:
+        status = "PASS" if r["passed"] else "FAIL"
+        print(f"  #{r['id']} {status:<4} {r['mode']:<6} gates={r['gate_count']} failed={r['failed_count']} {r['created_at']}")
     print()
 
 
@@ -1182,10 +1372,13 @@ def _cmd_execute(args):
             print(f">>> {primary.name} returned {len(output or '')} chars")
             return ImplementationResult(ok=True, summary=summary)
 
+    gate_runner = _make_execute_gate_runner(args, cfg.timeout) if getattr(args, "gates", False) else None
     executor = PhaseExecutor(
         validator_pool=pool,
         implementation_fn=implementation_fn,
         max_rounds_per_phase=3,
+        timeout_seconds=cfg.timeout,
+        gate_runner=gate_runner,
     )
     report = executor.run(doc)
 
