@@ -1,7 +1,7 @@
 {
   "name": "lope",
   "description": "Multi-CLI validator ensemble sprint runner. Any AI CLI implements, any AI CLI validates, majority vote decides. Three modes: negotiate a spec, execute phase by phase, audit the scorecard. 12 built-in CLI adapters plus infinite custom providers. Works for engineering, business, and research domains.",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "author": {
     "name": "Sebastian Schkudlara",
     "email": "sebastian@traylinx.com"

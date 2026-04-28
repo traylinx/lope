@@ -1,0 +1,23 @@
+description = "Run an Agent-Order council deliberation on a decision artifact (ADR, PRD, RFC, build-vs-buy, migration-plan, incident-review). 7-stage protocol → structured artifact that has survived peer scrutiny."
+
+prompt = """
+<objective>
+Drive `lope deliberate` to turn a scenario file into a council-reviewed decision artifact.
+</objective>
+
+<process>
+
+1. **Pick the template**. Read `{{args}}` for either `<template> <scenario>` (e.g. `adr scenario.md`) or just `<scenario>` plus context. Valid templates: `adr`, `prd`, `rfc`, `build-vs-buy`, `migration-plan`, `incident-review`. If the user supplied prose but no file, ask them to drop it into a markdown file (or pipe via `lope deliberate <template> -`).
+
+2. **Run deliberate**:
+```bash
+lope deliberate "$TEMPLATE" "$SCENARIO_PATH"
+```
+Add `--depth quick` for a fast first-cut, `--depth deep` to preserve every dissent, `--no-anonymize` for postmortems.
+
+3. **Present the run directory**: point the user at `lope-runs/<ts>-<template>/final/report.md`, the minority report, and the decision log. Surface the verdict and any high-severity dissent.
+
+4. **Hard rules**: read-only against the user's tree, no git mutation, anonymous critique by default, always emits a minority report (even when unanimous).
+
+</process>
+"""

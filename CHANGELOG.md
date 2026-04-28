@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.2 — Hotfix: SKILL.md description fits Codex's 1024-char cap + missing slash-command wrappers
+
+`skills/using-lope/SKILL.md` had a 1182-character description, which Codex (and other strict skill loaders) reject with `invalid description: exceeds maximum length of 1024 characters` — silently dropping the skill. v0.7.2 trims the description to 914 characters while preserving every release-criteria trigger (`lope memory`, `lope deliberate`, `--consensus`, `--synth`, `--brain-context`, `--divide`, `--roles`).
+
+Same release fills a v0.7 oversight: the new `lope deliberate` and `lope memory` modes shipped with `skills/*/SKILL.md` for Claude/Codex but had no slash-command wrappers in `commands/lope/` (Gemini) or `commands/opencode/` (OpenCode). v0.7.2 adds `deliberate.toml`, `memory.toml`, `lope-deliberate.md`, `lope-memory.md` so all six CLI hosts route the v0.7 verbs uniformly.
+
+No CLI surface change. No new dependencies.
+
 ## 0.7.1 — Hotfix: divide-mode keeps stdout pure for JSON / SARIF / markdown-pr
 
 `lope review --divide files|hunks --format json|sarif|markdown-pr` was leaking `→ reviewing X` progress lines onto stdout, breaking any downstream parser (`jq`, `python -m json.tool`, CI). v0.7.1 routes those progress lines to stderr so stdout stays a single parseable document. No CLI surface change; human users still see progress on the terminal.

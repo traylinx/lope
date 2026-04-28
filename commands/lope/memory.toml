@@ -1,0 +1,33 @@
+description = "Query the persistent Lope finding store (populated by `lope review --remember`). Five subcommands: stats, search, file, hotspots, forget. Local SQLite, opt-in, redacted at write time."
+
+prompt = """
+<objective>
+Drive `lope memory` to answer recurring-issue questions from the local SQLite finding store.
+</objective>
+
+<process>
+
+1. **Pick the subcommand from `{{args}}` or natural language**:
+   - "How many findings has Lope stored?" → `lope memory stats`
+   - "Have we seen this before?" / "Is this a recurring issue?" → `lope memory search "<keywords>"`
+   - "What does Lope remember about <file>?" → `lope memory file <path>`
+   - "Which files keep getting flagged?" → `lope memory hotspots --days 30`
+   - "Forget the finding for <file/hash>" → `lope memory forget --file <path>` or `--hash <hash>`
+
+2. **Run the command**:
+```bash
+lope memory "$SUBCMD" "$@"
+```
+Add `--json` for machine-readable output, `--limit N` to cap rows, `--min-score 0.5` on `search` to filter low-confidence noise.
+
+3. **If the store is empty** (`stats` shows `total_findings: 0`): tell the user that memory is opt-in and suggest:
+```bash
+lope review <target> --consensus --remember
+```
+
+4. **If memory is disabled** (`LOPE_MEMORY=off`): tell the user to `unset LOPE_MEMORY` or open a fresh shell.
+
+5. **Hard rules**: stats/search/file/hotspots are read-only; `forget` REQUIRES `--hash` or `--file` (no bare `forget` wipes); every text path is redacted before disk.
+
+</process>
+"""
