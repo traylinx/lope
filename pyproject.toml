@@ -1,6 +1,6 @@
 [project]
 name = "lope-agent"
-version = "0.7.2"
+version = "0.7.3"
 description = "Multi-CLI validator ensemble for AI work — sprint mode (negotiate/execute/audit), single-shot verbs (ask/review/vote/compare/pipe), natural-language roster management (team), and paste-a-curl onboarding for any AI API. Any AI CLI implements; any AI CLI validates."
 readme = "README.md"
 license = { text = "MIT" }
@@ -28,3 +28,21 @@ Repository = "https://github.com/traylinx/lope"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["lope"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "lope/",
+    "skills/",
+    "commands/",
+    "scripts/",
+    "docs/",
+    "install",
+    "INSTALL.md",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "pyproject.toml",
+]

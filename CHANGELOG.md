@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.3 — Hotfix: pyproject.toml hatchling config so `pip install lope-agent` actually works
+
+v0.7.2 (and every prior 0.7.x) shipped without `[tool.hatch.build.targets.wheel] packages = ["lope"]`. Hatchling refused to guess because the project name (`lope-agent`) doesn't match the package directory (`lope/`), so `python -m build` produced an sdist that could not generate a wheel locally either — `pip install lope-agent` from a published sdist would have failed with `metadata-generation-failed`. v0.7.3 adds the explicit hatchling wheel + sdist target config, builds both `lope_agent-0.7.3.tar.gz` and `lope_agent-0.7.3-py3-none-any.whl` cleanly, twine-check passes both, and a fresh-venv install of the wheel produces a working `lope version` command.
+
+This is the first PATCH release that actually matters on PyPI — earlier 0.7.x tags only worked via `git clone … ~/.lope && ~/.lope/install` (the Lope-native install path).
+
+No CLI surface change. No new dependencies.
+
 ## 0.7.2 — Hotfix: SKILL.md description fits Codex's 1024-char cap + missing slash-command wrappers
 
 `skills/using-lope/SKILL.md` had a 1182-character description, which Codex (and other strict skill loaders) reject with `invalid description: exceeds maximum length of 1024 characters` — silently dropping the skill. v0.7.2 trims the description to 914 characters while preserving every release-criteria trigger (`lope memory`, `lope deliberate`, `--consensus`, `--synth`, `--brain-context`, `--divide`, `--roles`).
