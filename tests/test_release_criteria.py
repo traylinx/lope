@@ -30,7 +30,7 @@ SAMPLE_SCENARIO = REPO_ROOT / "tests" / "fixtures" / "scenario.md"
 def test_version_strings_in_sync_at_080():
     from lope import __version__
 
-    assert __version__ == "0.8.2"
+    assert __version__ == "0.8.3"
 
 
 def test_check_version_script_passes():
@@ -41,7 +41,7 @@ def test_check_version_script_passes():
         timeout=20,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "0.8.2" in proc.stdout
+    assert "0.8.3" in proc.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +72,7 @@ def test_required_artifact_exists(relpath):
 def test_changelog_lists_latest_at_top():
     text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     head = text.split("\n", 4)
-    assert "0.8.2" in "\n".join(head[:4])
+    assert "0.8.3" in "\n".join(head[:4])
 
 
 def test_pyproject_has_no_new_dependency():

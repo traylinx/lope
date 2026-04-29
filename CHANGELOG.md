@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.3 — Codex 0.125.0 trusted-directory compat
+
+- Bugfix: codex 0.125.0 (released 2026-04-29) added a "trusted directory" gate that exits 1 with `Not inside a trusted directory and --skip-git-repo-check was not specified` when run from any CWD that isn't in codex's trust list. Lope is intentionally invoked from arbitrary project dirs, so every codex round on this version was failing as `INFRA_ERROR: codex exited 1`.
+- Pass `--skip-git-repo-check` in both `CodexValidator.generate()` and `.validate()` argv. Older codex versions (≤ 0.124.x) accept the flag without effect.
+- 2 new regression tests in `tests/test_codex_compat.py` pin the argv shape so a future refactor doesn't drop the flag.
+- Full suite 469/469.
+
 ## 0.8.2 — Negotiator honors `cfg.timeout` / `LOPE_TIMEOUT`
 
 - Bugfix: `lope negotiate` silently ignored the user-facing timeout in `~/.lope/config.json` (and the `LOPE_TIMEOUT` env var) for every reviewer call. `Negotiator.__init__` defaulted `timeout_seconds=300`, shadowing `cfg.timeout`, and `_cmd_negotiate` constructed `Negotiator(...)` without passing it through. Round-2 prompts on large sprints (round-1 draft + verdict block, ~30–50KB) routinely escalated as `validator infra error: <name> timed out after 300s` even when the user had explicitly raised the timeout.

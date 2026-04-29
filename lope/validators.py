@@ -1186,10 +1186,16 @@ class CodexValidator(Validator):
             # v0.4.3: codex 0.120.0 reads stdin when inherited. Pipe empty
             # stdin so the CLI uses the argv prompt exclusively and doesn't
             # block or error with "Reading additional input from stdin..."
-            # when run from a non-TTY subprocess (background tasks, tests,
-            # the autonomous execute loop).
+            # when run from a non-TTY subprocess.
+            #
+            # v0.8.3: codex 0.125.0 added a "trusted directory" gate that
+            # exits 1 with "Not inside a trusted directory and
+            # --skip-git-repo-check was not specified" when run from any
+            # CWD not in codex's trust list. Pass --skip-git-repo-check
+            # since lope is intentionally invoked from arbitrary project
+            # dirs (LOPE_WORKDIR, the user's CWD, fixture sandboxes).
             proc = subprocess.run(
-                [self._binary, "exec", prompt],
+                [self._binary, "exec", "--skip-git-repo-check", prompt],
                 input="",
                 capture_output=True,
                 text=True,
@@ -1216,9 +1222,10 @@ class CodexValidator(Validator):
 
         started = time.time()
         try:
-            # v0.4.3: pipe empty stdin (see generate() comment above)
+            # v0.4.3: pipe empty stdin; v0.8.3: --skip-git-repo-check
+            # for codex 0.125.0+ (see generate() comment above).
             proc = subprocess.run(
-                [self._binary, "exec", self._build_prompt(prompt)],
+                [self._binary, "exec", "--skip-git-repo-check", self._build_prompt(prompt)],
                 input="",
                 capture_output=True,
                 text=True,
