@@ -334,10 +334,11 @@ def curl_to_provider_entry(
     response_path: Optional[str] = None,
     wrap: Optional[str] = None,
     timeout: Optional[int] = None,
+    max_tokens: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Turn a parsed curl dict (from `parse_curl`) into a lope provider entry.
 
-    `key_env` / `response_path` / `wrap` / `timeout` are user-supplied overrides
+    `key_env` / `response_path` / `wrap` / `timeout` / `max_tokens` are user-supplied overrides
     from the CLI flags — they take precedence over auto-detection.
 
     Raises CurlParseError if the curl has a literal credential and the caller
@@ -399,6 +400,15 @@ def curl_to_provider_entry(
                 "--from-curl."
             )
 
+    # Inject {max_tokens} placeholder into JSON body if max_tokens is set and
+    # the placeholder isn't already present — avoids overriding user-specified values.
+    if max_tokens is not None and body_is_json:
+        serialized = json.dumps(body)
+        if "{max_tokens}" not in serialized:
+            # Insert after the first `{` as a top-level key
+            body = json.loads(serialized)
+            body["{max_tokens}"] = max_tokens
+
     entry: Dict[str, Any] = {
         "name": name,
         "type": "http",
@@ -411,6 +421,8 @@ def curl_to_provider_entry(
         entry["prompt_wrapper"] = wrap
     if timeout:
         entry["timeout"] = timeout
+    if max_tokens is not None:
+        entry["max_tokens"] = max_tokens
     return entry
 
 

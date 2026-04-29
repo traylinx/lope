@@ -37,7 +37,8 @@ from .models import (
 log = logging.getLogger("lope.validators")
 
 
-DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("LOPE_TIMEOUT", "480"))
+DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("LOPE_TIMEOUT", "960"))
+DEFAULT_MAX_TOKENS = int(os.environ.get("LOPE_MAX_TOKENS", "100000"))
 MIN_CONFIDENCE_FOR_PASS = 0.7
 DEFAULT_OPENCODE_BIN = os.environ.get(
     "OPENCODE_BIN", "opencode"

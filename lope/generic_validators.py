@@ -108,14 +108,22 @@ def _expand_env_dict(d: Any) -> Any:
     return d
 
 
-def _substitute_prompt(obj: Any, prompt: str) -> Any:
-    """Replace {prompt} placeholder with the actual prompt text."""
+def _substitute_prompt(obj: Any, prompt: str, max_tokens: Optional[int] = None) -> Any:
+    """Replace {prompt} and {max_tokens} placeholders.
+
+    If max_tokens is provided and {max_tokens} appears in the body, it is replaced
+    with the integer value. Otherwise {max_tokens} is left as-is (user may have set
+    it explicitly via curl --max-tokens / --body-json).
+    """
     if isinstance(obj, str):
-        return obj.replace("{prompt}", prompt)
+        result = obj.replace("{prompt}", prompt)
+        if max_tokens is not None and "{max_tokens}" in result:
+            result = result.replace("{max_tokens}", str(max_tokens))
+        return result
     if isinstance(obj, dict):
-        return {k: _substitute_prompt(v, prompt) for k, v in obj.items()}
+        return {k: _substitute_prompt(v, prompt, max_tokens) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [_substitute_prompt(v, prompt) for v in obj]
+        return [_substitute_prompt(v, prompt, max_tokens) for v in obj]
     return obj
 
 
@@ -266,6 +274,7 @@ class GenericHttpValidator(Validator):
         self._response_path: Optional[str] = config.get("response_path")
         self._prompt_wrapper: Optional[str] = config.get("prompt_wrapper")
         self._timeout_override: Optional[int] = config.get("timeout")
+        self._max_tokens: Optional[int] = config.get("max_tokens")
 
     @property
     def name(self) -> str:
@@ -282,7 +291,7 @@ class GenericHttpValidator(Validator):
 
         # Expand ${VAR} then substitute {prompt}
         headers = _expand_env_dict(self._headers)
-        body = _substitute_prompt(_expand_env_dict(self._body), prompt)
+        body = _substitute_prompt(_expand_env_dict(self._body), prompt, self._max_tokens)
 
         effective_timeout = self._timeout_override or timeout
         try:

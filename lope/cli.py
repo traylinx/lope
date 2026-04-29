@@ -264,6 +264,8 @@ def main():
                        help="Prompt wrapper template, e.g. 'Answer tersely: {prompt}'")
     t_add.add_argument("--timeout", type=int, default=None,
                        help="Per-call timeout override in seconds")
+    t_add.add_argument("--max-tokens", type=int, default=None,
+                       help="Max tokens in response (default: 100000)")
     t_add.add_argument("--primary", action="store_true",
                        help="Make this the primary validator (used by execute() for implementation)")
     t_add.add_argument("--disabled", action="store_true",
@@ -1097,7 +1099,7 @@ def _http_llm_fallback(system: str, user: str, llm_url: str) -> str:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "max_tokens": 4096,
+        "max_tokens": 100000,
         "temperature": 0.7,
     }).encode("utf-8")
     headers = {"Content-Type": "application/json"}
@@ -2887,6 +2889,7 @@ def _team_build_entry_from_curl(name: str, args):
             response_path=args.response_path,
             wrap=args.wrap,
             timeout=args.timeout,
+            max_tokens=getattr(args, "max_tokens", None),
         )
     except CurlParseError as e:
         print(f"ERROR: {e}", file=sys.stderr)
@@ -2930,6 +2933,14 @@ def _team_build_http_entry(name: str, args):
             "messages": [{"role": "user", "content": "{prompt}"}],
         }
 
+    # Inject {max_tokens} placeholder if --max-tokens is set and not already in body
+    _max_tokens = getattr(args, "max_tokens", None)
+    if _max_tokens is not None:
+        serialized = json.dumps(body)
+        if "{max_tokens}" not in serialized:
+            body = json.loads(serialized)
+            body["{max_tokens}"] = _max_tokens
+
     entry: Dict[str, Any] = {
         "name": name,
         "type": "http",
@@ -2942,6 +2953,8 @@ def _team_build_http_entry(name: str, args):
         entry["prompt_wrapper"] = args.wrap
     if args.timeout:
         entry["timeout"] = args.timeout
+    if _max_tokens is not None:
+        entry["max_tokens"] = _max_tokens
     return entry
 
 

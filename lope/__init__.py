@@ -9,7 +9,7 @@ lists, and smoke-tests validators from any chat window — no JSON editing.
 registered HTTP provider in one step. Any CLI implements; any CLI validates.
 """
 
-__version__ = "0.7.3"
+__version__ = "0.8.0"
 
 from .models import (
     ExecutionReport,

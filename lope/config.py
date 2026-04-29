@@ -206,7 +206,7 @@ def load_layered(
     merged: Dict[str, Any] = {
         "validators": [],
         "primary": "",
-        "timeout": 480,
+        "timeout": 960,
         "parallel": True,
         "providers": [],
         "learned_adapters": {},

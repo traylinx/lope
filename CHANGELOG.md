@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0 — Objective evidence gates + timeout/max_tokens defaults
+
+- Objective evidence gates: `lope/gates.py` adds `exit`, `json_number`, `regex_number` gate types with `.lope/rules.json` loader, baseline save/load, and comparison logic.
+- CLI wired: `lope gate save`, `lope gate check`, `lope check`, `lope memory gates`, `lope execute --gates` / `--gate-config`.
+- Executor integration: optional objective gate run post-implementation, gate report in quality prompt, PASS → NEEDS_FIX on required gate fail/regress.
+- Memory: `gate_sessions` table, persisted payloads, gate stats.
+- Default timeout increased from 480s to 960s; default `max_tokens` set to 100000 for HTTP validators.
+- Per-provider `--max-tokens` CLI flag, `{max_tokens}` placeholder in body, injected into HTTP request bodies automatically.
+- `DEFAULT_TIMEOUT_SECONDS` and `DEFAULT_MAX_TOKENS` constants in `validators.py`.
+- Version bumped to 0.8.0 across all 6 version files.
+
 ## 0.7.3 — Hotfix: pyproject.toml hatchling config so `pip install lope-agent` actually works
 
 v0.7.2 (and every prior 0.7.x) shipped without `[tool.hatch.build.targets.wheel] packages = ["lope"]`. Hatchling refused to guess because the project name (`lope-agent`) doesn't match the package directory (`lope/`), so `python -m build` produced an sdist that could not generate a wheel locally either — `pip install lope-agent` from a published sdist would have failed with `metadata-generation-failed`. v0.7.3 adds the explicit hatchling wheel + sdist target config, builds both `lope_agent-0.7.3.tar.gz` and `lope_agent-0.7.3-py3-none-any.whl` cleanly, twine-check passes both, and a fresh-venv install of the wheel produces a working `lope version` command.
@@ -8,7 +19,7 @@ This is the first PATCH release that actually matters on PyPI — earlier 0.7.x 
 
 No CLI surface change. No new dependencies.
 
-## Unreleased — Generic evidence gates
+## 0.8.0 — Generic evidence gates
 
 - Added `lope gate save`, `lope gate check`, and `lope check` for dependency-free objective evidence gates driven by `./.lope/rules.json`. Gate types: exit status, JSON numeric path, regex numeric capture.
 - Added optional `lope execute --gates` / `--gate-config` so failed objective gates are included in quality-review prompts and can downgrade a validator PASS to NEEDS_FIX with concrete retry context.
