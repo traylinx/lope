@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.2 — Negotiator honors `cfg.timeout` / `LOPE_TIMEOUT`
+
+- Bugfix: `lope negotiate` silently ignored the user-facing timeout in `~/.lope/config.json` (and the `LOPE_TIMEOUT` env var) for every reviewer call. `Negotiator.__init__` defaulted `timeout_seconds=300`, shadowing `cfg.timeout`, and `_cmd_negotiate` constructed `Negotiator(...)` without passing it through. Round-2 prompts on large sprints (round-1 draft + verdict block, ~30–50KB) routinely escalated as `validator infra error: <name> timed out after 300s` even when the user had explicitly raised the timeout.
+- `negotiator.py`: `timeout_seconds` now defaults to `None`, falls back to `validators.DEFAULT_TIMEOUT_SECONDS` (which itself respects `LOPE_TIMEOUT`).
+- `cli.py`: `_cmd_negotiate` forwards `cfg.timeout` to `Negotiator(...)` so `~/.lope/config.json` is the source of truth.
+- 3 new regression tests in `tests/test_negotiator_timeout.py`. Full suite 463/463.
+
 ## 0.8.0 — Objective evidence gates + timeout/max_tokens defaults
 
 - Objective evidence gates: `lope/gates.py` adds `exit`, `json_number`, `regex_number` gate types with `.lope/rules.json` loader, baseline save/load, and comparison logic.
