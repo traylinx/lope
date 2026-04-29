@@ -92,9 +92,18 @@ class Negotiator:
         validator_pool,
         max_rounds: int = 3,
         scratch_dir: Optional[Union[str, Path]] = None,
-        timeout_seconds: int = 300,
+        timeout_seconds: Optional[int] = None,
         domain: str = "engineering",
     ):
+        # Default to the same source of truth as validators
+        # (LOPE_TIMEOUT env var, falling back to 480s). The previous
+        # hardcoded 300 silently shadowed ~/.lope/config.json's "timeout"
+        # when negotiate constructed a Negotiator without passing it
+        # through, capping every reviewer call at 300s on big round-2
+        # prompts. See feedback_lope_negotiator_300s_bug for details.
+        if timeout_seconds is None:
+            from .validators import DEFAULT_TIMEOUT_SECONDS
+            timeout_seconds = DEFAULT_TIMEOUT_SECONDS
         if llm_call is None:
             raise ValueError("Negotiator needs an llm_call")
         if validator_pool is None:
