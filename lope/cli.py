@@ -1208,6 +1208,7 @@ def _cmd_negotiate(args):
         llm_call=llm_call,
         validator_pool=pool,
         max_rounds=args.max_rounds,
+        timeout_seconds=cfg.timeout,
         domain=args.domain,
     )
     try:
