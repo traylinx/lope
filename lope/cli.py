@@ -1163,17 +1163,27 @@ def _cmd_negotiate(args):
         all_validators = getattr(pool, '_validators', None) or getattr(pool, '_ordered', [primary])
         drafter_chain = [primary] + [v for v in all_validators if v is not primary]
         errors = []
+        last_err_msg = ""  # Carried so the [drafter fallback] line can name WHY.
         for idx, drafter in enumerate(drafter_chain):
             try:
                 if idx > 0:
-                    print(f"[drafter fallback] {primary.name} failed, trying {drafter.name}...")
+                    # Surface the actual reason, not just "failed". Without
+                    # this the user sees an opaque fallback chain and has
+                    # to dig into source to find the swallowed exception.
+                    reason = f" ({last_err_msg})" if last_err_msg else ""
+                    print(
+                        f"[drafter fallback] {drafter_chain[idx-1].name} failed{reason}; "
+                        f"trying {drafter.name}..."
+                    )
                 return drafter.generate(combined, timeout=timeout)
             except NotImplementedError:
-                errors.append(f"{drafter.name}: does not support drafting")
+                last_err_msg = "does not support drafting"
+                errors.append(f"{drafter.name}: {last_err_msg}")
                 continue
             except (RuntimeError, OSError, Exception) as e:
                 msg = str(e).splitlines()[0] if str(e) else type(e).__name__
-                errors.append(f"{drafter.name}: {msg[:120]}")
+                last_err_msg = msg[:200]
+                errors.append(f"{drafter.name}: {last_err_msg}")
                 continue
         # All drafters failed — try HTTP fallback if user opted in.
         llm_url = os.environ.get("LOPE_LLM_URL")

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.4 — Drafter "no text events" fix + actionable diagnostics
+
+- **Bugfix:** `lope negotiate` consistently escalated when the prompt context referenced file paths. Reproduction was deterministic on the 2026-05-02 Tytus OS sprint review: opencode's model decided to `read` the context-mentioned `SPRINT.md` / `INVENTORY.md`, opencode's sandbox auto-rejected the read (paths outside cwd), the session ended via `step_finish.reason: "tool-calls"` with **zero `type:"text"` events emitted**. `_extract_text_from_json_stream()` returned empty, the drafter raised `RuntimeError: opencode returned no text events; stdout head: ...`, the fallback chain swallowed the message into a one-line `[drafter fallback] X failed, trying Y...` print, and the user saw a 3-round escalation with no actionable signal.
+- **Fix 1 — root cause:** `_negotiator_system_prompt` now starts with an explicit `DO NOT USE ANY TOOLS` directive. Drafters synthesize from the in-prompt context only; no `read` / `write` / `bash` / `edit` / `search` calls. Applies to every domain (engineering / business / research).
+- **Fix 2 — diagnostics:** new `_diagnose_empty_opencode_stream()` in `validators.py` inspects the raw stream and names the actual reason ("model attempted tool-use that was rejected", "session ended via reason: tool-calls", "stdout was empty", etc.). Both `OpencodeValidator.generate()` and `.validate()` route the diagnostic into their error string so the user sees a one-line, actionable description.
+- **Fix 3 — fallback chain:** `cli.py` drafter fallback now prints the *previous* drafter's actual failure reason on the next-attempt line, instead of swallowing it. Was: `[drafter fallback] opencode failed, trying codex...`. Now: `[drafter fallback] opencode failed (model attempted tool-use that was rejected — 1 call(s); first: read: ...); trying codex...`.
+- 10 new regression tests in `tests/test_opencode_extract.py` pin every diagnostic branch + assert the no-tools directive across all three domains. Full suite 479/479. Real-wire smoke against Tytus sprint context: opencode produced a 23KB SPRINT draft instead of failing.
+
 ## 0.8.3 — Codex 0.125.0 trusted-directory compat
 
 - Bugfix: codex 0.125.0 (released 2026-04-29) added a "trusted directory" gate that exits 1 with `Not inside a trusted directory and --skip-git-repo-check was not specified` when run from any CWD that isn't in codex's trust list. Lope is intentionally invoked from arbitrary project dirs, so every codex round on this version was failing as `INFRA_ERROR: codex exited 1`.

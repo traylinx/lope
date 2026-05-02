@@ -52,8 +52,29 @@ def _negotiator_system_prompt(domain: str = "engineering") -> str:
     from .models import DOMAINS
     dc = DOMAINS.get(domain, DOMAINS["engineering"])
     domain_line = f'\n  - **Domain:** {domain}' if domain != "engineering" else ""
+    # CRITICAL: drafters run inside agentic CLIs (opencode, codex, claude,
+    # gemini) that have tools (read/write/bash/etc.). When the user's GOAL
+    # or CONTEXT mentions file paths, the model often decides to read those
+    # files for "accuracy" — which is wrong here, because:
+    #   1. The sandboxed CLI may auto-reject the read (opencode blocks
+    #      paths outside cwd), in which case the model exits via
+    #      `reason: "tool-calls"` having emitted ZERO text events.
+    #      `_extract_text_from_json_stream()` then sees an empty stream
+    #      and raises "opencode returned no text events", failing the
+    #      whole drafter step. Reproduced 2026-05-02 with a 2.7KB context
+    #      that contained two SPRINT.md paths.
+    #   2. Even when the read succeeds, it adds noise the negotiator
+    #      doesn't want — the goal is for the drafter to synthesize
+    #      from the in-prompt context, not chase pointers.
+    # So: be explicit that the drafter must NOT use tools.
     return f"""\
 You are a {dc['role']} drafting a sprint proposal.
+
+DO NOT USE ANY TOOLS. Do not call read, write, bash, edit, search, or any
+other tool. Write the sprint doc INLINE based ONLY on the GOAL and CONTEXT
+provided in this prompt. If the context mentions file paths, treat them as
+references the user already inspected — do not try to read them yourself.
+
 Output is markdown sprint doc only. No preamble. No postscript.
 
 Requirements:
@@ -63,7 +84,7 @@ Requirements:
   - Each phase: **Goal:** line, **Criteria:** bullets, **{dc['artifact_label']}:** bullets, **{dc['check_label']}:** bullets
   - 3-5 phases. Over/under-decomposition = bugs.
   - Revision rounds: address REQUIRED_FIXES line by line. Verify each claim
-    against evidence before accepting/rejecting.
+    against the in-prompt context before accepting/rejecting (no file reads).
 
 Output ONLY the sprint doc.
 """

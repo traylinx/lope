@@ -273,8 +273,9 @@ class OpencodeValidator(Validator):
             )
         text = _extract_text_from_json_stream(proc.stdout)
         if not text:
+            diag = _diagnose_empty_opencode_stream(proc.stdout)
             raise RuntimeError(
-                f"opencode returned no text events; stdout head: {proc.stdout[:300]}"
+                f"opencode returned no text events — {diag}"
             )
         return text
 
@@ -322,9 +323,10 @@ class OpencodeValidator(Validator):
 
         text = _extract_text_from_json_stream(proc.stdout)
         if not text:
+            diag = _diagnose_empty_opencode_stream(proc.stdout)
             return _infra_error(
                 self.name,
-                f"opencode returned no text events; stdout head: {proc.stdout[:300]}",
+                f"opencode returned no text events — {diag}",
                 duration=duration,
             )
 
@@ -363,6 +365,67 @@ def _extract_text_from_json_stream(stdout: str) -> str:
             if text:
                 parts.append(text)
     return "".join(parts)
+
+
+def _diagnose_empty_opencode_stream(stdout: str) -> str:
+    """Look at a no-text-events opencode stream and explain WHY in one line.
+
+    Returns a short diagnostic string for use in error messages — never
+    raises. Common cases we name explicitly:
+      - session ended via `reason: "tool-calls"` → model wanted to call
+        a tool that was rejected (sandbox / permission). Suggests
+        adding "DO NOT USE TOOLS" to the prompt.
+      - session ended via `reason: "error"` → opencode itself errored.
+      - any `tool_use` events with `state.status == "error"` → list the
+        first one's error message (truncated).
+      - no events at all → empty stream, likely the binary printed to
+        stderr but stdout was silent.
+    """
+    finish_reason: Optional[str] = None
+    rejected_tools: List[str] = []
+    saw_any_event = False
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        saw_any_event = True
+        if event.get("type") == "step_finish":
+            part = event.get("part") or {}
+            r = part.get("reason")
+            if isinstance(r, str):
+                finish_reason = r
+        elif event.get("type") == "tool_use":
+            part = event.get("part") or {}
+            state = part.get("state") or {}
+            if state.get("status") == "error":
+                tool = part.get("tool", "unknown")
+                err = (state.get("error") or "")[:120]
+                rejected_tools.append(f"{tool}: {err}")
+    if not saw_any_event:
+        return "stdout was empty (no JSON events parsed)"
+    if rejected_tools:
+        # Most common case: drafter tried to read external files and got
+        # blocked by the CLI's permission system.
+        return (
+            f"model attempted tool-use that was rejected — "
+            f"{len(rejected_tools)} call(s); first: {rejected_tools[0]}. "
+            f"Add 'DO NOT USE TOOLS' to the prompt."
+        )
+    if finish_reason == "tool-calls":
+        return (
+            "session ended via `reason: tool-calls` (model wanted a tool "
+            "that was unavailable / blocked). Add 'DO NOT USE TOOLS' to "
+            "the prompt."
+        )
+    if finish_reason == "error":
+        return "session ended via `reason: error` (opencode itself errored)"
+    if finish_reason:
+        return f"session ended via `reason: {finish_reason}` with no text events"
+    return "stream had events but no text events and no step_finish"
 
 
 # ─── Opencode VERDICT block parser ─────────────────────────────
