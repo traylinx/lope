@@ -55,6 +55,10 @@ class EnsemblePool:
     def names(self) -> List[str]:
         return [v.name for v in self._validators]
 
+    def validators(self) -> List:
+        """Return all validators in the ensemble."""
+        return list(self._validators)
+
     def primary_validator(self):
         """Return the primary validator — the one used as the drafter."""
         if self._primary:

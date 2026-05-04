@@ -26,7 +26,9 @@ import re
 import subprocess
 import time
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List, Optional, Tuple
+
+from .processes import run_subprocess_group
 
 from .models import (
     PhaseVerdict,
@@ -43,6 +45,51 @@ MIN_CONFIDENCE_FOR_PASS = 0.7
 DEFAULT_OPENCODE_BIN = os.environ.get(
     "OPENCODE_BIN", "opencode"
 )
+
+# ─── Safe subprocess runner wrapper ────────────────────────────
+
+
+def _run_with_group_kill(
+    command: List[str],
+    input_text: str,
+    timeout: int,
+    cwd: str,
+) -> Tuple[subprocess.CompletedProcess, float]:
+    """Run *command* via run_subprocess_group, translating errors.
+
+    Returns (CompletedProcess, elapsed_seconds). Raises RuntimeError with
+    a human-readable message on timeout / launch failure (so callers in
+    generate() can propagate and callers in validate() can wrap as
+    INFRA_ERROR).
+    """
+    started = time.time()
+    try:
+        proc = run_subprocess_group(
+            command, input_text=input_text, timeout=timeout, cwd=cwd
+        )
+    except subprocess.TimeoutExpired:
+        elapsed = time.time() - started
+        raise RuntimeError(
+            f"{command[0]} run timed out after {timeout}s (process group killed)"
+        )
+    except FileNotFoundError:
+        raise RuntimeError(f"{command[0]} binary not found")
+    except OSError as e:
+        raise RuntimeError(f"{command[0]} failed to launch: {e}")
+    return proc, time.time() - started
+
+
+def _opencode_extra_args() -> List[str]:
+    """Return extra args for opencode from LOPE_OPENCODE_ARGS env var.
+
+    Example: LOPE_OPENCODE_ARGS="--pure --model deepseek/deepseek-v4-flash"
+    This lets users configure a lean validator mode without modifying code.
+    """
+    raw = os.environ.get("LOPE_OPENCODE_ARGS", "").strip()
+    if not raw:
+        return []
+    import shlex
+    return shlex.split(raw)
 
 
 # ─── Formal VERDICT schema ──────────────────────────────────────
@@ -254,19 +301,17 @@ class OpencodeValidator(Validator):
     ) -> str:
         if not self.available():
             raise RuntimeError(f"opencode binary not found at {self._binary}")
+        cmd = [self._binary, "run", "--format", "json"]
+        extra_args = _opencode_extra_args()
+        if extra_args:
+            # Insert extra args between "run" and "--format"
+            cmd = [self._binary, "run"] + extra_args + ["--format", "json"]
         try:
-            proc = subprocess.run(
-                [self._binary, "run", "--format", "json"],
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=self._workdir,
+            proc, elapsed = _run_with_group_kill(
+                cmd, input_text=prompt, timeout=timeout, cwd=self._workdir
             )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"opencode run timed out after {timeout}s")
-        except OSError as e:
-            raise RuntimeError(f"opencode failed to launch: {e}")
+        except RuntimeError:
+            raise  # already wrapped by _run_with_group_kill
         if proc.returncode != 0:
             raise RuntimeError(
                 f"opencode exited {proc.returncode}: {(proc.stderr or '')[:500]}"
@@ -288,26 +333,20 @@ class OpencodeValidator(Validator):
                 f"opencode binary not found at {self._binary}",
             )
 
+        cmd = [self._binary, "run", "--format", "json"]
+        extra_args = _opencode_extra_args()
+        if extra_args:
+            cmd = [self._binary, "run"] + extra_args + ["--format", "json"]
+
         started = time.time()
         try:
-            proc = subprocess.run(
-                [self._binary, "run", "--format", "json"],
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=self._workdir,
+            proc, elapsed = _run_with_group_kill(
+                cmd, input_text=prompt, timeout=timeout, cwd=self._workdir
             )
-        except subprocess.TimeoutExpired:
+        except RuntimeError as e:
             return _infra_error(
                 self.name,
-                f"opencode run timed out after {timeout}s",
-                duration=time.time() - started,
-            )
-        except OSError as e:
-            return _infra_error(
-                self.name,
-                f"opencode failed to launch: {e}",
+                str(e),
                 duration=time.time() - started,
             )
 
@@ -961,6 +1000,10 @@ class ValidatorPool:
 
     def names(self) -> List[str]:
         return [v.name for v in self._ordered]
+
+    def validators(self) -> List[Validator]:
+        """Return all validators in the pool (primary first)."""
+        return list(self._ordered)
 
     def primary_validator(self) -> Validator:
         """Return the primary validator — the one used as the drafter."""

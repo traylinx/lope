@@ -172,8 +172,12 @@ class GenericSubprocessValidator(Validator):
         Shared between validate() and generate(). Handles argv-substitution
         vs. stdin modes, prompt wrapper, timeout override, and the common
         error-to-infra-error translation at the caller site.
+
+        Uses the safe process-group runner so timeout kills the entire
+        process tree, not just the direct child.
         """
-        started = time.time()
+        import time as _time
+        started = _time.time()
         if self._prompt_wrapper:
             prompt = self._prompt_wrapper.format(prompt=prompt)
         if self._stdin:
@@ -183,15 +187,16 @@ class GenericSubprocessValidator(Validator):
             cmd = [arg.replace("{prompt}", prompt) for arg in self._command]
             stdin_data = None
         effective_timeout = self._timeout_override or timeout
-        proc = subprocess.run(
-            cmd,
-            input=stdin_data,
-            capture_output=True,
-            text=True,
-            timeout=effective_timeout,
-            shell=False,
-        )
-        return proc.returncode, proc.stdout or "", proc.stderr or "", time.time() - started
+        from .processes import run_subprocess_group
+        try:
+            proc = run_subprocess_group(
+                cmd,
+                input_text=stdin_data,
+                timeout=effective_timeout,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            raise
+        return proc.returncode, proc.stdout or "", proc.stderr or "", _time.time() - started
 
     def validate(self, prompt: str, timeout: int = 480) -> ValidatorResult:
         try:

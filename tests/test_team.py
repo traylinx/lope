@@ -457,3 +457,63 @@ class TestHardcodedNamesConstant:
         assert {"claude", "opencode", "gemini", "codex", "aider"} == set(
             _HARDCODED_VALIDATOR_NAMES
         )
+
+
+# ─── Regression: team test finds validators in both pool types ───────
+
+
+class TestTeamTestPoolAccess:
+    """SPRINT BUG 3: `lope team test opencode` falsely says opencode is
+    not on the team when EnsemblePool stores validators as _validators
+    rather than .validators. The fix adds a public `validators()` method
+    to both ValidatorPool and EnsemblePool."""
+
+    def test_validatorpool_has_validators_accessor(self):
+        from lope.validators import ValidatorPool, StubValidator
+        a = StubValidator(name="a")
+        b = StubValidator(name="b")
+        pool = ValidatorPool(validators=[a, b])
+        found = [v.name for v in pool.validators()]
+        assert found == ["a", "b"]
+
+    def test_ensemblepool_has_validators_accessor(self):
+        from lope.ensemble import EnsemblePool
+        from lope.validators import StubValidator
+        a = StubValidator(name="a")
+        b = StubValidator(name="b")
+        c = StubValidator(name="opencode")
+        pool = EnsemblePool(validators=[a, b, c], primary="a")
+        names = [v.name for v in pool.validators()]
+        assert "opencode" in names
+        assert "a" in names
+        assert "b" in names
+        assert len(names) == 3
+
+    def test_ensemblepool_team_test_style_lookup(self):
+        """Simulate the _team_test lookup: build an EnsemblePool via
+        build_validator_pool, then find opencode by iterating
+        pool.validators()."""
+        from lope.config import LopeCfg
+        from lope.validators import build_validator_pool
+
+        cfg = LopeCfg(
+            validators=["codex", "opencode", "pi"],
+            primary="codex",
+            timeout=60,
+            parallel=True,
+            providers=[],
+        )
+        pool = build_validator_pool(cfg)
+        # With parallel=True and >1 validator, we get EnsemblePool
+        names = pool.names()
+        assert "opencode" in names
+
+        # The fix: use pool.validators() public accessor
+        validator = next(
+            (v for v in pool.validators() if v.name == "opencode"),
+            None,
+        )
+        assert validator is not None, (
+            f"opencode not found in pool.validators(): {[v.name for v in pool.validators()]}"
+        )
+        assert validator.name == "opencode"

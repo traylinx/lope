@@ -1,6 +1,6 @@
 """Lope — multi-CLI validator ensemble for AI work.
 
-Version: 0.8.4
+Version: 0.8.5
 
 
 Three structured modes (`negotiate`, `execute`, `audit`) cover multi-phase
@@ -12,7 +12,7 @@ lists, and smoke-tests validators from any chat window — no JSON editing.
 registered HTTP provider in one step. Any CLI implements; any CLI validates.
 """
 
-__version__ = "0.8.4"
+__version__ = "0.8.5"
 
 from .models import (
     ExecutionReport,

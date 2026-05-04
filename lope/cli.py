@@ -289,6 +289,15 @@ def main():
     t_test.add_argument("--timeout", type=int, default=60,
                         help="Timeout in seconds (default: 60)")
 
+    t_health = team_sub.add_parser(
+        "health",
+        help="Run a preflight health check on every active validator",
+    )
+    t_health.add_argument("--timeout", type=int, default=30,
+                          help="Per-validator timeout in seconds (default: 30)")
+    t_health.add_argument("--json", action="store_true",
+                          help="Output results as JSON")
+
     # deliberate — Agent-Order-style council for ADR / PRD / RFC / build-vs-buy
     # / migration-plan / incident-review. Structured adversarial reasoning,
     # NOT code execution. Optional `--brain-context` pulls Makakoo Brain
@@ -2689,6 +2698,8 @@ def _cmd_team(args):
         _team_remove(args, cfg, cfg_path)
     elif sub_cmd == "test":
         _team_test(args, cfg)
+    elif sub_cmd == "health":
+        _team_health(args, cfg)
     else:
         _team_list(cfg)
 
@@ -3041,7 +3052,7 @@ def _team_test(args, cfg):
             print(f"ERROR: could not build validator pool: {e}", file=sys.stderr)
             sys.exit(1)
         validator = next(
-            (v for v in getattr(pool, "validators", []) if getattr(v, "name", None) == name),
+            (v for v in pool.validators() if getattr(v, "name", None) == name),
             None,
         )
         if validator is None:
@@ -3075,6 +3086,119 @@ def _team_test(args, cfg):
     print(text)
     print("-" * 60)
     print(f"[OK] {name} responded ({len(text)} chars).")
+
+
+def _team_health(args, cfg):
+    """Preflight health check on every active validator.
+
+    Tests binary availability, basic response within timeout, and output
+    quality. Exits 0 if all pass, non-zero if any fail.
+    """
+    import time
+    from .validators import build_validator_pool
+
+    timeout = getattr(args, "timeout", 30)
+    prompt = getattr(args, "prompt", None) or "Say OK only."
+
+    pool = build_validator_pool(cfg)
+    all_validators = pool.validators()
+
+    results = []
+    for v in all_validators:
+        vname = getattr(v, "name", "unknown")
+        if not v.available():
+            results.append({
+                "name": vname,
+                "status": "FAIL",
+                "reason": "binary not found",
+                "elapsed": 0.0,
+                "chars": 0,
+            })
+            continue
+
+        started = time.time()
+        try:
+            out = v.generate(prompt, timeout=timeout)
+        except AttributeError:
+            results.append({
+                "name": vname,
+                "status": "SKIP",
+                "reason": "no generate() support (validate-only)",
+                "elapsed": time.time() - started,
+                "chars": 0,
+            })
+            continue
+        except RuntimeError as e:
+            msg = str(e)
+            if "timed out" in msg.lower():
+                reason = f"timeout after {timeout}s"
+            elif "binary not found" in msg.lower():
+                reason = "binary not found"
+            else:
+                reason = f"error: {msg[:120]}"
+            results.append({
+                "name": vname,
+                "status": "FAIL",
+                "reason": reason,
+                "elapsed": time.time() - started,
+                "chars": 0,
+            })
+            continue
+        except Exception as e:
+            results.append({
+                "name": vname,
+                "status": "FAIL",
+                "reason": f"error: {e}",
+                "elapsed": time.time() - started,
+                "chars": 0,
+            })
+            continue
+
+        elapsed = time.time() - started
+        text = (out or "").strip()
+        chars = len(text)
+        if not text:
+            results.append({
+                "name": vname,
+                "status": "FAIL",
+                "reason": "returned empty output",
+                "elapsed": elapsed,
+                "chars": 0,
+            })
+        else:
+            results.append({
+                "name": vname,
+                "status": "PASS",
+                "reason": f"{elapsed:.1f}s, {chars} chars",
+                "elapsed": elapsed,
+                "chars": chars,
+            })
+
+    if args.json:
+        import json
+        print(json.dumps(results, indent=2))
+    else:
+        for r in results:
+            status = r["status"]
+            tag = f"[{status:4s}]" if status == "PASS" else f"[{status:4s}]"
+            print(f"{tag} {r['name']:20s}  {r['reason']}")
+
+    failed = [r for r in results if r["status"] == "FAIL"]
+    passed = [r for r in results if r["status"] == "PASS"]
+    print(f"\n{len(passed)} passed, {len(failed)} failed, "
+          f"{len(results) - len(passed) - len(failed)} skipped")
+
+    if failed:
+        print("\nActionable fixes:")
+        for f in failed:
+            if "not found" in f["reason"]:
+                print(f"  - {f['name']}: install the CLI binary or add a custom provider")
+            elif "timeout" in f["reason"]:
+                print(f"  - {f['name']}: increase timeout or use leaner model/config")
+            else:
+                print(f"  - {f['name']}: {f['reason']}")
+        sys.exit(1)
+    sys.exit(0)
 
 
 if __name__ == "__main__":

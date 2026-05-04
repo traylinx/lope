@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.5 — Validator reliability fixes
+
+- **Safe subprocess runner** (`lope/processes.py`): runs every validator child in its own process group (`os.setsid`) so that on timeout the entire process tree — not just the direct child — is killed. Prevents orphan OpenCode child process leaks (BUG 2).
+- **`lope team test` bugfix**: `EnsemblePool` previously stored validators as private `_validators` with no public accessor, causing `lope team test opencode` to falsely report "not on the team" even when `lope team list` showed it active. Added public `validators()` method to both `ValidatorPool` and `EnsemblePool` (BUG 3).
+- **Lean OpenCode validator mode**: `LOPE_OPENCODE_ARGS` env var appends extra CLI args before `--format json`. Example: `LOPE_OPENCODE_ARGS="--pure --model deepseek/deepseek-v4-flash"` avoids loading full skills/tools/MCP for faster validator responses (BUG 1 mitigation).
+- **Team health preflight**: `lope team health --timeout N` tests every active validator with a standard prompt, reports PASS/FAIL/SKIP per validator, and exits non-zero if any fail. Catches broken validators before `ask`/`review`/`execute`/`negotiate` starts (BUG 4).
+- Regression tests covering process-group timeout cleanup, pool accessor fixing, and team test lookups in both pool types.
+
 ## 0.8.4 — Drafter "no text events" fix + actionable diagnostics
 
 - **Bugfix:** `lope negotiate` consistently escalated when the prompt context referenced file paths. Reproduction was deterministic on the 2026-05-02 Tytus OS sprint review: opencode's model decided to `read` the context-mentioned `SPRINT.md` / `INVENTORY.md`, opencode's sandbox auto-rejected the read (paths outside cwd), the session ended via `step_finish.reason: "tool-calls"` with **zero `type:"text"` events emitted**. `_extract_text_from_json_stream()` returned empty, the drafter raised `RuntimeError: opencode returned no text events; stdout head: ...`, the fallback chain swallowed the message into a one-line `[drafter fallback] X failed, trying Y...` print, and the user saw a 3-round escalation with no actionable signal.
@@ -20,7 +28,7 @@
 - Bugfix: `lope negotiate` silently ignored the user-facing timeout in `~/.lope/config.json` (and the `LOPE_TIMEOUT` env var) for every reviewer call. `Negotiator.__init__` defaulted `timeout_seconds=300`, shadowing `cfg.timeout`, and `_cmd_negotiate` constructed `Negotiator(...)` without passing it through. Round-2 prompts on large sprints (round-1 draft + verdict block, ~30–50KB) routinely escalated as `validator infra error: <name> timed out after 300s` even when the user had explicitly raised the timeout.
 - `negotiator.py`: `timeout_seconds` now defaults to `None`, falls back to `validators.DEFAULT_TIMEOUT_SECONDS` (which itself respects `LOPE_TIMEOUT`).
 - `cli.py`: `_cmd_negotiate` forwards `cfg.timeout` to `Negotiator(...)` so `~/.lope/config.json` is the source of truth.
-- 3 new regression tests in `tests/test_negotiator_timeout.py`. Full suite 463/463.
+ - 3 new regression tests in `tests/test_negotiator_timeout.py`. Full suite 463/463.
 
 ## 0.8.0 — Objective evidence gates + timeout/max_tokens defaults
 
