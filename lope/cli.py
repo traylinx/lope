@@ -62,7 +62,7 @@ def main():
         parallel_group.add_argument("--parallel", dest="parallel", action="store_true",
                                     help="Run validators in parallel")
         parallel_group.add_argument("--sequential", dest="parallel", action="store_false",
-                                    help="Run validators sequentially")
+                                    help="Run all validators sequentially, then synthesize the ensemble vote")
 
     def _add_synth_flags(p):
         # v0.7 synthesis pass: roll N answers into one executive summary via
@@ -91,6 +91,12 @@ def main():
     neg.add_argument("--out", default=None, help="Output path for sprint doc")
     neg.add_argument("--max-rounds", type=int, default=3)
     neg.add_argument("--context", default="", help="Additional context")
+    neg.add_argument(
+        "--context-file",
+        dest="context_file",
+        default=None,
+        help="Read additional context from a file instead of stuffing a huge string into argv",
+    )
     neg.add_argument("--domain", default="engineering",
                      choices=["engineering", "business", "research"],
                      help="Domain: engineering (default), business, or research")
@@ -1149,6 +1155,120 @@ def _http_llm_fallback(system: str, user: str, llm_url: str) -> str:
     return data["choices"][0]["message"]["content"]
 
 
+def _load_negotiate_context(args) -> str:
+    """Load negotiate context from --context-file plus inline --context.
+
+    Large sprint negotiations routinely pass 20-50KB of repo notes. Keeping
+    that payload in argv makes process listings ugly and increases shell/
+    terminal failure modes. ``--context-file`` keeps the payload on disk while
+    preserving the exact prompt content Lope sends to drafters/reviewers.
+    """
+    parts: List[str] = []
+    context_file = getattr(args, "context_file", None)
+    if context_file:
+        path = Path(context_file).expanduser()
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            raise RuntimeError(f"cannot read --context-file {path}: {e}") from None
+        if text.strip():
+            parts.append(f"## Context file: {path}\n\n{text.rstrip()}")
+
+    inline = getattr(args, "context", None) or ""
+    if inline.strip():
+        parts.append(inline.strip())
+
+    return "\n\n".join(parts)
+
+
+def _path_with_extra_suffix(path: Path, extra_suffix: str) -> Path:
+    """Return sibling path with an extra suffix appended.
+
+    ``SPRINT.md`` + ``.feedback.md`` becomes ``SPRINT.md.feedback.md``.
+    The slightly verbose name is intentional: these are sidecar artifacts
+    tied to the exact requested output path.
+    """
+    if path.suffix:
+        return path.with_suffix(path.suffix + extra_suffix)
+    return path.with_name(path.name + extra_suffix)
+
+
+def _write_negotiation_escalation_artifacts(
+    out_path: str,
+    negotiator: Negotiator,
+    result: "EscalationRequired",
+) -> Dict[str, str]:
+    """Persist the last proposal + validator feedback when negotiate escalates."""
+    from .models import Round
+
+    base = Path(out_path)
+    base.parent.mkdir(parents=True, exist_ok=True)
+    rounds: List[Round] = negotiator.rounds
+    written: Dict[str, str] = {}
+
+    proposal_rounds = [r for r in rounds if r.proposer == "drafter"]
+    if proposal_rounds:
+        base.write_text(proposal_rounds[-1].text.rstrip() + "\n", encoding="utf-8")
+        written["last_proposal"] = str(base)
+
+    feedback_rounds = [r for r in rounds if r.proposer == "validator"]
+    feedback_path = _path_with_extra_suffix(base, ".feedback.md")
+    last_verdict = result.last_verdict
+    lines = [
+        "# Lope negotiation escalated",
+        "",
+        f"- Reason: {result.reason}",
+        f"- Phase: {result.phase_index} {result.phase_name}",
+    ]
+    if last_verdict:
+        lines.extend(
+            [
+                f"- Last verdict: {last_verdict.status.value}",
+                f"- Confidence: {last_verdict.confidence:.2f}",
+                f"- Rationale: {last_verdict.rationale or '(none)'}",
+                "",
+                "## Required fixes",
+                "",
+            ]
+        )
+        fixes = last_verdict.required_fixes or ["(none listed)"]
+        lines.extend(f"- {fix}" for fix in fixes)
+    if feedback_rounds:
+        lines.extend(
+            [
+                "",
+                "## Raw validator feedback",
+                "",
+                feedback_rounds[-1].text.rstrip() or "(empty)",
+            ]
+        )
+    feedback_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    written["feedback"] = str(feedback_path)
+
+    rounds_dir = _path_with_extra_suffix(base, ".rounds")
+    rounds_dir.mkdir(parents=True, exist_ok=True)
+    for idx, round_item in enumerate(rounds, start=1):
+        round_path = rounds_dir / f"{idx:02d}-round{round_item.number}-{round_item.proposer}.md"
+        header = [
+            f"# Round {round_item.number} — {round_item.proposer}",
+            "",
+        ]
+        if round_item.verdict:
+            header.extend(
+                [
+                    f"- status: {round_item.verdict.status.value}",
+                    f"- confidence: {round_item.verdict.confidence:.2f}",
+                    "",
+                ]
+            )
+        round_path.write_text(
+            "\n".join(header) + (round_item.text.rstrip() or "(empty)") + "\n",
+            encoding="utf-8",
+        )
+    written["rounds_dir"] = str(rounds_dir)
+    return written
+
+
 def _cmd_negotiate(args):
     print(f"\nLope negotiate: {args.goal}\n")
     cfg, pool = _ensure_config(args)
@@ -1215,7 +1335,11 @@ def _cmd_negotiate(args):
     # Brain context: prepend to the goal context so every drafter +
     # reviewer round sees the same advisory background. We feed it via
     # ``context`` rather than ``goal`` so the sprint doc title stays clean.
-    augmented_context = args.context or ""
+    try:
+        augmented_context = _load_negotiate_context(args)
+    except RuntimeError as e:
+        print(f"lope negotiate failed: {e}", file=sys.stderr)
+        sys.exit(2)
     brain_block = _maybe_brain_context_block(args)
     if brain_block:
         if augmented_context.strip():
@@ -1253,6 +1377,12 @@ def _cmd_negotiate(args):
             print(gimmick)
     else:
         print(f"Negotiation escalated: {result}")
+        if args.out:
+            paths = _write_negotiation_escalation_artifacts(args.out, negotiator, result)
+            if paths:
+                print("Escalation artifacts:")
+                for label, path in paths.items():
+                    print(f"  {label}: {path}")
         sys.exit(1)
 
     # Brain log: drop a one-liner about the negotiated sprint into the

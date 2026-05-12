@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0 — Negotiate reliability hardening
+
+- **Prompt-only negotiation reviews:** `lope negotiate` validator prompts now explicitly forbid tool use and require validators to judge only the in-prompt proposal/context. Missing evidence becomes a REQUIRED_FIX instead of a file-chasing timeout.
+- **Prompt-only refinement rounds:** round-2 drafter prompts no longer ask agents to verify code with file citations; they revise from prompt context and add verification tasks when code evidence is absent.
+- **Sequential ensemble fix:** `--sequential` now runs every configured validator one after another and synthesizes the ensemble vote. It no longer degenerates into a fallback chain that stops after the first non-infra verdict.
+- **Escalation artifacts:** failed negotiations with `--out` now persist the last proposal, a feedback sidecar, and per-round artifacts so humans do not lose the useful work when validators return NEEDS_FIX.
+- **Context file input:** new `--context-file` keeps large negotiation context out of shell argv and process listings while preserving the exact prompt payload. Inline `--context` still works and can be combined.
+- **Regression coverage:** added negotiate reliability tests for no-tools prompts, sequential ensemble ordering, context-file loading, and escalation artifact persistence. Full suite: 493/493.
+
 ## 0.8.5 — Validator reliability fixes
 
 - **Safe subprocess runner** (`lope/processes.py`): runs every validator child in its own process group (`os.setsid`) so that on timeout the entire process tree — not just the direct child — is killed. Prevents orphan OpenCode child process leaks (BUG 2).

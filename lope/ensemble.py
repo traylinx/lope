@@ -29,10 +29,11 @@ DEFAULT_TIMEOUT_SECONDS = 480
 
 
 class EnsemblePool:
-    """Run all validators concurrently, synthesize a majority-vote verdict.
+    """Run all validators, synthesize a majority-vote verdict.
 
-    Unlike ValidatorPool (which is a fallback chain), EnsemblePool fires all
-    validators in parallel threads and synthesizes a single result using:
+    Unlike ValidatorPool (which is a fallback chain), EnsemblePool invokes all
+    validators (parallel by default, sequential when requested) and synthesizes
+    a single result using:
       - PASS/NEEDS_FIX/FAIL majority vote
       - Any FAIL is a veto (synthesized result is FAIL)
       - Tie on PASS vs NEEDS_FIX → NEEDS_FIX (conservative)
@@ -45,12 +46,14 @@ class EnsemblePool:
         validators: List["Validator"],  # noqa: F821 — forward ref to validators.Validator
         primary: Optional[str] = None,
         max_workers: int = 5,
+        parallel: bool = True,
     ):
         if not validators:
             raise ValueError("EnsemblePool needs at least one validator")
         self._validators = list(validators)
         self._primary = primary
         self._max_workers = max_workers
+        self._parallel = parallel
 
     def names(self) -> List[str]:
         return [v.name for v in self._validators]
@@ -86,6 +89,24 @@ class EnsemblePool:
             )
 
         results: List[ValidatorResult] = []
+        if not self._parallel:
+            for v in available:
+                try:
+                    results.append(v.validate(prompt, timeout))
+                except Exception as e:
+                    results.append(
+                        ValidatorResult(
+                            validator_name=v.name,
+                            verdict=PhaseVerdict(
+                                status=VerdictStatus.INFRA_ERROR,
+                                rationale=f"validator raised: {e}",
+                                validator_name=v.name,
+                            ),
+                            error=str(e),
+                        )
+                    )
+            return synthesize(results, primary=self._primary)
+
         with ThreadPoolExecutor(
             max_workers=min(len(available), self._max_workers)
         ) as executor:

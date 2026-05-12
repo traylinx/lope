@@ -73,7 +73,7 @@ Draft a sprint doc via multi-round validator review.
 
 ```
 Usage: lope negotiate [-h] [--out OUT] [--max-rounds MAX_ROUNDS]
-                     [--context CONTEXT]
+                     [--context CONTEXT] [--context-file CONTEXT_FILE]
                      [--domain {engineering,business,research}]
                      [--validators VALIDATORS] [--primary PRIMARY]
                      [--timeout TIMEOUT] [--parallel | --sequential]
@@ -85,12 +85,14 @@ Positional:
 Flags:
   --out OUT                   Output path for sprint doc (default: ./SPRINT-<slug>.md).
   --max-rounds MAX_ROUNDS     Max negotiation rounds before escalation (default: 3).
-  --context CONTEXT           Additional context string or file path (e.g., --context @CLIENT-BRIEF.md).
+  --context CONTEXT           Additional inline context string.
+  --context-file CONTEXT_FILE
+                              Read large context from a file; can be combined with --context.
   --domain DOMAIN             engineering (default) / business / research.
   --validators VALIDATORS     Comma-separated validator list, e.g. opencode,gemini (overrides config).
   --primary PRIMARY           Primary validator name (must be in --validators or global config).
   --timeout TIMEOUT           Per-validator timeout in seconds (overrides config).
-  --parallel / --sequential   Force parallel or sequential ensemble execution (overrides config).
+  --parallel / --sequential   Force all validators to run in parallel or one-by-one, then synthesize the ensemble vote.
 ```
 
 **There is no `--host`, no `--title`, no `--output-format` on negotiate.** Run `lope negotiate --help` if unsure.
@@ -662,7 +664,7 @@ alias lope='PYTHONPATH=~/.lope python3 -m lope'
 ## Hard rules for agents invoking lope
 
 1. **Do not invent flags.** Each verb has a fixed flag surface:
-   - `negotiate`: `--out`, `--max-rounds`, `--context`, `--domain`, `--validators`, `--primary`, `--timeout`, `--parallel`, `--sequential`
+   - `negotiate`: `--out`, `--max-rounds`, `--context`, `--context-file`, `--domain`, `--validators`, `--primary`, `--timeout`, `--parallel`, `--sequential`
    - `execute`: `--phase`, `--manual`, plus the shared pool flags
    - `audit`: `--no-journal`, plus the shared pool flags
    - `ask`: `--context`, `--json`, plus the shared pool flags

@@ -21,13 +21,13 @@ Draft a structured sprint doc for the user's goal via lope's negotiate mode. The
 lope negotiate "<goal>" --domain <engineering|business|research>
 ```
 
-Optional flags: `--max-rounds N` (default 3), `--out <path>`, `--context "<additional context>"`.
+Optional flags: `--max-rounds N` (default 3), `--out <path>`, `--context "<additional context>"`, `--context-file <path>`, `--validators <a,b>`, `--primary <name>`, `--timeout N`, `--parallel`, `--sequential`.
 
 4. After completion, read the generated sprint doc (path printed in stdout) and summarize the phases for the user.
 
 ## Run `lope docs` for the complete reference
 
-Any flag you're unsure about, run `lope docs` (or `lope negotiate --help`) first. Do not invent flags — the complete list is: `--out`, `--max-rounds`, `--context`, `--domain`. There is no `--host`, no `--title`, no `--validators`.
+Any flag you're unsure about, run `lope docs` (or `lope negotiate --help`) first. Do not invent flags. There is no `--host`, no `--title`, no `--output-format`.
 
 ## Do not
 

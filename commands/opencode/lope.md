@@ -33,6 +33,6 @@ Most users won't type slash commands. They'll describe multi-phase work in prose
 
 ## Hard rules
 
-1. Do not invent flags. `lope negotiate` takes `--domain`, `--out`, `--max-rounds`, `--context`. That is the complete list.
+1. Do not invent flags. For exact negotiate flags, run `lope negotiate --help`; current core flags include `--domain`, `--out`, `--max-rounds`, `--context`, `--context-file`, and the shared pool flags.
 2. Do not write a wrapper script around lope. Lope is already a CLI.
 3. Run `lope docs` when you need the authoritative reference — never answer from memory.

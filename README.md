@@ -449,6 +449,10 @@ lope negotiate "Add rate limiting to the API gateway" \
     --out SPRINT-RATE-LIMIT.md \
     --max-rounds 3 \
     --context "Express.js, Redis"
+
+# For large repo briefs, keep context out of argv:
+lope negotiate "Add rate limiting to the API gateway" \
+    --context-file ./capacity-brief.md
 ```
 
 Pass `--domain business` or `--domain research` to switch the validator role and review criteria.

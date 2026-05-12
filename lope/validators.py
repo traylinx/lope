@@ -11,7 +11,7 @@ Concrete validators (all share the ---VERDICT---...---END--- block contract):
 
 Pool strategies:
   - ValidatorPool: sequential fallback chain (primary first, skip on INFRA_ERROR)
-  - EnsemblePool: parallel ThreadPoolExecutor + majority-vote synthesis
+  - EnsemblePool: all-validator ensemble (parallel or sequential) + majority-vote synthesis
 
 The ---VERDICT---...---END--- parser tries JSON first, falls back to YAML-ish
 regex for backward compatibility.
@@ -1612,8 +1612,11 @@ def build_validator_pool(cfg: "LopeCfg") -> "ValidatorPool":
     if primary is None:
         primary = validators[0]
 
-    if cfg.parallel and len(validators) > 1:
-        return EnsemblePool(validators=validators, primary=primary.name)
-    else:
-        fallbacks = [v for v in validators if v is not primary]
-        return ValidatorPool(validators=[primary] + fallbacks, primary=primary.name)
+    if len(validators) > 1:
+        return EnsemblePool(
+            validators=validators,
+            primary=primary.name,
+            parallel=cfg.parallel,
+        )
+
+    return ValidatorPool(validators=[primary], primary=primary.name)

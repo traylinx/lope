@@ -23,6 +23,8 @@ PYTHONPATH=~/.lope python3 -m lope negotiate "$GOAL" \\
     --out SPRINT-$(date +%s).md \\
     --max-rounds 3
 ```
+Use `--context-file <path>` for large repo briefs instead of stuffing long
+context into `--context`.
 
 4. **Read and present the sprint doc**. Summarize phases, criteria, artifacts, checks.
 

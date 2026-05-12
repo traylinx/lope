@@ -172,7 +172,7 @@ Lope compresses validator prompts 50-65% by default via intelligent caveman mode
 ## Do not
 
 - **Do not write wrapper scripts around lope.** Lope is already a CLI. If the user says "draft me 3 blog posts using lope", you invoke `lope negotiate ...` directly in a shell. You do NOT create a `generate_blog_posts.py` that imports lope, you do NOT build a pipeline harness, you do NOT "extend lope for this use case". Just run the CLI with the right arguments. The whole point of the multi-CLI ensemble is that lope is the harness — you don't need another one.
-- **Do not invent flags.** `lope negotiate` accepts `--domain`, `--out`, `--max-rounds`, `--context`. That is the complete list. There is no `--host`, no `--title`, no `--validators`, no `--primary` on the negotiate subcommand. If you need a feature that doesn't exist, tell the user it's missing — do not fabricate a flag.
+- **Do not invent flags.** `lope negotiate` accepts `--domain`, `--out`, `--max-rounds`, `--context`, `--context-file`, `--validators`, `--primary`, `--timeout`, `--parallel`, and `--sequential`. There is no `--host`, no `--title`, no `--output-format`. If unsure, run `lope negotiate --help` — do not fabricate a flag.
 - **Do not invoke lope on single-edit tasks.** It's overkill and wastes the user's time.
 - **Do not rubber-stamp a phase.** Lope's entire point is catching what one model would miss — if you're the validator, be critical.
 - **Do not silently expand a phase's scope.** If during work you discover a better approach, raise it with the user before folding it in.

@@ -39,6 +39,9 @@ PYTHONPATH=~/.lope python3 -m lope negotiate "Q2 product launch campaign" --doma
 
 # Research sprint
 PYTHONPATH=~/.lope python3 -m lope negotiate "Systematic review of X" --domain research
+
+# Large context file (preferred over giant --context strings)
+PYTHONPATH=~/.lope python3 -m lope negotiate "$GOAL" --context-file ./brief.md
 ```
 
 4. Read and present the resulting sprint doc

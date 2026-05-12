@@ -99,7 +99,10 @@ fixes:
 {fix_block}
 
 --- REVISE ---
-Address each fix. Verify claims against code (cite file:line). Push back if wrong.
+Address each fix using only the in-prompt proposal/context. DO NOT USE TOOLS.
+Do not read files, run shell commands, browse, search, or edit. If a fix needs
+code evidence that is not present in the prompt, add an explicit verification
+task to the sprint instead of inventing source citations.
 Output full revised sprint doc, not a diff.
 """
 
@@ -309,15 +312,18 @@ def _build_user_prompt(goal: str, context: str) -> str:
 def _build_validator_prompt(goal: str, proposal: Proposal, domain: str = "engineering") -> str:
     """Prompt the validator to critique the current proposal."""
     from .caveman import get_directive as _caveman
-    from .models import DOMAINS
     caveman = _caveman()
-    dc = DOMAINS.get(domain, DOMAINS["engineering"])
     return f"""\
 {caveman}
 
-Review sprint proposal. Verify claims BEFORE accepting.
+Review sprint proposal. Verify claims against the in-prompt proposal/context BEFORE accepting.
 Push back on: scope creep, missing edge cases, unverified assumptions, over-complexity.
 No rubber-stamping.
+
+DO NOT USE TOOLS. Do not read files, run shell commands, browse, search, edit,
+or inspect the local repository. This is a paper-review of the prompt content
+only. If evidence is missing from the prompt, mark that as a REQUIRED_FIX; do
+not chase file paths and do not invent file:line citations.
 
 ## Goal
 
@@ -329,8 +335,8 @@ No rubber-stamping.
 
 ## Your job
 
-1. Review referenced {dc['artifact_label'].lower()}
-2. Verify every claim against evidence
+1. Review the in-prompt proposal
+2. Flag any claim that lacks in-prompt evidence
 3. Question unnecessary scope
 4. Respond with VERDICT block:
 

@@ -238,7 +238,7 @@ Across all 8 samples, a few patterns:
 
 1. **Natural language first, slash command as fallback.** Your agent handles the mapping. You only type `/lope-negotiate` when you want precise control.
 2. **Domain matters.** `engineering` (default), `business`, `research`. Same loop, different validator role + labels.
-3. **Context is cheap.** Pass `--context` with constraints, stakeholders, or rollout concerns. Validators use it to push back harder.
+3. **Context is cheap.** Pass short constraints via `--context`; pass larger repo briefs via `--context-file`. Validators use it to push back harder.
 4. **Single edits skip lope.** The `using-lope` skill's anti-trigger list is load-bearing. Trivial work should not get a sprint.
 5. **Validators pushing back is the success signal.** Lope's whole job is catching what one model would miss. An ensemble that rubber-stamps everything defeats the point.
 6. **Do not wrap lope.** The CLI is the harness. No Python scripts, no pipeline scaffolds, no "lope_runner.sh". Just `lope <mode> <args>`.
