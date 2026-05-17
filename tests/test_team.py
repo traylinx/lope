@@ -215,6 +215,16 @@ class TestTeamRoundtrip:
         with pytest.raises(SystemExit):
             _cmd_team(args)
 
+    def test_add_hardcoded_name_points_to_enable(self, tmp_lope_home, capsys):
+        from lope.cli import _cmd_team
+
+        args = _mk_args(name="codex", cmd="/bin/echo {prompt}", team_cmd="add")
+        with pytest.raises(SystemExit):
+            _cmd_team(args)
+        captured = capsys.readouterr()
+        assert "built-in validator" in captured.err
+        assert "lope team enable codex" in captured.err
+
     def test_add_refuses_duplicate_without_force(self, tmp_lope_home):
         from lope.cli import _cmd_team
 
@@ -321,6 +331,53 @@ class TestTeamRoundtrip:
         )
         with pytest.raises(SystemExit):
             _cmd_team(args)
+
+    def test_enable_builtin_adds_active_validator(self, tmp_lope_home):
+        from lope.cli import _cmd_team
+        from lope.config import default_path
+
+        _cmd_team(argparse.Namespace(
+            team_cmd="enable",
+            names=["codex", "opencode"],
+            primary=None,
+        ))
+        cfg = load(default_path())
+        assert cfg.validators == ["codex", "opencode"]
+        assert cfg.primary == "codex"
+        assert cfg.providers == []
+
+    def test_enable_builtin_can_set_primary(self, tmp_lope_home):
+        from lope.cli import _cmd_team
+        from lope.config import default_path
+
+        _cmd_team(argparse.Namespace(
+            team_cmd="enable",
+            names=["codex", "opencode"],
+            primary="opencode",
+        ))
+        cfg = load(default_path())
+        assert cfg.primary == "opencode"
+
+    def test_disable_removes_active_but_keeps_custom_provider(self, tmp_lope_home):
+        from lope.cli import _cmd_team
+        from lope.config import default_path
+
+        _cmd_team(_mk_args(name="tester", cmd="/bin/echo {prompt}", team_cmd="add"))
+        _cmd_team(argparse.Namespace(team_cmd="disable", names=["tester"]))
+        cfg = load(default_path())
+        assert "tester" not in cfg.validators
+        assert any(p["name"] == "tester" for p in cfg.providers)
+        assert cfg.primary == ""
+
+    def test_enable_unknown_exits(self, tmp_lope_home):
+        from lope.cli import _cmd_team
+
+        with pytest.raises(SystemExit):
+            _cmd_team(argparse.Namespace(
+                team_cmd="enable",
+                names=["ghost-validator"],
+                primary=None,
+            ))
 
 
 class TestFromCurlIntegration:

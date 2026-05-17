@@ -60,8 +60,10 @@ install_claude() {
   done
 }
 
-# Codex: skills/ dir for skill content; commands/ for slash commands.
-# Modern Codex ALSO reads AGENTS.md so we rely on that + skills symlinks.
+# Codex: skills/ dir for skill content.
+# Codex 0.130 resolves symlinked external skill dirs under a plugin namespace
+# (e.g. /lope:lope-negotiate), so copy Lope skills into ~/.codex/skills
+# to restore the plain /lope-negotiate-style skill names.
 install_codex() {
   local dir="$HOME/.codex/skills"
   mkdir -p "$dir"
@@ -70,8 +72,9 @@ install_codex() {
     [ -d "$skill" ] || continue
     local target="$dir/$(basename "$skill")"
     replace_target "$target"
-    ln -sf "$(cd "$skill" && pwd)" "$target"
-    echo "  codex:    $target -> $skill"
+    mkdir -p "$target"
+    cp -R "$skill"/. "$target"/
+    echo "  codex:    $target <= $skill"
   done
 }
 
@@ -192,7 +195,7 @@ install_host() {
 }
 
 echo ""
-echo "Lope v0.9.0 — Installing skills and commands"
+echo "Lope v0.9.1 — Installing skills and commands"
 echo "─────────────────────────────────────────────"
 echo ""
 
@@ -221,8 +224,12 @@ echo "  pi           /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-h
 echo "  Qwen Code    /lope  /lope-negotiate  /lope-execute  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate"
 echo "  Cursor       (unverified — skills written to ~/.cursor/agents/)"
 echo ""
+echo "Codex notes:"
+echo "  Codex        Lope skills copied into ~/.codex/skills/ so plain skill names load"
+echo "               (lope-negotiate, lope-execute, etc.). Codex UI may still treat"
+echo "               custom slash commands as content-only; agent runs 'lope <mode>' via bash."
+echo ""
 echo "Content-only hosts (skills loaded as context, invoke lope via natural language):"
-echo "  Codex        skills at ~/.codex/skills/ — agent runs 'lope <mode>' via bash"
 echo "  Vibe         skills at ~/.vibe/skills/  — agent runs 'lope <mode>' via bash"
 echo ""
 echo "For any host, 'lope docs' prints the complete reference — all flags, all domains,"

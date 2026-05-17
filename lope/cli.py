@@ -235,6 +235,20 @@ def main():
 
     team_sub.add_parser("list", help="Show current team members (default if no subcommand)")
 
+    t_enable = team_sub.add_parser(
+        "enable",
+        help="Enable existing built-in or saved custom teammates without redefining them",
+    )
+    t_enable.add_argument("names", nargs="+", help="Teammate name(s), e.g. codex opencode")
+    t_enable.add_argument("--primary", default=None,
+                          help="Set this enabled teammate as primary")
+
+    t_disable = team_sub.add_parser(
+        "disable",
+        help="Disable active teammates without deleting custom provider config",
+    )
+    t_disable.add_argument("names", nargs="+", help="Teammate name(s) to disable")
+
     t_add = team_sub.add_parser(
         "add",
         help="Add a new teammate. Provide --cmd (subprocess) OR --url (HTTP). "
@@ -1665,7 +1679,9 @@ def _fanout_generate(pool, prompt, timeout):
     ordered by thread completion (fastest first). Never raises — errors
     are surfaced per-validator so one slow/broken CLI doesn't blank the run.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    import time
+
     validators = (
         getattr(pool, "_validators", None)
         or getattr(pool, "_ordered", None)
@@ -1675,15 +1691,50 @@ def _fanout_generate(pool, prompt, timeout):
     if not available:
         return []
     out = []
-    with ThreadPoolExecutor(max_workers=min(len(available), 5)) as ex:
+    ex = ThreadPoolExecutor(max_workers=min(len(available), 5))
+    try:
         futures = {ex.submit(v.generate, prompt, timeout): v for v in available}
-        for fut in as_completed(futures):
+        pending = set(futures)
+        # Give adapters a tiny cleanup grace after their own timeout. Built-in
+        # and generic subprocess validators kill their child process at
+        # `timeout`; they still need a moment to raise/format the error so the
+        # user sees `pi timed out after 10s` instead of a less-specific fanout
+        # deadline message.
+        cleanup_grace = 0.0
+        if timeout is not None:
+            cleanup_grace = min(2.0, max(0.25, float(timeout) * 0.10))
+        deadline = time.monotonic() + timeout + cleanup_grace if timeout is not None else None
+
+        while pending:
+            wait_timeout = None
+            if deadline is not None:
+                wait_timeout = max(0.0, deadline - time.monotonic())
+                if wait_timeout <= 0:
+                    break
+
+            done, pending = wait(
+                pending,
+                timeout=wait_timeout,
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:
+                break
+            for fut in done:
+                v = futures[fut]
+                try:
+                    text = fut.result()
+                    out.append((v.name, text or "", None))
+                except Exception as e:
+                    out.append((v.name, "", str(e)))
+
+        # Defensive guardrail: validators should enforce their own subprocess
+        # timeouts, but a buggy adapter must not keep the fan-out silent.
+        for fut in pending:
             v = futures[fut]
-            try:
-                text = fut.result()
-                out.append((v.name, text or "", None))
-            except Exception as e:
-                out.append((v.name, "", str(e)))
+            fut.cancel()
+            out.append((v.name, "", f"{v.name} fanout timed out after {timeout}s"))
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
     return out
 
 
@@ -2822,6 +2873,10 @@ def _cmd_team(args):
 
     if sub_cmd == "list":
         _team_list(cfg)
+    elif sub_cmd == "enable":
+        _team_enable(args, cfg, cfg_path)
+    elif sub_cmd == "disable":
+        _team_disable(args, cfg, cfg_path)
     elif sub_cmd == "add":
         _team_add(args, cfg, cfg_path)
     elif sub_cmd == "remove":
@@ -2858,10 +2913,21 @@ def _team_list(cfg):
         for entry in custom_disabled:
             print(f"  {entry.get('name', '?'):<22} ({entry.get('type', '?')})")
 
+    available_builtins = [
+        name for name in sorted(_HARDCODED_VALIDATOR_NAMES)
+        if name not in cfg.validators and _builtin_available(name)
+    ]
+    if available_builtins:
+        print(f"\nAvailable built-ins ({len(available_builtins)}):")
+        for name in available_builtins:
+            print(f"  {name:<22} enable: lope team enable {name}")
+
     print()
     print("Add a teammate:")
     print("  lope team add <name> --cmd \"binary --flag {prompt}\"")
     print("  lope team add <name> --url URL --model MODEL --key-env OPENAI_API_KEY")
+    print("Enable a built-in:")
+    print("  lope team enable codex opencode")
     print()
 
 
@@ -2881,6 +2947,115 @@ def _team_classify_source(name: str, cfg) -> str:
     return "(?)"
 
 
+def _builtin_available(name: str) -> bool:
+    """True when a hardcoded validator's CLI binary is installed on PATH."""
+    import shutil
+
+    binary_by_name = {
+        "aider": "aider",
+        "claude": "claude",
+        "codex": "codex",
+        "gemini": "gemini",
+        "opencode": "opencode",
+    }
+    binary = binary_by_name.get(name)
+    return bool(binary and shutil.which(binary))
+
+
+def _team_known_name(name: str, cfg) -> bool:
+    """Return true if `name` can be enabled without adding new provider config."""
+    if name in _HARDCODED_VALIDATOR_NAMES:
+        return True
+    if any(p.get("name") == name for p in cfg.providers):
+        return True
+    try:
+        from .cli_discovery import KNOWN_CLIS
+        if any(c.name == name and getattr(c, "generic_command", None) for c in KNOWN_CLIS):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _team_enable(args, cfg, cfg_path):
+    """Enable built-in/known validators by name without redefining providers."""
+    from .config import save
+
+    changed = []
+    for raw in args.names:
+        name = raw.strip()
+        if not name:
+            continue
+        if not _team_known_name(name, cfg):
+            print(
+                f"ERROR: cannot enable unknown teammate {name!r}.\n"
+                f"       Built-ins: {', '.join(sorted(_HARDCODED_VALIDATOR_NAMES))}.\n"
+                f"       Custom teammates must be added first with `lope team add {name} --cmd ...`.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if name not in cfg.validators:
+            cfg.validators.append(name)
+            changed.append(name)
+
+    if not cfg.validators:
+        print("ERROR: no teammate names supplied", file=sys.stderr)
+        sys.exit(2)
+
+    primary = getattr(args, "primary", None)
+    if primary:
+        if primary not in cfg.validators:
+            print(
+                f"ERROR: --primary {primary!r} must be one of the enabled validators.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        cfg.primary = primary
+    elif not cfg.primary or cfg.primary not in cfg.validators:
+        cfg.primary = cfg.validators[0]
+
+    save(cfg, cfg_path)
+    if changed:
+        print(f"[OK] enabled {', '.join(changed)}.")
+    else:
+        print("[OK] already enabled.")
+    print(f"     Active validators ({len(cfg.validators)}): {', '.join(cfg.validators)}")
+    if cfg.primary:
+        print(f"     Primary: {cfg.primary}")
+
+
+def _team_disable(args, cfg, cfg_path):
+    """Disable active validators while keeping any custom provider config."""
+    from .config import save
+
+    requested = [n.strip() for n in args.names if n.strip()]
+    if not requested:
+        print("ERROR: no teammate names supplied", file=sys.stderr)
+        sys.exit(2)
+
+    missing = [n for n in requested if n not in cfg.validators]
+    if missing:
+        print(
+            f"ERROR: not active: {', '.join(missing)}.\n"
+            f"       Active: {', '.join(cfg.validators) or '(none)'}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    cfg.validators = [v for v in cfg.validators if v not in set(requested)]
+    if cfg.primary in requested:
+        cfg.primary = cfg.validators[0] if cfg.validators else ""
+
+    save(cfg, cfg_path)
+    print(f"[OK] disabled {', '.join(requested)}.")
+    if cfg.validators:
+        print(f"     Active validators ({len(cfg.validators)}): {', '.join(cfg.validators)}")
+        if cfg.primary:
+            print(f"     Primary: {cfg.primary}")
+    else:
+        print("     No active validators. Enable one with `lope team enable claude` or add a custom teammate.")
+
+
 def _team_add(args, cfg, cfg_path):
     """Build a provider dict from CLI flags, validate, upsert, save."""
     from .config import save
@@ -2891,9 +3066,13 @@ def _team_add(args, cfg, cfg_path):
         print("ERROR: name cannot be empty", file=sys.stderr)
         sys.exit(2)
     if name in _HARDCODED_VALIDATOR_NAMES:
+        if _builtin_available(name):
+            extra = f"Enable it with: lope team enable {name}"
+        else:
+            extra = f"Install the {name} CLI first, then run: lope team enable {name}"
         print(
-            f"ERROR: {name!r} is a built-in validator — pick a different name "
-            f"(you already have {name} if its CLI is on PATH).",
+            f"ERROR: {name!r} is a built-in validator, not a custom provider name. "
+            f"{extra}. For one-off use: lope ask \"...\" --validators {name}",
             file=sys.stderr,
         )
         sys.exit(2)

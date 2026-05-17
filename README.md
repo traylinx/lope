@@ -126,7 +126,9 @@ Agent:  [recognizes multi-phase work → invokes /lope-negotiate]
 | *(pastes a curl)* "add this to lope as openai" | `lope team add openai --from-curl "<paste>"` |
 | "Add openclaw to lope using my Tytus pod" | `lope team add openclaw --url <URL> --model openclaw --key-env OPENAI_API_KEY` |
 | "Add my local ollama (qwen3:8b) as a teammate" | `lope team add my-ollama --cmd "ollama run qwen3:8b {prompt}"` |
-| "Remove codex from the team" | `lope team remove codex` |
+| "Turn on Codex and OpenCode validators" | `lope team enable codex opencode` |
+| "Disable claude for now" | `lope team disable claude` |
+| "Remove custom mistral from the team" | `lope team remove mistral` |
 | "Who's on lope?" / "list validators" | `lope team list` |
 | "Test if my new mistral teammate works" | `lope team test mistral` |
 

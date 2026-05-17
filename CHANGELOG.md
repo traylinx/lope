@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.1 — Ask/team timeout reliability
+
+- **Authoritative `--timeout` for custom providers:** subprocess provider timeouts can no longer silently extend a per-call timeout. A provider-level timeout may shorten a call, but `lope ask --timeout 30` now really caps the call near 30 seconds instead of inheriting a stale `900s` provider override.
+- **Fanout deadline for single-shot verbs:** `ask` / `review` / `vote` / `compare` / `pipe` fanout now has a defensive deadline and returns per-validator timeout errors instead of waiting forever for one broken adapter.
+- **Built-in validator activation UX:** new `lope team enable <name...>` and `lope team disable <name...>` commands make built-ins like `codex` and `opencode` explicit team members without misusing `team add`.
+- **Clearer `team list` and `team add` messages:** inactive installed built-ins are shown under “Available built-ins”, and trying to `lope team add codex` now points to `lope team enable codex` instead of implying it is already active.
+- **Codex install repair included:** Codex install now copies Lope skill directories into `~/.codex/skills/` instead of symlinking, preserving plain skill names on Codex 0.130.
+- **Regression coverage:** added tests for provider timeout precedence, fanout deadline behavior, built-in enable/disable, and improved hardcoded-name diagnostics. Full suite: 501/501.
+
 ## 0.9.0 — Negotiate reliability hardening
 
 - **Prompt-only negotiation reviews:** `lope negotiate` validator prompts now explicitly forbid tool use and require validators to judge only the in-prompt proposal/context. Missing evidence becomes a REQUIRED_FIX instead of a file-chasing timeout.

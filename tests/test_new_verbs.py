@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 import pytest
 
@@ -158,3 +159,63 @@ class TestGenericGenerate:
         v = self._make(["echo", "marker-{prompt}-end"])
         out = v.generate("payload", timeout=5)
         assert "marker-payload-end" in out
+
+    def test_provider_timeout_cannot_extend_call_timeout(self):
+        from lope.generic_validators import GenericSubprocessValidator
+
+        v = GenericSubprocessValidator({
+            "name": "slow",
+            "type": "subprocess",
+            "command": [sys.executable, "-c", "import time; time.sleep(2)"],
+            "timeout": 10,
+        })
+        started = time.time()
+        with pytest.raises(RuntimeError, match="timed out after 1s"):
+            v.generate("ignored", timeout=1)
+        assert time.time() - started < 2
+
+    def test_provider_timeout_can_shorten_call_timeout(self):
+        from lope.generic_validators import GenericSubprocessValidator
+
+        v = GenericSubprocessValidator({
+            "name": "slow",
+            "type": "subprocess",
+            "command": [sys.executable, "-c", "import time; time.sleep(2)"],
+            "timeout": 1,
+        })
+        with pytest.raises(RuntimeError, match="timed out after 1s"):
+            v.generate("ignored", timeout=10)
+
+
+class TestFanoutGenerate:
+    def test_fanout_deadline_returns_pending_validator_error(self):
+        from lope.cli import _fanout_generate
+
+        class FakeValidator:
+            def __init__(self, name, delay, answer):
+                self.name = name
+                self.delay = delay
+                self.answer = answer
+
+            def available(self):
+                return True
+
+            def generate(self, prompt, timeout):
+                time.sleep(self.delay)
+                return self.answer
+
+        class FakePool:
+            def __init__(self):
+                self._validators = [
+                    FakeValidator("fast", 0.0, "OK"),
+                    FakeValidator("slow", 0.8, "LATE"),
+                ]
+
+        started = time.time()
+        results = _fanout_generate(FakePool(), "prompt", timeout=0.05)
+        elapsed = time.time() - started
+
+        assert elapsed < 0.6
+        by_name = {name: (answer, error) for name, answer, error in results}
+        assert by_name["fast"] == ("OK", None)
+        assert by_name["slow"][1] == "slow fanout timed out after 0.05s"

@@ -36,7 +36,7 @@ Three structured sprint modes + five single-shot verbs + one roster verb + two v
 | **Vote** | `lope vote "<q>" --options A,B,C` | `/lope-vote` | Each validator picks exactly one option label. Tally + winner. Whole-token strict parsing. |
 | **Compare** | `lope compare <a> <b>` | `/lope-compare` | Each validator picks between two files against explicit `--criteria`. Tally + winner. |
 | **Pipe** | `<cmd> \| lope pipe` | `/lope-pipe` | Read stdin as the prompt; fan out; per-validator sections. Default per-validator isolation; `--require-all` for strict. |
-| **Team** | `lope team {list,add,remove,test}` | `/lope-team` | Manage the validator roster — add local CLI binaries or OpenAI-compatible HTTP endpoints, drop teammates, smoke-test keys/URLs/binaries. No JSON editing. |
+| **Team** | `lope team {list,enable,disable,add,remove,test}` | `/lope-team` | Manage the validator roster — enable built-ins, add local CLI binaries or OpenAI-compatible HTTP endpoints, disable/drop teammates, smoke-test keys/URLs/binaries. No JSON editing. |
 | **Gate** | `lope gate {save,check}` | — | Run project-defined objective evidence gates, save a baseline, and compare later runs for regressions. |
 | **Check** | `lope check` | — | CI-friendly one-shot run of project-defined objective evidence gates. |
 | **Memory** *(v0.7)* | `lope memory {stats,search,file,hotspots,forget}` | — | Query the persistent finding store written by `lope review --remember`. See [docs/memory.md](memory.md). |
@@ -290,17 +290,32 @@ Security note: gate commands are project-authored shell commands and run with th
 
 `lope execute --gates [--gate-config PATH]` saves a baseline before execution, runs gates after each implementation attempt, includes the gate report in the quality-validation prompt, and downgrades a validator PASS to NEEDS_FIX when a required gate regresses. Default `lope execute` behavior is unchanged unless `--gates` is passed.
 
-### `lope team {list,add,remove,test}`
+### `lope team {list,enable,disable,add,remove,test}`
 
-Manage the validator roster from the command line. Every edit is one call; no JSON file editing required. Two flavors of teammate: **subprocess** (any local CLI binary) and **HTTP** (any OpenAI-compatible or custom REST endpoint).
+Manage the validator roster from the command line. Every edit is one call; no JSON file editing required. Built-in teammates (`claude`, `codex`, `opencode`, `gemini`, `aider`) are enabled by name; custom teammates use **subprocess** (any local CLI binary) or **HTTP** (any OpenAI-compatible or custom REST endpoint).
 
 ```
-Usage: lope team {list,add,remove,test} ...
+Usage: lope team {list,enable,disable,add,remove,test} ...
 ```
 
-**`lope team list`** (default if no subcommand) — show active validators with source tags (`(built-in)` / `(custom subprocess|http)` / `(auto)` / `(?)`) and disabled providers.
+**`lope team list`** (default if no subcommand) — show active validators with source tags (`(built-in)` / `(custom subprocess|http)` / `(auto)` / `(?)`), disabled providers, and installed built-ins that are available but inactive.
+
+**`lope team enable NAME...`** — turn on an existing built-in or saved custom teammate without redefining it.
+
+```
+lope team enable codex opencode
+lope team enable codex opencode --primary codex
+```
+
+**`lope team disable NAME...`** — remove validators from the active roster without deleting custom provider config.
+
+```
+lope team disable claude
+```
 
 **`lope team add NAME`** — upsert a provider and (unless `--disabled`) enable it in the active validators list.
+
+Built-in names are reserved. Do not `team add codex`; run `lope team enable codex`.
 
 ```
 Usage: lope team add [-h]

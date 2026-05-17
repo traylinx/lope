@@ -59,6 +59,21 @@ class ConfigError(ValueError):
     """Raised when a provider config entry is invalid."""
 
 
+def _effective_timeout(provider_timeout: Optional[int], call_timeout: Optional[int]) -> Optional[int]:
+    """Return the timeout Lope should actually enforce for one provider call.
+
+    Provider configs may set a timeout because some CLIs need a shorter safety
+    cap than the global Lope default. That provider value must never silently
+    extend an explicit per-call timeout (`lope ask --timeout 30`, `team test
+    --timeout 10`, etc.). Use the stricter value when both are present.
+    """
+    if provider_timeout is None:
+        return call_timeout
+    if call_timeout is None:
+        return provider_timeout
+    return min(provider_timeout, call_timeout)
+
+
 def _validate_provider_config(entry: Dict[str, Any]) -> None:
     """Reject malformed configs at load time, not runtime."""
     if not isinstance(entry, dict):
@@ -186,7 +201,7 @@ class GenericSubprocessValidator(Validator):
         else:
             cmd = [arg.replace("{prompt}", prompt) for arg in self._command]
             stdin_data = None
-        effective_timeout = self._timeout_override or timeout
+        effective_timeout = _effective_timeout(self._timeout_override, timeout)
         from .processes import run_subprocess_group
         try:
             proc = run_subprocess_group(
@@ -202,8 +217,9 @@ class GenericSubprocessValidator(Validator):
         try:
             rc, stdout, stderr, duration = self._run(prompt, timeout)
         except subprocess.TimeoutExpired:
+            effective_timeout = _effective_timeout(self._timeout_override, timeout)
             return self._infra_error(
-                f"timeout after {self._timeout_override or timeout}s", 0.0
+                f"timeout after {effective_timeout}s", 0.0
             )
         except FileNotFoundError:
             return self._infra_error(f"binary not found: {self._command[0]}", 0.0)
@@ -236,8 +252,9 @@ class GenericSubprocessValidator(Validator):
         try:
             rc, stdout, stderr, _duration = self._run(prompt, timeout)
         except subprocess.TimeoutExpired:
+            effective_timeout = _effective_timeout(self._timeout_override, timeout)
             raise RuntimeError(
-                f"{self._name} timed out after {self._timeout_override or timeout}s"
+                f"{self._name} timed out after {effective_timeout}s"
             )
         except FileNotFoundError:
             raise RuntimeError(f"{self._name} binary not found: {self._command[0]}")
@@ -298,7 +315,7 @@ class GenericHttpValidator(Validator):
         headers = _expand_env_dict(self._headers)
         body = _substitute_prompt(_expand_env_dict(self._body), prompt, self._max_tokens)
 
-        effective_timeout = self._timeout_override or timeout
+        effective_timeout = _effective_timeout(self._timeout_override, timeout)
         try:
             payload = _json.dumps(body).encode("utf-8")
             req = urllib.request.Request(self._url, data=payload, headers=headers)
