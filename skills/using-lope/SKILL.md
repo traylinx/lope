@@ -1,6 +1,6 @@
 ---
 name: using-lope
-description: "You MUST consider using lope whenever cross-model perspective would help — multi-phase sprints (negotiate/execute/audit), one-off cross-model questions (ask), file review (review, with --consensus / SARIF / PR-comment export in v0.7), persistent finding memory, council deliberation, Brain-aware integration (--brain-context / --brain-log), directory + diff review (--divide), role lenses (--roles), structured votes (vote), A/B file comparison (compare), stdin fan-out (pipe), or team management. Trigger on: 3+ phases, consequential multi-file work, 'what do the other models think', review/critique of an artifact, 'rank the findings', 'SARIF for CI', 'should we adopt X' / 'review this ADR/PRD/RFC', 'build vs buy', 'plan the migration', 'A or B?', 'yes/no from all CLIs', piping to multiple models, or adding/removing CLIs from the team. Skip for trivial single edits, pure conversation, urgent fire-fighting."
+description: "You MUST consider using lope whenever cross-model perspective would help — multi-phase sprints (negotiate/implement/execute/audit), one-off cross-model questions (ask), file review (review, with --consensus / SARIF / PR-comment export in v0.7), persistent finding memory, council deliberation, Brain-aware integration (--brain-context / --brain-log), directory + diff review (--divide), role lenses (--roles), structured votes (vote), A/B file comparison (compare), stdin fan-out (pipe), or team management. Trigger on: 3+ phases, consequential multi-file work, 'what do the other models think', review/critique of an artifact, 'rank the findings', 'SARIF for CI', 'should we adopt X' / 'review this ADR/PRD/RFC', 'build vs buy', 'plan the migration', 'A or B?', 'yes/no from all CLIs', piping to multiple models, or adding/removing CLIs from the team. Skip for trivial single edits, pure conversation, urgent fire-fighting."
 ---
 
 # Using Lope
@@ -11,6 +11,7 @@ Lope is a multi-CLI ensemble for AI work. Any AI CLI drafts, any AI CLI validate
 |---|---|---|
 | `negotiate` | [lope-negotiate] | Goal → sprint doc with phases + verdicts |
 | `execute`   | [lope-execute]   | Sprint doc → implemented deliverables with per-phase review |
+| `implement` | [lope-implement] | Sprint doc + selected roster → zero-human sprint execution |
 | `audit`     | [lope-audit]     | Sprint doc → scorecard |
 | `ask`       | [lope-ask]       | One question → N raw answers (one per model) |
 | `review`    | [lope-review]    | One file + focus → N raw critiques **or** consensus-ranked findings (`--consensus`, v0.7) |
@@ -23,7 +24,7 @@ Lope is a multi-CLI ensemble for AI work. Any AI CLI drafts, any AI CLI validate
 
 `ask`, `review`, `vote`, `compare`, and `pipe` are the lightweight verbs — no sprint, no phases, no validator retry loop. `team` manages the roster. `lope memory` and `lope deliberate` are the v0.7 verbs that turn raw fan-out into durable judgment. The cross-cutting flags `--consensus`, `--synth`, `--remember`, `--brain-context`, `--brain-log`, `--divide`, `--roles` layer on top of the existing modes — every one is opt-in.
 
-When this skill triggers, consider which of the eleven modes fits — don't force every request into `negotiate`.
+When this skill triggers, consider which of the twelve modes fits — don't force every request into `negotiate`.
 
 ## How the user will invoke lope
 
@@ -121,12 +122,13 @@ Skip lope — just do the work directly — when:
 - **Exploratory questions.** "What could we do about X?", "How should we approach this?". Have the conversation first. Only lope the agreed plan.
 - **Urgent fire-fighting.** Production is down, user needs a fix in 10 minutes. Don't negotiate a sprint — patch the bug. Lope is for planned work.
 
-## The nine modes
+## The twelve modes
 
 | Mode | Slash command | When |
 |---|---|---|
 | Negotiate | `/lope-negotiate <goal>` | Before any multi-phase work. Drafts a structured sprint doc via multi-round validator review. |
 | Execute | `/lope-execute <sprint_doc>` | After negotiation. Runs phases with validator-in-the-loop retry. |
+| Implement | `/lope-implement <sprint_doc>` | After negotiation. Selects implementation/escalation agents once, then runs the sprint without human input. |
 | Audit | `/lope-audit <sprint_doc>` | After execution. Generates the scorecard. |
 | Ask | `/lope-ask "<question>"` | One question → N raw answers. No sprint, no phases. |
 | Review | `/lope-review <file>` | Fan out a file review to all validators. `--focus` narrows the critique. |
@@ -135,7 +137,7 @@ Skip lope — just do the work directly — when:
 | Pipe | `<cmd> \| lope pipe` | stdin-fed fan-out. Composable shell verb. |
 | Team | `/lope-team add NAME ...` | Roster management. Add/remove/list/test validators without editing JSON. |
 
-Default flow for a *planned* task: **negotiate → execute → audit**. Skip to one of the single-shot verbs (`ask`/`review`/`vote`/`compare`/`pipe`) when the user just wants multi-model output on a single prompt or artifact. Use `team` whenever the user's intent is to change who is ON the ensemble, not run it.
+Default flow for a *planned* task: **negotiate → implement/execute → audit**. Skip to one of the single-shot verbs (`ask`/`review`/`vote`/`compare`/`pipe`) when the user just wants multi-model output on a single prompt or artifact. Use `team` whenever the user's intent is to change who is ON the ensemble, not run it.
 
 ## Domains
 
@@ -154,7 +156,8 @@ Lope auto-detects these on `$PATH`: Claude Code, OpenCode, Gemini CLI, Codex, Mi
 Route through the dedicated slash commands, not by calling the Python module directly:
 
 - `/lope-negotiate` for drafting
-- `/lope-execute` for running
+- `/lope-execute` for normal phase running
+- `/lope-implement` for zero-human sprint execution after roster selection
 - `/lope-audit` for scoring
 - `/lope-ask` for multi-model Q&A
 - `/lope-review` for multi-model file critique

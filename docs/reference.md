@@ -12,7 +12,7 @@ If you are an AI agent reading this because the user asked about lope, load it i
 
 ## What lope is
 
-Lope is a **multi-CLI validator ensemble for AI work**. One AI CLI drafts; others validate. Works for multi-phase sprints (negotiate → execute → audit with validator-in-the-loop retry) **and** for single-shot multi-model tasks (ask, review, vote, compare, pipe). No single-model blindspot.
+Lope is a **multi-CLI validator ensemble for AI work**. One AI CLI drafts; others validate. Works for multi-phase sprints (negotiate → implement/execute → audit with validator-in-the-loop retry) **and** for single-shot multi-model tasks (ask, review, vote, compare, pipe). No single-model blindspot.
 
 Lope is primarily a CLI harness that runs **other** AI CLIs as validators. You invoke `lope <verb> <args>` from a shell and lope orchestrates subprocess calls to Claude Code, OpenCode, Gemini CLI, Codex, pi, Qwen, etc. As of v0.5.0, the parallel fan-out primitive (`EnsemblePool`) is also importable as a library — see [Library usage](#library-usage).
 
@@ -24,12 +24,13 @@ Repo: https://github.com/traylinx/lope · MIT · Zero Python dependencies (pure 
 
 ## The modes
 
-Three structured sprint modes + five single-shot verbs + one roster verb + two v0.7 verbs (`memory`, `deliberate`). Pick the mode that fits the shape of the work — don't force everything through `negotiate`.
+Four structured sprint modes + five single-shot verbs + one roster verb + two v0.7 verbs (`memory`, `deliberate`). Pick the mode that fits the shape of the work — don't force everything through `negotiate`.
 
 | Mode | CLI | Slash command (where supported) | What it does |
 |---|---|---|---|
 | **Negotiate** | `lope negotiate <goal>` | `/lope-negotiate` | Primary CLI drafts a structured sprint doc. Other CLIs independently review. Majority vote. Iterates until consensus or escalation. Writes the sprint doc to disk. |
 | **Execute** | `lope execute <sprint_doc>` | `/lope-execute` | Runs the sprint phase by phase. Each phase: primary implements, then two-stage validator review (spec compliance, then code quality). NEEDS_FIX retries with fix instructions (3 attempts). PASS advances. FAIL escalates. |
+| **Implement** | `lope implement <sprint_doc>` | `/lope-implement` | High-level zero-human sprint execution. First selects implementation agents and escalation agents, then runs phases without asking the human again. v1 uses one writing lead for checkout safety while the selected team drives validation/escalation context. |
 | **Audit** | `lope audit <sprint_doc>` | `/lope-audit` | Generates a scorecard from executed sprint results — per-phase verdicts, confidence scores, duration, overall status. Appends to lope's journal. |
 | **Ask** | `lope ask "<question>"` | `/lope-ask` | Fan out one question to every validator; collect N raw answers (one per model). No VERDICT parsing, no phase retry. |
 | **Review** | `lope review <file>` | `/lope-review` | Send a file + optional `--focus` to every validator; collect N critiques. With `--consensus` (v0.7) merges, dedupes, and ranks findings; supports `--format text\|json\|markdown\|markdown-pr\|sarif`. |
@@ -42,7 +43,7 @@ Three structured sprint modes + five single-shot verbs + one roster verb + two v
 | **Memory** *(v0.7)* | `lope memory {stats,search,file,hotspots,forget}` | — | Query the persistent finding store written by `lope review --remember`. See [docs/memory.md](memory.md). |
 | **Deliberate** *(v0.7)* | `lope deliberate <template> <scenario>` | — | Run a 7-stage Agent-Order-style council on an ADR / PRD / RFC / build-vs-buy / migration-plan / incident-review. See [docs/deliberation.md](deliberation.md). |
 
-Default flow for multi-phase work: **negotiate → execute → audit**. For single-prompt / single-file / piped work, the single-shot verbs run in one pass without a sprint doc. `team` is runtime-independent — it only edits `~/.lope/config.json` and runs 0 validators (except on `test`).
+Default flow for multi-phase work: **negotiate → implement/execute → audit**. For single-prompt / single-file / piped work, the single-shot verbs run in one pass without a sprint doc. `team` is runtime-independent — it only edits `~/.lope/config.json` and runs 0 validators (except on `test`).
 
 ### v0.7 cross-cutting flags
 
@@ -118,6 +119,44 @@ Flags:
   --timeout TIMEOUT           Per-validator timeout in seconds (overrides config, not persisted).
   --parallel / --sequential   Force parallel or sequential ensemble execution.
 ```
+
+### `lope implement <sprint_doc>`
+
+Run a sprint with zero-human swarm orchestration. `implement` is a higher-level wrapper around the same phase executor used by `execute`: it still validates every phase with Lope, but it adds an explicit roster-selection step and a stricter no-human prompt contract.
+
+```
+Usage: lope implement [-h] [--agents AGENTS] [--escalate-to ESCALATE_TO]
+                      [--phase PHASE] [--gates] [--gate-config GATE_CONFIG]
+                      [--dry-run] [--interactive]
+                      [--validators VALIDATORS] [--primary PRIMARY]
+                      [--timeout TIMEOUT] [--parallel | --sequential]
+                      sprint_doc
+
+Positional:
+  sprint_doc                  Path to the sprint doc produced by `lope negotiate`.
+
+Flags:
+  --agents AGENTS             Comma-separated implementation agents. The first agent is the writing lead. Required in non-interactive mode.
+  --escalate-to ESCALATE_TO   Comma-separated escalation/review agents. Required in non-interactive mode.
+  --phase PHASE               Run only one phase.
+  --gates                     Run objective evidence gates after each implementation attempt.
+  --gate-config PATH          Path to `.lope/rules.json` gate config.
+  --dry-run                   Resolve and print the roster without running any agent.
+  --interactive               Force the roster picker even when stdin/stdout is not a TTY.
+```
+
+Interactive TTY flow asks for implementation agents first, then escalation agents. After that, Lope must not ask the human again. Non-interactive runs must pass both `--agents` and `--escalate-to` so CI and host agents are deterministic.
+
+Examples:
+
+```bash
+lope implement SPRINT.md
+lope implement SPRINT.md --agents pi,antigravity --escalate-to claude,opencode
+lope implement SPRINT.md --agents pi --escalate-to claude,opencode --phase 2 --gates
+lope implement SPRINT.md --agents pi --escalate-to claude,opencode --dry-run
+```
+
+Safety model: v1 is a **single-writer swarm**. It does not ask multiple CLIs to edit the same checkout concurrently because that creates patch races. The first `--agents` entry writes. The selected implementation/escalation roster is injected into the prompt and validator pool. Literal parallel implementation belongs in a future worktree-backed mode.
 
 ### `lope audit <sprint_doc>`
 
@@ -552,12 +591,13 @@ There are **two invocation paths**, and the user will probably use #2.
 ```
 /lope-negotiate "Add JWT auth with refresh tokens"
 /lope-execute SPRINT-JWT-AUTH.md
+/lope-implement SPRINT-JWT-AUTH.md
 /lope-audit SPRINT-JWT-AUTH.md
-/lope              # umbrella explaining the three modes
+/lope              # umbrella explaining the sprint modes
 /lope-help         # prints this reference into your context
 ```
 
-Gemini CLI uses namespaced syntax: `/lope:negotiate`, `/lope:execute`, `/lope:audit`, `/lope:help`.
+Gemini CLI uses namespaced syntax: `/lope:negotiate`, `/lope:execute`, `/lope:implement`, `/lope:audit`, `/lope:help`.
 
 ### 2. Natural language (any CLI, including Codex and Vibe)
 
@@ -577,9 +617,9 @@ Different CLIs have different slash-command mechanisms (or lack thereof). This i
 
 | Host | Slash commands | Natural language | Install path |
 |---|---|---|---|
-| **Claude Code** | ✅ `/lope`, `/lope-negotiate`, `/lope-execute`, `/lope-audit`, `/lope-help`, `/using-lope` | ✅ | `~/.claude/skills/lope*/` (symlinks) |
+| **Claude Code** | ✅ `/lope`, `/lope-negotiate`, `/lope-execute`, `/lope-implement`, `/lope-audit`, `/lope-help`, `/using-lope` | ✅ | `~/.claude/skills/lope*/` (symlinks) |
 | **Codex** | ❌ does not register `/name` from SKILL.md (confirmed by asking Codex directly) | ✅ — skill content loaded, agent invokes via bash | `~/.codex/skills/lope*/` (content only) |
-| **Gemini CLI** | ✅ `/lope:negotiate`, `/lope:execute`, `/lope:audit`, `/lope:help` (namespaced, colon not hyphen) | ✅ | `~/.gemini/commands/lope/*.toml` |
+| **Gemini CLI** | ✅ `/lope:negotiate`, `/lope:execute`, `/lope:implement`, `/lope:audit`, `/lope:help` (namespaced, colon not hyphen) | ✅ | `~/.gemini/commands/lope/*.toml` |
 | **OpenCode** | ✅ `/lope-*` | ✅ | `~/.config/opencode/commands/*.md` (PLURAL "commands") |
 | **Cursor** | ⚠️ unverified — uses `.cursor/skills/` format; test before relying | ✅ | `.cursor/skills/` (project-local) |
 | **Mistral Vibe** | ❌ no user slash commands (confirmed by Vibe directly) | ✅ — skill content loaded, agent invokes via bash | `~/.vibe/skills/lope*/` (content only) |
@@ -693,7 +733,7 @@ alias lope='PYTHONPATH=~/.lope python3 -m lope'
 
 3. **Do not commit lope state to the user's project git repo** unless they explicitly ask.
 
-4. **Pick the right verb.** Don't force everything into `negotiate`. Questions go to `ask`; file critiques go to `review`; choices-from-a-list go to `vote`; A/B file comparisons go to `compare`; stdin-fed fan-out goes to `pipe`. `negotiate/execute/audit` is only the right shape for genuinely multi-phase planned work.
+4. **Pick the right verb.** Don't force everything into `negotiate`. Questions go to `ask`; file critiques go to `review`; choices-from-a-list go to `vote`; A/B file comparisons go to `compare`; stdin-fed fan-out goes to `pipe`. `negotiate/implement/execute/audit` is only the right shape for genuinely multi-phase planned work.
 
 5. **For external writing** (emails, board memos, published content), set `LOPE_CAVEMAN=off` before running so validator prose stays polished. Default `full` mode is for internal terse work.
 

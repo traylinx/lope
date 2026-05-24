@@ -17,7 +17,7 @@
 
 **Multi-CLI validator ensemble for AI work.**
 
-One AI CLI drafts. Others validate. No single-model blindspot. Works for multi-phase sprints (negotiate → execute → audit) **and** for single-shot multi-model tasks: ask a question to N CLIs, review a file across models, vote on options, A/B-compare two files, or pipe stdin to every validator. Add or remove teammates from any chat window — no JSON editing.
+One AI CLI drafts. Others validate. No single-model blindspot. Works for multi-phase sprints (negotiate → implement/execute → audit) **and** for single-shot multi-model tasks: ask a question to N CLIs, review a file across models, vote on options, A/B-compare two files, pipe stdin to every validator, or run a whole sprint with `lope implement` after selecting the agent roster. Add or remove teammates from any chat window — no JSON editing.
 
 > **v0.7 — Superpowers.** Lope is now a **multi-agent judgment engine**. `lope review --consensus` merges, deduplicates, and consensus-ranks findings across N validators with SARIF export for CI. `--synth` rolls those findings into one executive summary. `lope memory` remembers recurring issues across sessions. `lope deliberate` runs Agent-Order-style councils on ADR / PRD / RFC / build-vs-buy / migration / incident decisions. `--brain-context` and `--brain-log` plug into Makakoo OS Brain. `--divide files` walks directories; `--divide hunks` reviews diffs; `--roles` runs the same artifact through security / performance / tests lenses. See **[v0.7 superpowers](#v07-superpowers)** below.
 
@@ -68,7 +68,7 @@ You (in Claude Code):    /lope-negotiate "Add JWT auth with refresh tokens"
 
   Saved: SPRINT-JWT-AUTH.md
 
-You:    /lope-execute SPRINT-JWT-AUTH.md
+You:    /lope-implement SPRINT-JWT-AUTH.md --agents pi --escalate-to claude,opencode
 
   Phase 1  scaffold ................ PASS  0.95  12s
   Phase 2  core-middleware ......... NEEDS_FIX  0.71
@@ -134,7 +134,7 @@ Agent:  [recognizes multi-phase work → invokes /lope-negotiate]
 
 The trigger words your agent watches for: **plan / negotiate / scope / draft / roll out** → `negotiate`; **ask / what do the CLIs think / second opinion** → `ask`; **review / critique / audit this file** → `review`; **yes-no / A-B-C / pick one** → `vote`; **which is better / compare / bake-off** → `compare`; **pipe / send output / `cmd | lope`** → `pipe`; **add / remove / list / test a validator** → `team`. The agent maps the shape of your request to the right verb without you having to remember slash syntax.
 
-Explicit slash commands still work — `/lope-negotiate`, `/lope-execute`, `/lope-audit`, `/lope-ask`, `/lope-review`, `/lope-vote`, `/lope-compare`, `/lope-pipe`, `/lope-team` (Gemini uses `/lope:negotiate`, etc.). Natural language is the lazy path when you just want to do something multi-model.
+Explicit slash commands still work — `/lope-negotiate`, `/lope-execute`, `/lope-implement`, `/lope-audit`, `/lope-ask`, `/lope-review`, `/lope-vote`, `/lope-compare`, `/lope-pipe`, `/lope-team` (Gemini uses `/lope:negotiate`, etc.). Natural language is the lazy path when you just want to do something multi-model.
 
 ### What happens under the hood
 
@@ -232,7 +232,7 @@ lope configure
 
 ## How it works
 
-Lope has two shapes: **structured sprint mode** (negotiate → execute → audit, with phase retry) and **single-shot verbs** (ask, review, vote, compare, pipe — one prompt, N responses, done).
+Lope has three shapes: **structured sprint mode** (negotiate → implement/execute → audit, with phase retry), **zero-human implement mode** (select the agent roster once, then run the whole sprint), and **single-shot verbs** (ask, review, vote, compare, pipe — one prompt, N responses, done).
 
 ### Sprint mode — planned work with phase retries
 
@@ -251,6 +251,8 @@ Lope has two shapes: **structured sprint mode** (negotiate → execute → audit
 
 **Execute:** Phase-by-phase implementation with validation after each phase. PASS advances. NEEDS_FIX retries with specific fix instructions (up to 3 attempts). FAIL escalates to you.
 
+**Implement:** High-level zero-human sprint execution. First select implementation agents and escalation agents, then Lope runs the sprint without asking the human again. v1 uses a single writing lead to avoid same-checkout patch races while the selected team acts as validator/escalation context.
+
 **Audit:** Scorecard with per-phase verdicts, confidence scores, duration, and overall status.
 
 ### Single-shot verbs — one prompt, N responses
@@ -267,7 +269,7 @@ Lope has two shapes: **structured sprint mode** (negotiate → execute → audit
 
 Each verb shares the same parallel fan-out primitive (`EnsemblePool.validate`). This fan-out already runs concurrently; v0.7 builds consensus and synthesis on top of it rather than adding parallelism from scratch. No sprint doc, no phase retries, no majority-vote on verdicts. You get each model's actual response; synthesis is your call (or optional with `--json`).
 
-**Nine modes in total:** `negotiate`, `execute`, `audit`, `ask`, `review`, `vote`, `compare`, `pipe`, `team`.
+**Twelve modes in total:** `negotiate`, `execute`, `implement`, `audit`, `ask`, `review`, `vote`, `compare`, `pipe`, `team`, `memory`, `deliberate`.
 
 ---
 
@@ -426,6 +428,7 @@ After install, these work in any supported CLI host (Gemini uses the `/lope:<ver
 |---------|-------------|
 | `/lope-negotiate` | Draft a sprint doc with multi-round validator review |
 | `/lope-execute` | Run sprint phases with validator-in-the-loop retry |
+| `/lope-implement` | Select implementation/escalation agents, then run a sprint without human intervention |
 | `/lope-audit` | Generate scorecard from sprint results |
 | `/lope-ask` | Fan out one question to every validator; collect N raw answers |
 | `/lope-review` | Fan out a file review to every validator; collect N critiques |
@@ -463,6 +466,26 @@ Pass `--domain business` or `--domain research` to switch the validator role and
 ```bash
 lope execute SPRINT-RATE-LIMIT.md
 ```
+
+### `lope implement <sprint_doc>`
+```bash
+# Interactive TTY: asks which implementation and escalation agents to use first
+lope implement SPRINT-RATE-LIMIT.md
+
+# Agent/CI/non-TTY: pass the roster explicitly
+lope implement SPRINT-RATE-LIMIT.md \
+  --agents pi,antigravity \
+  --escalate-to claude,opencode \
+  --gates
+
+# Check the resolved roster without running anything
+lope implement SPRINT-RATE-LIMIT.md \
+  --agents pi \
+  --escalate-to claude,opencode \
+  --dry-run
+```
+
+`lope implement` is the zero-human wrapper around `execute`: roster selection is the only human step. After that, blockers are resolved inside the selected Lope team. Use `--interactive` to force roster prompts when TTY detection would otherwise require explicit flags. v1 intentionally uses a single writing lead to avoid patch collisions in one checkout; worktree-backed parallel writers are future scope.
 
 ### `lope audit <sprint_doc>`
 Generate scorecard. `--no-journal` skips writing to the journal file.
@@ -775,7 +798,7 @@ Yes — that's the whole design. The `using-lope` skill's "When NOT to trigger" 
 
 **Can I use it in CI?**
 ```bash
-PYTHONPATH=~/.lope python3 -m lope execute SPRINT-FEATURE-X.md || exit 1
+PYTHONPATH=~/.lope python3 -m lope implement SPRINT-FEATURE-X.md --agents pi --escalate-to claude,opencode || exit 1
 ```
 Non-interactive environments auto-select defaults and never block on stdin.
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.0 — Zero-human implement mode
+
+- **New `lope implement` command**: select implementation agents and escalation agents, then run the sprint without further human input. Interactive terminals get a two-step roster picker; non-interactive/CI runs must pass `--agents` and `--escalate-to` explicitly.
+- **Single-writer swarm safety model**: the first implementation agent is the writing lead, while the selected roster drives prompt context and validation. This avoids same-checkout patch races until a future worktree-backed parallel mode exists.
+- **Execution quality fix**: `lope execute --phase N` now actually limits execution to the requested phase instead of ignoring the flag.
+- **New host surfaces**: added `/lope-implement` skill/command files for Codex-style skills, Gemini command install, and OpenCode commands; updated README/reference/umbrella skills/install output.
+- **Regression coverage**: added focused tests for roster parsing, interactive defaults, non-interactive failures, prompt hardcoding prevention, phase filtering, and dry-run rendering.
+
 ## 0.9.1 — Ask/team timeout reliability
 
 - **Authoritative `--timeout` for custom providers:** subprocess provider timeouts can no longer silently extend a per-call timeout. A provider-level timeout may shorten a call, but `lope ask --timeout 30` now really caps the call near 30 seconds instead of inheriting a stale `900s` provider override.

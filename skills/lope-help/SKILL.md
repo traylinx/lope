@@ -21,7 +21,7 @@ When this skill is invoked, you (the agent) should:
 
 2. **Load the output into your context.** Read the whole thing. It covers:
    - What lope is and what it isn't
-   - The three modes (negotiate, execute, audit)
+   - The sprint modes (negotiate, execute, implement, audit)
    - CLI reference for every subcommand (authoritative flag list — no invention)
    - The three domains (engineering, business, research)
    - Supported validators
@@ -45,5 +45,5 @@ The lope reference is versioned with lope itself. Running `lope docs` guarantees
 ## Do not
 
 - **Do not paraphrase from memory** and skip running `lope docs`. The output is <6K tokens and fits trivially in context. Always pull it fresh.
-- **Do not use this skill for invoking lope** — that's what `/lope-negotiate`, `/lope-execute`, `/lope-audit`, and the `using-lope` auto-trigger skill are for. This skill is read-only documentation.
+- **Do not use this skill for invoking lope** — that's what `/lope-negotiate`, `/lope-execute`, `/lope-implement`, `/lope-audit`, and the `using-lope` auto-trigger skill are for. This skill is read-only documentation.
 - **Do not write wrapper scripts around lope**. The reference says so; read it.

@@ -41,7 +41,7 @@ Round 2  drafter revises with specific fixes
 Round 2  gemini-cli + opencode review... PASS (0.91)
 
 Saved: SPRINT-JWT-AUTH-REFRESH.md
-Next:  /lope-execute SPRINT-JWT-AUTH-REFRESH.md
+Next:  /lope-implement SPRINT-JWT-AUTH-REFRESH.md --agents pi --escalate-to claude,opencode
 ```
 
 ---
@@ -247,9 +247,10 @@ Across all 8 samples, a few patterns:
 
 | Slash command | When | Skill doc |
 |---|---|---|
-| `/lope` | Umbrella — explains the three modes and when to pick each | [`skills/lope/SKILL.md`](../skills/lope/SKILL.md) |
+| `/lope` | Umbrella — explains the sprint modes and when to pick each | [`skills/lope/SKILL.md`](../skills/lope/SKILL.md) |
 | `/lope-negotiate` | Draft a sprint doc with multi-round validator review | [`skills/lope-negotiate/SKILL.md`](../skills/lope-negotiate/SKILL.md) |
 | `/lope-execute` | Run phases with validator-in-the-loop retry (two-stage review in v0.3+) | [`skills/lope-execute/SKILL.md`](../skills/lope-execute/SKILL.md) |
+| `/lope-implement` | Select implementation/escalation agents, then run a sprint without human input | [`skills/lope-implement/SKILL.md`](../skills/lope-implement/SKILL.md) |
 | `/lope-audit` | Generate scorecard + append to journal | [`skills/lope-audit/SKILL.md`](../skills/lope-audit/SKILL.md) |
 | (auto) `using-lope` | Meta-skill — recognizes natural language and invokes the right mode | [`skills/using-lope/SKILL.md`](../skills/using-lope/SKILL.md) |
 

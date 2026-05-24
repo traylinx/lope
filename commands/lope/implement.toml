@@ -1,0 +1,38 @@
+description = "Run a lope sprint with zero-human swarm orchestration. Select implementation agents and escalation agents first; after that, Lope executes without asking the human again."
+
+prompt = """
+<objective>
+Run `lope implement` on a sprint doc. This is the zero-human sprint execution mode.
+</objective>
+
+<process>
+
+1. **Confirm the sprint doc path**. Read `{{args}}` as the path. If empty, ask the user which sprint doc to implement.
+
+2. **Choose roster**:
+   - Interactive terminal: run `lope implement "$SPRINT_DOC_PATH"` and answer the two roster prompts.
+   - Non-interactive / agent shell: pass both rosters explicitly:
+     ```bash
+     lope implement "$SPRINT_DOC_PATH" --agents pi --escalate-to claude,opencode
+     ```
+
+3. **Use dry-run when unsure**. Add `--interactive` if you need to force roster prompts despite TTY detection:
+```bash
+lope implement "$SPRINT_DOC_PATH" --agents pi --escalate-to claude,opencode --dry-run
+```
+
+4. **Execute**:
+```bash
+lope implement "$SPRINT_DOC_PATH" --agents "$AGENTS" --escalate-to "$ESCALATION_AGENTS"
+```
+
+5. **After completion**, run or suggest `lope audit "$SPRINT_DOC_PATH"`.
+
+</process>
+
+<constraints>
+- In non-interactive mode, never omit `--agents` or `--escalate-to`.
+- Do not hardcode Claude/OpenCode unless the user selected them or they are the intended escalation team.
+- Do not claim literal parallel file editing. v1 uses a single writing lead to avoid checkout races.
+</constraints>
+"""

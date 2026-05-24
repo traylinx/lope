@@ -1,18 +1,18 @@
 """Lope — multi-CLI validator ensemble for AI work.
 
-Version: 0.8.5
+Version: 0.10.0
 
 
-Three structured modes (`negotiate`, `execute`, `audit`) cover multi-phase
-sprints. Five single-shot modes (`ask`, `review`, `vote`, `compare`, `pipe`)
-cover cross-model Q&A, file critique, structured votes, A/B comparison,
-and stdin-fed fan-out. One roster-management mode (`team`) adds, removes,
+Four structured modes (`negotiate`, `execute`, `implement`, `audit`) cover multi-phase
+sprints, including zero-human sprint implementation. Five single-shot modes
+(`ask`, `review`, `vote`, `compare`, `pipe`) cover cross-model Q&A, file
+critique, structured votes, A/B comparison, and stdin-fed fan-out. One roster-management mode (`team`) adds, removes,
 lists, and smoke-tests validators from any chat window — no JSON editing.
 `team add --from-curl` parses a pasted curl command and turns it into a
 registered HTTP provider in one step. Any CLI implements; any CLI validates.
 """
 
-__version__ = "0.9.1"
+__version__ = "0.10.0"
 
 from .models import (
     ExecutionReport,
@@ -43,6 +43,7 @@ from .auditor import Auditor
 from .cli_discovery import CliInfo, defaults, discover
 from .config import LopeCfg, load, save, default_path
 from .selector import is_interactive, run_selector
+from .implement import ImplementRoster
 
 __all__ = [
     "AiderValidator",
@@ -54,6 +55,7 @@ __all__ = [
     "ExecutionReport",
     "EscalationRequired",
     "ImplementationResult",
+    "ImplementRoster",
     "LopeCfg",
     "Negotiator",
     "Phase",

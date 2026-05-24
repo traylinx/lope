@@ -31,4 +31,4 @@ PYTHONPATH=~/.lope python3 -m lope docs
 ## Do not
 
 - Do not paraphrase from memory and skip `lope docs`. Always pull fresh.
-- Do not use this for invoking lope. Use `/lope-negotiate`, `/lope-execute`, `/lope-audit`. This is read-only documentation.
+- Do not use this for invoking lope. Use `/lope-negotiate`, `/lope-execute`, `/lope-implement`, `/lope-audit`. This is read-only documentation.

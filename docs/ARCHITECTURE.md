@@ -2,7 +2,7 @@
 
 Lope is a zero-dependency Python CLI that coordinates multiple AI CLIs as an ensemble. It has two execution shapes:
 
-1. **Sprint mode** — `negotiate -> execute -> audit` for multi-phase work with validator-in-the-loop retries.
+1. **Sprint mode** — `negotiate -> implement/execute -> audit` for multi-phase work with validator-in-the-loop retries.
 2. **Single-shot mode** — `ask`, `review`, `vote`, `compare`, `pipe`, and `team` for one-pass fan-out, decisions, and roster management.
 
 ## Command surface

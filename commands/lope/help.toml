@@ -15,7 +15,7 @@ Inject the authoritative lope reference into the current session and answer the 
 
 <do_not>
 - Paraphrase from memory and skip running `lope docs`. The output is compact and always fresh. Always pull it.
-- Use this command to invoke lope. Use `/lope:negotiate`, `/lope:execute`, `/lope:audit` for invocation. This command is read-only documentation.
+- Use this command to invoke lope. Use `/lope:negotiate`, `/lope:execute`, `/lope:implement`, `/lope:audit` for invocation. This command is read-only documentation.
 - Write wrapper scripts around lope. The reference says so; read it.
 </do_not>
 """

@@ -117,6 +117,26 @@ def main():
                      help="Path to .lope/rules.json gate config")
     _add_pool_flags(exe)
 
+    # implement — high-level zero-human wrapper around execute. The first
+    # step is still human/interactive roster selection; after that, the sprint
+    # runs without asking the operator again.
+    imp = sub.add_parser("implement", help="Run a sprint with zero-human swarm orchestration")
+    imp.add_argument("sprint_doc", help="Path to sprint doc markdown")
+    imp.add_argument("--agents", default=None,
+                     help="Comma-separated implementation agents; first is the writing lead")
+    imp.add_argument("--escalate-to", dest="escalate_to", default=None,
+                     help="Comma-separated escalation/review agents, e.g. claude,opencode")
+    imp.add_argument("--phase", type=int, default=None, help="Run specific phase only")
+    imp.add_argument("--gates", action="store_true",
+                     help="Run objective evidence gates before/after each phase (opt-in)")
+    imp.add_argument("--gate-config", dest="gate_config", default=None,
+                     help="Path to .lope/rules.json gate config")
+    imp.add_argument("--dry-run", action="store_true",
+                     help="Resolve and print the roster without executing")
+    imp.add_argument("--interactive", action="store_true",
+                     help="Force the roster picker even when stdin/stdout is not a TTY")
+    _add_pool_flags(imp)
+
     # audit
     aud = sub.add_parser("audit", help="Generate scorecard from sprint results")
     aud.add_argument("sprint_doc", help="Path to sprint doc markdown")
@@ -501,6 +521,12 @@ def main():
         from .runlock import acquire as _runlock
         with _runlock("execute"):
             _cmd_execute(args)
+        return
+
+    if args.command == "implement":
+        from .runlock import acquire as _runlock
+        with _runlock("implement"):
+            _cmd_implement(args)
         return
 
     if args.command == "audit":
@@ -1433,6 +1459,18 @@ def _cmd_execute(args):
         )
         sys.exit(2)
 
+    if getattr(args, "phase", None) is not None:
+        phase = doc.get_phase(args.phase)
+        if phase is None:
+            available = ", ".join(str(p.index) for p in doc.phases) or "none"
+            print(
+                f"\nERROR: phase {args.phase} not found in {args.sprint_doc}. "
+                f"Available phases: {available}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        doc.phases = [phase]
+
     print(f"\nLope execute: {doc.title} ({len(doc.phases)} phases)\n")
     cfg, pool = _ensure_config(args)
 
@@ -1556,6 +1594,67 @@ def _cmd_execute(args):
         from .logo import mascot
         print()
         print(mascot("shipped. noticed."))
+    else:
+        print(f"\nEscalation: {report.error}")
+        sys.exit(1)
+
+
+def _cmd_implement(args):
+    from .auditor import Auditor
+    from .implement import (
+        RosterError,
+        apply_phase_filter,
+        render_dry_run,
+        resolve_implement_roster,
+        run_implement,
+    )
+
+    try:
+        doc = SprintDoc.from_markdown(
+            Path(args.sprint_doc).read_text(), path=args.sprint_doc
+        )
+    except FileNotFoundError:
+        print(f"ERROR: sprint doc not found: {args.sprint_doc}", file=sys.stderr)
+        sys.exit(1)
+
+    if not doc.phases:
+        print(
+            f"\nERROR: sprint doc at {args.sprint_doc} contains 0 phases.\n"
+            f"  Each phase must start with a level-3 heading: `### Phase N: <name>`",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    try:
+        doc = apply_phase_filter(doc, getattr(args, "phase", None))
+    except RosterError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    print(f"\nLope implement: {doc.title} ({len(doc.phases)} phases)\n")
+    cfg, pool = _ensure_config(args)
+
+    try:
+        roster = resolve_implement_roster(args, cfg, pool)
+    except RosterError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    if getattr(args, "dry_run", False):
+        print(render_dry_run(doc, roster))
+        return
+
+    gate_runner = _make_execute_gate_runner(args, cfg.timeout) if getattr(args, "gates", False) else None
+    report = run_implement(doc, cfg, roster, gate_runner=gate_runner)
+
+    auditor = Auditor()
+    print(f"\n{auditor.scorecard(report)}")
+
+    if report.ok and report.sprint_doc.phases:
+        print("\nAll phases passed!")
+        from .logo import mascot
+        print()
+        print(mascot("implemented. no humans harmed."))
     else:
         print(f"\nEscalation: {report.error}")
         sys.exit(1)

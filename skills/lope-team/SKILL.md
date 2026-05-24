@@ -40,7 +40,7 @@ The user wants to change who is on the lope team. Patterns:
 ## When NOT to trigger
 
 - User asks "what does lope do?" → use `using-lope` or the help skill, not team.
-- User is running a sprint or asking a question → use the relevant lope verb (negotiate/execute/audit/ask/review/vote/compare/pipe).
+- User is running a sprint or asking a question → use the relevant lope verb (negotiate/execute/implement/audit/ask/review/vote/compare/pipe).
 - User wants to change a *flag* on the current run (timeout, validators override) → use `--timeout` / `--validators` on the verb itself, not team.
 
 ## Verb shape

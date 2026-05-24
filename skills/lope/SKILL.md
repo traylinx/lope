@@ -1,6 +1,6 @@
 ---
 name: lope
-description: "Autonomous sprint runner with multi-CLI validator ensemble. Any AI CLI implements, any AI CLI validates, majority vote decides. Use for any multi-phase work: code sprints, marketing campaigns, research protocols, budgets, legal reviews. Three modes — negotiate a spec, execute phase by phase, audit the scorecard. 12 built-in CLI adapters plus infinite custom providers via JSON config."
+description: "Autonomous sprint runner with multi-CLI validator ensemble. Any AI CLI implements, any AI CLI validates, majority vote decides. Use for any multi-phase work: code sprints, marketing campaigns, research protocols, budgets, legal reviews. Four sprint modes — negotiate a spec, execute phase by phase, implement with zero-human roster selection, audit the scorecard. 12 built-in CLI adapters plus infinite custom providers via JSON config."
 ---
 
 # Lope — multi-CLI validator ensemble sprint runner
@@ -9,23 +9,25 @@ Lope is an autonomous sprint runner. One AI CLI implements. Others independently
 
 **Works for any domain:** engineering, business (marketing, finance, ops, consulting), research.
 
-## The three modes
+## The sprint modes
 
 | Mode | Slash command | What it does |
 |------|---------------|--------------|
 | Negotiate | `/lope-negotiate` | Draft a structured sprint doc via multi-round validator review. Validators push back on scope creep, missing criteria, unverified assumptions, until majority consensus. |
 | Execute | `/lope-execute` | Run sprint phases one at a time. After each phase, validators independently vote PASS / NEEDS_FIX / FAIL. NEEDS_FIX retries with specific fix instructions (3 attempts). |
+| Implement | `/lope-implement` | Select implementation/escalation agents once, then run a sprint without further human input. Single-writer safety model. |
 | Audit | `/lope-audit` | Generate a scorecard from the executed sprint — per-phase verdicts, confidence scores, durations, overall status — and append to the journal. |
 
 ## How to pick which mode to run
 
 - User has a fresh idea and no sprint doc yet → **`/lope-negotiate`**
-- User has a sprint doc and wants to run it → **`/lope-execute`**
+- User has a sprint doc and wants normal phase running → **`/lope-execute`**
+- User has a sprint doc and wants zero-human execution / out-of-the-loop mode → **`/lope-implement`**
 - User has already run a sprint and wants the scorecard → **`/lope-audit`**
 - User just wants to know what validators lope found on their machine → `lope status` (plain shell)
 - User wants to pick which validators to use → `lope configure` (plain shell)
 
-Unless the user tells you otherwise, the default flow is: **negotiate → execute → audit**.
+Unless the user tells you otherwise, the default flow is: **negotiate → implement/execute → audit**.
 
 ## The user probably won't type slash commands
 

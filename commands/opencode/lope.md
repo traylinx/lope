@@ -1,15 +1,16 @@
 ---
 name: lope
-description: Lope — multi-CLI validator ensemble sprint runner. Umbrella command that explains the three modes (negotiate, execute, audit) and when to use each. Run lope-help for full reference.
+description: Lope — multi-CLI validator ensemble sprint runner. Umbrella command that explains the sprint modes (negotiate, execute, implement, audit) and when to use each. Run lope-help for full reference.
 agent: build
 ---
 
 # Lope — umbrella
 
-Lope is an autonomous sprint runner with a multi-CLI validator ensemble. Any AI CLI implements, any AI CLI validates, majority vote decides. Three modes:
+Lope is an autonomous sprint runner with a multi-CLI validator ensemble. Any AI CLI implements, any AI CLI validates, majority vote decides. Four sprint modes:
 
 - **/lope-negotiate** — draft a sprint doc with multi-round validator review
 - **/lope-execute** — run sprint phases with validator-in-the-loop retry
+- **/lope-implement** — select implementation/escalation agents, then run without human input
 - **/lope-audit** — generate the scorecard
 
 For the complete reference (all flags, all domains, all env vars, troubleshooting, hard rules), run the `/lope-help` slash command in this session, or in a shell run:
@@ -23,7 +24,8 @@ If `lope` is not on PATH, use `PYTHONPATH=~/.lope python3 -m lope docs`.
 ## When to use which mode
 
 - User has a fresh idea and no sprint doc yet → `/lope-negotiate`
-- User has a sprint doc and wants to run it → `/lope-execute`
+- User has a sprint doc and wants normal phase running → `/lope-execute`
+- User has a sprint doc and wants zero-human execution → `/lope-implement`
 - User has already run a sprint and wants the scorecard → `/lope-audit`
 - User wants documentation → `/lope-help` or `lope docs`
 
