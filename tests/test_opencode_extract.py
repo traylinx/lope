@@ -33,6 +33,15 @@ def test_extract_text_concatenates_text_events():
     assert _extract_text_from_json_stream(stream) == "Hello world"
 
 
+def test_extract_text_concatenates_modern_delta_events():
+    stream = (
+        '{"type":"message.part.delta","properties":{"field":"text","delta":"Hello "}}\n'
+        '{"type":"message.part.delta","properties":{"field":"text","delta":"world"}}\n'
+        '{"type":"message.part.delta","properties":{"field":"metadata","delta":"ignored"}}\n'
+    )
+    assert _extract_text_from_json_stream(stream) == "Hello world"
+
+
 def test_extract_text_returns_empty_when_no_text_events():
     stream = (
         '{"type":"step_start"}\n'
@@ -65,6 +74,18 @@ def test_diagnose_recognizes_rejected_tool_call():
     assert "tool-use" in diag
     assert "rejected" in diag
     assert "DO NOT USE TOOLS" in diag
+
+
+def test_diagnose_recognizes_modern_updated_tool_call():
+    stream = (
+        '{"type":"message.part.updated","properties":{"part":{"type":"tool","tool":"read",'
+        '"state":{"status":"error","error":"blocked by sandbox"}}}}\n'
+        '{"type":"message.part.updated","properties":{"part":{"type":"step-finish",'
+        '"reason":"tool-calls"}}}\n'
+    )
+    diag = _diagnose_empty_opencode_stream(stream)
+    assert "tool-use" in diag
+    assert "read: blocked by sandbox" in diag
 
 
 def test_diagnose_recognizes_tool_calls_finish_without_explicit_error():

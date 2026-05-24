@@ -383,11 +383,13 @@ class OpencodeValidator(Validator):
 
 
 def _extract_text_from_json_stream(stdout: str) -> str:
-    """Concatenate all `type=text` events from opencode's JSON stream.
+    """Concatenate text chunks from opencode's JSON stream.
 
-    Opencode's `--format json` emits one JSON object per line; the
-    assistant's prose comes in objects where `type == "text"` and
-    `part.text` has the chunk. Unknown / malformed lines are ignored.
+    Opencode has shipped multiple JSON event shapes. Older versions emit
+    top-level ``type == "text"`` events with ``part.text``. Newer event
+    streams may emit incremental ``message.part.delta`` events where text
+    chunks live under ``properties.delta``. Unknown / malformed lines are
+    ignored so parser drift degrades into a diagnostic instead of a crash.
     """
     parts: List[str] = []
     for line in stdout.splitlines():
@@ -398,11 +400,18 @@ def _extract_text_from_json_stream(stdout: str) -> str:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if event.get("type") == "text":
+        ev_type = event.get("type")
+        if ev_type == "text":
             part = event.get("part") or {}
             text = part.get("text") or ""
             if text:
                 parts.append(text)
+        elif ev_type == "message.part.delta":
+            properties = event.get("properties") or {}
+            if properties.get("field") == "text":
+                delta = properties.get("delta") or ""
+                if delta:
+                    parts.append(delta)
     return "".join(parts)
 
 
@@ -423,29 +432,50 @@ def _diagnose_empty_opencode_stream(stdout: str) -> str:
     finish_reason: Optional[str] = None
     rejected_tools: List[str] = []
     saw_any_event = False
+    event_types: List[str] = []
+    first_non_empty_line: Optional[str] = None
     for line in stdout.splitlines():
         line = line.strip()
         if not line:
             continue
+        if first_non_empty_line is None:
+            first_non_empty_line = line[:160]
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
         saw_any_event = True
-        if event.get("type") == "step_finish":
-            part = event.get("part") or {}
+        ev_type = event.get("type")
+        if ev_type and ev_type not in event_types:
+            event_types.append(ev_type)
+
+        part = None
+        if ev_type == "message.part.updated":
+            properties = event.get("properties") or {}
+            part = properties.get("part") or {}
+        elif ev_type in {"step_finish", "step-finish", "tool_use", "tool"}:
+            part = event.get("part") or event
+
+        if part:
+            part_type = part.get("type") or ev_type
+        else:
+            part_type = ev_type
+
+        if part_type in {"step_finish", "step-finish"}:
+            part = part or {}
             r = part.get("reason")
             if isinstance(r, str):
                 finish_reason = r
-        elif event.get("type") == "tool_use":
-            part = event.get("part") or {}
+        elif part_type in {"tool_use", "tool"}:
+            part = part or {}
             state = part.get("state") or {}
             if state.get("status") == "error":
                 tool = part.get("tool", "unknown")
                 err = (state.get("error") or "")[:120]
                 rejected_tools.append(f"{tool}: {err}")
     if not saw_any_event:
-        return "stdout was empty (no JSON events parsed)"
+        raw = f"; first raw line: {first_non_empty_line}" if first_non_empty_line else ""
+        return f"stdout was empty (no JSON events parsed{raw})"
     if rejected_tools:
         # Most common case: drafter tried to read external files and got
         # blocked by the CLI's permission system.
@@ -463,8 +493,14 @@ def _diagnose_empty_opencode_stream(stdout: str) -> str:
     if finish_reason == "error":
         return "session ended via `reason: error` (opencode itself errored)"
     if finish_reason:
-        return f"session ended via `reason: {finish_reason}` with no text events"
-    return "stream had events but no text events and no step_finish"
+        return (
+            f"session ended via `reason: {finish_reason}` with no text events "
+            f"(types seen: {event_types})"
+        )
+    return (
+        "stream had events but no text events and no step_finish "
+        f"(types seen: {event_types}; first line: {first_non_empty_line})"
+    )
 
 
 # ─── Opencode VERDICT block parser ─────────────────────────────

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1 — OpenCode stream compatibility
+
+- **OpenCode JSON-stream compatibility:** parser now handles modern `message.part.delta` text chunks in addition to legacy `type: text` events, so newer OpenCode streams do not collapse into false “no text events” errors.
+- **Sharper OpenCode diagnostics:** empty-stream diagnostics now recognize modern `message.part.updated` tool and step-finish parts, include seen event types, and preserve the rejected-tool root cause.
+- **Regression coverage:** added tests for modern delta text extraction and updated-part tool-call diagnostics.
+
 ## 0.10.0 — Zero-human implement mode
 
 - **New `lope implement` command**: select implementation agents and escalation agents, then run the sprint without further human input. Interactive terminals get a two-step roster picker; non-interactive/CI runs must pass `--agents` and `--escalate-to` explicitly.
