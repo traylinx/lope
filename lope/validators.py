@@ -301,11 +301,12 @@ class OpencodeValidator(Validator):
     ) -> str:
         if not self.available():
             raise RuntimeError(f"opencode binary not found at {self._binary}")
-        cmd = [self._binary, "run", "--format", "json"]
-        extra_args = _opencode_extra_args()
-        if extra_args:
-            # Insert extra args between "run" and "--format"
-            cmd = [self._binary, "run"] + extra_args + ["--format", "json"]
+        # OpenCode 1.15+ can emit only reasoning events for its configured
+        # default DeepSeek provider, which leaves Lope with no text events.
+        # Sebastian's stable OpenCode non-interactive path is the local AIL
+        # provider; LOPE_OPENCODE_ARGS still overrides this default.
+        extra_args = _opencode_extra_args() or ["--model", "myprovider/ail-compound"]
+        cmd = [self._binary, "run"] + extra_args + ["--format", "json"]
         try:
             proc, elapsed = _run_with_group_kill(
                 cmd, input_text=prompt, timeout=timeout, cwd=self._workdir
@@ -333,10 +334,8 @@ class OpencodeValidator(Validator):
                 f"opencode binary not found at {self._binary}",
             )
 
-        cmd = [self._binary, "run", "--format", "json"]
-        extra_args = _opencode_extra_args()
-        if extra_args:
-            cmd = [self._binary, "run"] + extra_args + ["--format", "json"]
+        extra_args = _opencode_extra_args() or ["--model", "myprovider/ail-compound"]
+        cmd = [self._binary, "run"] + extra_args + ["--format", "json"]
 
         started = time.time()
         try:
