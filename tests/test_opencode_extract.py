@@ -17,6 +17,7 @@ These tests pin the diagnostic behavior so the regression can't reappear.
 """
 
 from lope.validators import (
+    OpencodeValidator,
     _extract_text_from_json_stream,
     _diagnose_empty_opencode_stream,
 )
@@ -137,3 +138,39 @@ def test_negotiator_system_prompt_works_for_all_domains():
         prompt = _negotiator_system_prompt(domain)
         assert "DO NOT USE" in prompt or "do not use" in prompt.lower()
         assert "tool" in prompt.lower()
+
+
+def test_opencode_validator_passes_prompt_as_positional_arg(monkeypatch):
+    """OpenCode 1.15.10 starts but emits only step_start when Lope pipes
+    the prompt through stdin. Pin the adapter contract: prompt is argv,
+    stdin is empty."""
+
+    captured = {}
+
+    def fake_run(command, input_text, timeout, cwd):
+        captured["command"] = command
+        captured["input_text"] = input_text
+        captured["timeout"] = timeout
+        captured["cwd"] = cwd
+
+        class Proc:
+            returncode = 0
+            stdout = '{"type":"text","part":{"text":"OK"}}\n'
+            stderr = ""
+
+        return Proc(), 0.01
+
+    monkeypatch.setattr(OpencodeValidator, "available", lambda self: True)
+    monkeypatch.setattr("lope.validators._run_with_group_kill", fake_run)
+
+    result = OpencodeValidator(binary="opencode", workdir="/tmp").generate(
+        "Reply exactly: OK",
+        timeout=45,
+    )
+
+    assert result == "OK"
+    assert captured["command"][-1] == "Reply exactly: OK"
+    assert captured["command"][-2] == "json"
+    assert captured["input_text"] is None
+    assert captured["timeout"] == 45
+    assert captured["cwd"] == "/tmp"

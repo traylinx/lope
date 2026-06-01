@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.2 — OpenCode positional prompt adapter
+
+- **OpenCode validator restored:** `OpencodeValidator` now passes the prompt as the positional `opencode run ... <message>` argument instead of piping it through stdin. OpenCode 1.15.10 starts but can emit only `step_start` in stdin mode, which made Lope report false `no text events` failures.
+- **AIL default retained:** keeps the v0.10.1 local `myprovider/ail-compound` default while preserving `LOPE_OPENCODE_ARGS` overrides.
+- **Regression coverage:** added a test pinning the OpenCode argv/stdin contract so future adapter refactors cannot reintroduce the failure. Full suite: 514/514.
+
 ## 0.10.1 — OpenCode stream compatibility
 
 - **OpenCode JSON-stream compatibility:** parser now handles modern `message.part.delta` text chunks in addition to legacy `type: text` events, so newer OpenCode streams do not collapse into false “no text events” errors.

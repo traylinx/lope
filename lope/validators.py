@@ -51,7 +51,7 @@ DEFAULT_OPENCODE_BIN = os.environ.get(
 
 def _run_with_group_kill(
     command: List[str],
-    input_text: str,
+    input_text: Optional[str],
     timeout: int,
     cwd: str,
 ) -> Tuple[subprocess.CompletedProcess, float]:
@@ -301,15 +301,17 @@ class OpencodeValidator(Validator):
     ) -> str:
         if not self.available():
             raise RuntimeError(f"opencode binary not found at {self._binary}")
-        # OpenCode 1.15+ can emit only reasoning events for its configured
-        # default DeepSeek provider, which leaves Lope with no text events.
+        # OpenCode 1.15+ expects the message as a positional argument.
+        # Feeding the prompt on stdin starts a run but can emit only
+        # step_start with no text/step_finish, which looks like a dead
+        # validator to Lope. Keep stdin empty and pass the prompt in argv.
         # Sebastian's stable OpenCode non-interactive path is the local AIL
         # provider; LOPE_OPENCODE_ARGS still overrides this default.
         extra_args = _opencode_extra_args() or ["--model", "myprovider/ail-compound"]
-        cmd = [self._binary, "run"] + extra_args + ["--format", "json"]
+        cmd = [self._binary, "run"] + extra_args + ["--format", "json", prompt]
         try:
             proc, elapsed = _run_with_group_kill(
-                cmd, input_text=prompt, timeout=timeout, cwd=self._workdir
+                cmd, input_text=None, timeout=timeout, cwd=self._workdir
             )
         except RuntimeError:
             raise  # already wrapped by _run_with_group_kill
@@ -335,12 +337,12 @@ class OpencodeValidator(Validator):
             )
 
         extra_args = _opencode_extra_args() or ["--model", "myprovider/ail-compound"]
-        cmd = [self._binary, "run"] + extra_args + ["--format", "json"]
+        cmd = [self._binary, "run"] + extra_args + ["--format", "json", prompt]
 
         started = time.time()
         try:
             proc, elapsed = _run_with_group_kill(
-                cmd, input_text=prompt, timeout=timeout, cwd=self._workdir
+                cmd, input_text=None, timeout=timeout, cwd=self._workdir
             )
         except RuntimeError as e:
             return _infra_error(
