@@ -19,6 +19,8 @@ These tests pin the diagnostic behavior so the regression can't reappear.
 from lope.validators import (
     OpencodeValidator,
     _extract_text_from_json_stream,
+    _extract_text_from_opencode_export,
+    _opencode_session_id_from_stdout,
     _diagnose_empty_opencode_stream,
 )
 from lope.negotiator import _negotiator_system_prompt
@@ -58,6 +60,46 @@ def test_extract_text_skips_malformed_lines():
         '{"type":"text","part":{"text":"Hi"}}\n'
     )
     assert _extract_text_from_json_stream(stream) == "Hi"
+
+
+def test_opencode_session_id_from_stdout_handles_plain_json_and_osc():
+    stream = '{"type":"step_start","sessionID":"ses_plain"}\n'
+    assert _opencode_session_id_from_stdout(stream) == "ses_plain"
+
+    osc = '\x1b]777;notify;warp://cli-agent;{"v":1,"session_id":"ses_osc"}\x07'
+    assert _opencode_session_id_from_stdout(osc) == "ses_osc"
+
+
+def test_extract_text_from_opencode_export_fallback(monkeypatch):
+    stream = '{"type":"step_start","sessionID":"ses_export"}\n'
+
+    def fake_run(command, input_text, timeout, cwd):
+        assert command == ["opencode", "export", "ses_export"]
+        assert input_text is None
+        assert timeout == 45
+        assert cwd == "/tmp"
+
+        class Proc:
+            returncode = 0
+            stdout = (
+                '{"messages":[{"info":{"role":"user"},"parts":[{"type":"text","text":"prompt"}]},'
+                '{"info":{"role":"assistant"},"parts":[{"type":"reasoning","text":"think"},'
+                '{"type":"text","text":"ok"}]}]}'
+            )
+            stderr = ""
+
+        return Proc(), 0.01
+
+    monkeypatch.setattr("lope.validators._run_with_group_kill", fake_run)
+    assert (
+        _extract_text_from_opencode_export(
+            "opencode",
+            stream,
+            timeout=45,
+            cwd="/tmp",
+        )
+        == "ok"
+    )
 
 
 def test_diagnose_recognizes_rejected_tool_call():
@@ -171,6 +213,7 @@ def test_opencode_validator_passes_prompt_as_positional_arg(monkeypatch):
     assert result == "OK"
     assert captured["command"][-1] == "Reply exactly: OK"
     assert captured["command"][-2] == "json"
+    assert "--pure" in captured["command"]
     assert captured["input_text"] is None
     assert captured["timeout"] == 45
     assert captured["cwd"] == "/tmp"

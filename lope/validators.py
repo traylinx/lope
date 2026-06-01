@@ -307,7 +307,7 @@ class OpencodeValidator(Validator):
         # validator to Lope. Keep stdin empty and pass the prompt in argv.
         # Sebastian's stable OpenCode non-interactive path is the local AIL
         # provider; LOPE_OPENCODE_ARGS still overrides this default.
-        extra_args = _opencode_extra_args() or ["--model", "myprovider/ail-compound"]
+        extra_args = _opencode_extra_args() or ["--pure", "--model", "myprovider/ail-compound"]
         cmd = [self._binary, "run"] + extra_args + ["--format", "json", prompt]
         try:
             proc, elapsed = _run_with_group_kill(
@@ -320,6 +320,10 @@ class OpencodeValidator(Validator):
                 f"opencode exited {proc.returncode}: {(proc.stderr or '')[:500]}"
             )
         text = _extract_text_from_json_stream(proc.stdout)
+        if not text:
+            text = _extract_text_from_opencode_export(
+                self._binary, proc.stdout, timeout=timeout, cwd=self._workdir
+            )
         if not text:
             diag = _diagnose_empty_opencode_stream(proc.stdout)
             raise RuntimeError(
@@ -336,7 +340,7 @@ class OpencodeValidator(Validator):
                 f"opencode binary not found at {self._binary}",
             )
 
-        extra_args = _opencode_extra_args() or ["--model", "myprovider/ail-compound"]
+        extra_args = _opencode_extra_args() or ["--pure", "--model", "myprovider/ail-compound"]
         cmd = [self._binary, "run"] + extra_args + ["--format", "json", prompt]
 
         started = time.time()
@@ -362,6 +366,10 @@ class OpencodeValidator(Validator):
             )
 
         text = _extract_text_from_json_stream(proc.stdout)
+        if not text:
+            text = _extract_text_from_opencode_export(
+                self._binary, proc.stdout, timeout=timeout, cwd=self._workdir
+            )
         if not text:
             diag = _diagnose_empty_opencode_stream(proc.stdout)
             return _infra_error(
@@ -414,6 +422,83 @@ def _extract_text_from_json_stream(stdout: str) -> str:
                 if delta:
                     parts.append(delta)
     return "".join(parts)
+
+
+def _opencode_session_id_from_stdout(stdout: str) -> Optional[str]:
+    """Return the session id from an opencode JSON/OSC event stream, if present."""
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        candidates = [line]
+        # Warp/OpenCode integrations may prefix the JSON event with an OSC
+        # notification. Keep the parser tolerant by also trying from the first
+        # JSON object brace onward.
+        brace = line.find("{")
+        if brace > 0:
+            candidates.append(line[brace:])
+            end_brace = line.rfind("}")
+            if end_brace > brace:
+                candidates.append(line[brace : end_brace + 1])
+        for candidate in candidates:
+            try:
+                event = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            session_id = event.get("sessionID") or event.get("session_id")
+            if isinstance(session_id, str) and session_id:
+                return session_id
+            payload = event.get("payload")
+            if isinstance(payload, dict):
+                session_id = payload.get("sessionID") or payload.get("session_id")
+                if isinstance(session_id, str) and session_id:
+                    return session_id
+    return None
+
+
+def _extract_text_from_opencode_export(
+    binary: str,
+    stdout: str,
+    timeout: int,
+    cwd: str,
+) -> str:
+    """Fallback for OpenCode 1.15 streams that only print step_start.
+
+    OpenCode 1.15.10 can complete a run successfully while stdout contains only
+    the first JSON event. The full assistant message is still available through
+    `opencode export <sessionID>`. Use that as a compatibility fallback so Lope's
+    opencode teammate stays usable across this upstream event-stream drift.
+    """
+    session_id = _opencode_session_id_from_stdout(stdout)
+    if not session_id:
+        return ""
+    try:
+        proc, _elapsed = _run_with_group_kill(
+            [binary, "export", session_id],
+            input_text=None,
+            timeout=min(timeout, 60),
+            cwd=cwd,
+        )
+    except RuntimeError:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return ""
+    messages = data.get("messages") or []
+    for message in reversed(messages):
+        info = message.get("info") or {}
+        if info.get("role") != "assistant":
+            continue
+        chunks: List[str] = []
+        for part in message.get("parts") or []:
+            if part.get("type") == "text" and isinstance(part.get("text"), str):
+                chunks.append(part["text"])
+        if chunks:
+            return "".join(chunks)
+    return ""
 
 
 def _diagnose_empty_opencode_stream(stdout: str) -> str:
