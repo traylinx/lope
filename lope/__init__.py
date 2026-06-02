@@ -12,7 +12,7 @@ lists, and smoke-tests validators from any chat window — no JSON editing.
 registered HTTP provider in one step. Any CLI implements; any CLI validates.
 """
 
-__version__ = "0.10.2"
+__version__ = "0.10.3"
 
 from .models import (
     ExecutionReport,

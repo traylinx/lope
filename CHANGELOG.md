@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.3 — Pi validator mode
+
+- **Pi adapter hardened for Lope:** auto-provisioned `pi` now runs with `--no-session --offline --no-tools -p` instead of plain `pi -p`, so Lope uses Pi as a stateless validator rather than an interactive coding agent that may open repo tools and time out.
+- **Sebastian setup preserved:** provider/model resolution stays in Pi's own settings, so local `switchai` + `ail-compound` defaults continue to work without Lope hardcoding personal flags.
+- **Regression coverage:** added a CLI discovery contract test pinning the Pi validator argv shape.
+
 ## 0.10.2 — OpenCode positional prompt adapter
 
 - **OpenCode validator restored:** `OpencodeValidator` now passes the prompt as the positional `opencode run ... <message>` argument instead of piping it through stdin. OpenCode 1.15.10 starts but can emit only `step_start` in stdin mode, which made Lope report false `no text events` failures.

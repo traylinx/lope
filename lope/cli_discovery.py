@@ -120,7 +120,18 @@ KNOWN_CLIS = [
         display_name="pi (Traylinx)",
         tier=2,
         is_default=False,
-        generic_command=["pi", "-p", "{prompt}"],
+        # Lope uses pi as a validator, not as an interactive coding agent.
+        # Keep the invocation stateless and tool-free so a medium review prompt
+        # cannot drift into repo exploration and hit the subprocess timeout.
+        # Provider/model still come from the user's pi settings.
+        generic_command=[
+            "pi",
+            "--no-session",
+            "--offline",
+            "--no-tools",
+            "-p",
+            "{prompt}",
+        ],
     ),
     CliInfo(
         name="qwen",
