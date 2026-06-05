@@ -25,6 +25,151 @@ from . import (
 from .validators import build_validator_pool
 
 
+def _utf8_stats(text: str) -> Tuple[int, int]:
+    """Return UTF-8 byte count and human line count for diagnostics."""
+    if not text:
+        return 0, 0
+    return len(text.encode("utf-8")), text.count("\n") + 1
+
+
+def _env_int_default(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _negotiate_prompt_profile(
+    *,
+    goal: str,
+    context: str,
+    domain: str,
+    timeout: int,
+    context_file: Optional[str] = None,
+    inline_context: str = "",
+) -> List[str]:
+    """Build operator-facing negotiate preflight lines.
+
+    The context payload is inlined into the actual drafter prompt. Report only
+    sizes and command-independent facts; never print prompt body or secrets.
+    """
+    from .negotiator import _build_user_prompt, _negotiator_system_prompt
+
+    has_context = bool((context or "").strip()) or bool(context_file) or bool((inline_context or "").strip())
+    if not has_context:
+        return []
+
+    system = _negotiator_system_prompt(domain)
+    user = _build_user_prompt(goal, context)
+    combined = f"{system}\n\n{user}"
+    context_bytes, context_lines = _utf8_stats(context)
+    prompt_bytes, prompt_lines = _utf8_stats(combined)
+    large_bytes = _env_int_default("LOPE_NEGOTIATE_LARGE_PROMPT_BYTES", 12_000)
+    large_lines = _env_int_default("LOPE_NEGOTIATE_LARGE_PROMPT_LINES", 250)
+    low_timeout = _env_int_default("LOPE_NEGOTIATE_LOW_TIMEOUT_SECONDS", 300)
+
+    lines = [
+        "Negotiate preflight:",
+        f"  Context payload: {context_bytes} bytes, {context_lines} lines",
+        f"  Generated drafter prompt: {prompt_bytes} bytes, {prompt_lines} lines",
+        f"  Effective timeout: {timeout}s per drafter/reviewer call",
+    ]
+    if context_file:
+        lines.append(
+            "  Note: --context-file is read and inlined into the model prompt; "
+            "it is not attached as a separate file."
+        )
+    elif (inline_context or "").strip():
+        lines.append("  Note: --context is inlined into the model prompt.")
+
+    if timeout <= low_timeout and (prompt_bytes >= large_bytes or prompt_lines >= large_lines):
+        lines.append(
+            "  WARNING: large generated prompt with low timeout. "
+            f"Thresholds: >= {large_bytes} bytes or >= {large_lines} lines, "
+            f"timeout <= {low_timeout}s. Use a compact LOPE_BRIEF.md or --timeout 300+."
+        )
+    return lines
+
+
+def _sanitize_command_arg(arg: str) -> str:
+    if "{prompt}" in arg:
+        return arg
+    if len(arg.encode("utf-8")) > 160:
+        return "<prompt>"
+    return arg
+
+
+def _validator_invocation_class(validator) -> str:
+    cls = validator.__class__.__name__
+    module = getattr(validator.__class__, "__module__", "")
+    if module.endswith("generic_validators") and cls == "GenericSubprocessValidator":
+        return "custom subprocess provider"
+    if module.endswith("generic_validators") and cls == "GenericHttpValidator":
+        return "custom HTTP provider"
+    return f"built-in {cls}"
+
+
+def _validator_command_shape(validator) -> str:
+    """Return sanitized command shape for diagnostics; never includes prompt body."""
+    name = getattr(validator, "name", "")
+    if name == "opencode" or validator.__class__.__name__ == "OpencodeValidator":
+        binary = getattr(validator, "_binary", "opencode")
+        extra = os.environ.get("LOPE_OPENCODE_ARGS", "").strip()
+        if extra:
+            return f"{binary} run $LOPE_OPENCODE_ARGS --format json <prompt>"
+        return f"{binary} run --pure --model myprovider/ail-compound --format json <prompt>"
+
+    command = getattr(validator, "_command", None)
+    if isinstance(command, list) and command:
+        shape = [_sanitize_command_arg(str(arg)) for arg in command]
+        stdin_mode = bool(getattr(validator, "_stdin", False))
+        rendered = " ".join(shape)
+        if stdin_mode:
+            rendered += " < prompt on stdin"
+        return rendered
+
+    binary = getattr(validator, "_binary", None)
+    if isinstance(binary, str) and binary:
+        return f"{binary} <prompt>"
+    return f"{validator.__class__.__name__} <prompt>"
+
+
+def _validator_effective_timeout(validator, timeout: int) -> int:
+    override = getattr(validator, "_timeout_override", None)
+    if isinstance(override, int):
+        return min(override, timeout)
+    return timeout
+
+
+def _format_drafter_failure_diagnostic(
+    validator, err_msg: str, *, timeout: int, prompt: str
+) -> str:
+    prompt_bytes, prompt_lines = _utf8_stats(prompt)
+    name = getattr(validator, "name", validator.__class__.__name__)
+    effective_timeout = _validator_effective_timeout(validator, timeout)
+    lines = [
+        f"{name}: {err_msg}",
+        f"      invocation: {_validator_invocation_class(validator)}",
+        f"      effective timeout: {effective_timeout}s",
+        f"      prompt: {prompt_bytes} bytes, {prompt_lines} lines",
+        f"      command: {_validator_command_shape(validator)}",
+    ]
+    if name == "pi":
+        lines.append(
+            "      hint: Lope invokes the raw pi binary directly, "
+            "not shell aliases/functions from your zsh config."
+        )
+    if name == "opencode" or validator.__class__.__name__ == "OpencodeValidator":
+        lines.append(
+            "      hint: OpenCode default is `opencode run --pure --model "
+            "myprovider/ail-compound --format json` unless LOPE_OPENCODE_ARGS overrides it."
+        )
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="lope",
@@ -1347,12 +1492,20 @@ def _cmd_negotiate(args):
                 return drafter.generate(combined, timeout=timeout)
             except NotImplementedError:
                 last_err_msg = "does not support drafting"
-                errors.append(f"{drafter.name}: {last_err_msg}")
+                errors.append(
+                    _format_drafter_failure_diagnostic(
+                        drafter, last_err_msg, timeout=timeout, prompt=combined
+                    )
+                )
                 continue
             except (RuntimeError, OSError, Exception) as e:
                 msg = str(e).splitlines()[0] if str(e) else type(e).__name__
                 last_err_msg = msg[:200]
-                errors.append(f"{drafter.name}: {last_err_msg}")
+                errors.append(
+                    _format_drafter_failure_diagnostic(
+                        drafter, last_err_msg, timeout=timeout, prompt=combined
+                    )
+                )
                 continue
         # All drafters failed — try HTTP fallback if user opted in.
         llm_url = os.environ.get("LOPE_LLM_URL")
@@ -1386,6 +1539,19 @@ def _cmd_negotiate(args):
             augmented_context = f"{brain_block}\n{augmented_context}"
         else:
             augmented_context = brain_block
+
+    preflight_lines = _negotiate_prompt_profile(
+        goal=args.goal,
+        context=augmented_context,
+        domain=args.domain,
+        timeout=cfg.timeout,
+        context_file=getattr(args, "context_file", None),
+        inline_context=getattr(args, "context", ""),
+    )
+    if preflight_lines:
+        for line in preflight_lines:
+            print(line)
+        print()
 
     negotiator = Negotiator(
         llm_call=llm_call,
@@ -3504,6 +3670,7 @@ def _team_health(args, cfg):
     """
     import time
     from .validators import build_validator_pool
+
 
     timeout = getattr(args, "timeout", 30)
     prompt = getattr(args, "prompt", None) or "Say OK only."

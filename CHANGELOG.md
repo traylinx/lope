@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.4 — Negotiate timeout diagnostics
+
+- **Context preflight:** `lope negotiate` now reports context payload size, generated drafter prompt size, effective timeout, and explicitly says `--context-file` is inlined into the model prompt rather than attached as a file.
+- **Large prompt warning:** low-timeout, large-prompt negotiations warn before any CLI is called. Thresholds are configurable with `LOPE_NEGOTIATE_LARGE_PROMPT_BYTES`, `LOPE_NEGOTIATE_LARGE_PROMPT_LINES`, and `LOPE_NEGOTIATE_LOW_TIMEOUT_SECONDS`.
+- **Drafter timeout diagnostics:** failed drafter fallback now includes validator name, invocation class, effective timeout, prompt size, and sanitized command shape without printing prompt bodies or secrets. Pi diagnostics call out raw binary invocation instead of shell aliases; OpenCode diagnostics call out the default `opencode run --pure --model myprovider/ail-compound --format json` path and `LOPE_OPENCODE_ARGS` override.
+- **Docs:** documented the `LOPE_BRIEF.md` workflow for large specs and timeout guidance for `pi`/`opencode` negotiate runs.
+
 ## 0.10.3 — Pi validator mode
 
 - **Pi adapter hardened for Lope:** auto-provisioned `pi` now runs with `--no-session --offline --no-tools -p` instead of plain `pi -p`, so Lope uses Pi as a stateless validator rather than an interactive coding agent that may open repo tools and time out.

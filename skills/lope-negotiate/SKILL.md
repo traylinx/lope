@@ -44,6 +44,14 @@ PYTHONPATH=~/.lope python3 -m lope negotiate "Systematic review of X" --domain r
 PYTHONPATH=~/.lope python3 -m lope negotiate "$GOAL" --context-file ./brief.md
 ```
 
+**Brief-first workflow for large specs:** `--context-file` is read from disk and inlined into the model prompt. It is not attached as a separate file, and validators do not open it independently. For multi-page specs, create a compact `LOPE_BRIEF.md` with only the goal, constraints, key evidence, and acceptance gates, then run:
+
+```bash
+PYTHONPATH=~/.lope python3 -m lope negotiate "$GOAL" --context-file ./LOPE_BRIEF.md --timeout 300
+```
+
+Use the default/global timeout or `--timeout 300+` for multi-page negotiate prompts. Do not use short `--timeout 120` runs for long context; that makes healthy providers look broken.
+
 4. Read and present the resulting sprint doc
 5. If passed: ask if user wants to proceed to `/lope-execute`
 6. If escalated: present validator feedback and discuss with user

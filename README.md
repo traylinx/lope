@@ -460,6 +460,16 @@ lope negotiate "Add rate limiting to the API gateway" \
     --context-file ./capacity-brief.md
 ```
 
+Large specs work best as a compact `LOPE_BRIEF.md`. `--context-file` is read and inlined into the model prompt, not attached as a separate file. For multi-page specs, prefer:
+
+```bash
+lope negotiate "Add rate limiting to the API gateway" \
+    --context-file ./LOPE_BRIEF.md \
+    --timeout 300
+```
+
+If `pi` or `opencode` time out during negotiate, check the preflight size line first. A 10KB+ generated drafter prompt with a short timeout is usually a prompt-size and timeout mismatch, not a broken provider. Lope invokes `pi` as the raw binary, not your shell alias. OpenCode defaults to `opencode run --pure --model myprovider/ail-compound --format json` unless `LOPE_OPENCODE_ARGS` overrides it.
+
 Pass `--domain business` or `--domain research` to switch the validator role and review criteria.
 
 ### `lope execute <sprint_doc>`
