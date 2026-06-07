@@ -8,11 +8,13 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # PyPI Trusted Publisher must match:
+    # owner=traylinx, repository=lope, workflow=publish.yml, environment=pypi
     environment:
       name: pypi
       url: https://pypi.org/project/lope-agent/
     permissions:
-      id-token: write  # for trusted publishing
+      id-token: write  # required for PyPI Trusted Publishing
     steps:
       - uses: actions/checkout@v4
 
@@ -29,11 +31,11 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
 
   publish-test:
     runs-on: ubuntu-latest
+    # TestPyPI Trusted Publisher must match:
+    # owner=traylinx, repository=lope, workflow=publish.yml, environment=testpypi
     environment:
       name: testpypi
       url: https://test.pypi.org/project/lope-agent/
@@ -56,5 +58,4 @@ jobs:
       - name: Publish to TestPyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
           repository-url: https://test.pypi.org/legacy/
