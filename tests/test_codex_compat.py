@@ -7,7 +7,9 @@ was not specified`` when run from a CWD that isn't in its trust list.
 Lope is intentionally invoked from arbitrary project directories (the
 user's CWD, ``LOPE_WORKDIR``, test fixtures). We pass
 ``--skip-git-repo-check`` so the trust gate doesn't block legitimate
-invocations.
+invocations. Codex is also launched with ``--ignore-user-config`` and a
+read-only, low-reasoning profile so user MCP startup failures and interactive
+defaults do not poison validator calls.
 
 These tests pin the argv shape so a future refactor or a regression in
 the validators module is caught before it lands as a silent INFRA_ERROR
@@ -43,6 +45,9 @@ def test_codex_generate_passes_skip_git_repo_check():
         f"codex 0.125.0+ refuses to run without this flag from "
         f"untrusted directories."
     )
+    assert "--ignore-user-config" in argv
+    assert argv[argv.index("-s") + 1] == "read-only"
+    assert argv[argv.index("-c") + 1] == 'model_reasoning_effort="low"'
     # The prompt itself must still be the final positional arg.
     assert argv[-1] == "hello"
 
@@ -60,3 +65,6 @@ def test_codex_validate_passes_skip_git_repo_check():
     assert "--skip-git-repo-check" in argv, (
         f"codex argv (validate) missing --skip-git-repo-check; got {argv!r}"
     )
+    assert "--ignore-user-config" in argv
+    assert argv[argv.index("-s") + 1] == "read-only"
+    assert argv[argv.index("-c") + 1] == 'model_reasoning_effort="low"'

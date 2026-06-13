@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.5 — Headroom MCP default install
+
+- Added `lope-headroom` skill guidance for Headroom MCP setup, retrieval, and safe compression during Lope work.
+- Updated the installer to best-effort install `headroom-ai[mcp]` with Python 3.10+ and register Headroom MCP for detected agent hosts.
+- Isolated the Codex validator from user config/MCP startup with `--ignore-user-config`, read-only sandboxing, and low reasoning defaults.
+
 ## 0.10.4 — Negotiate timeout diagnostics
 
 - **Context preflight:** `lope negotiate` now reports context payload size, generated drafter prompt size, effective timeout, and explicitly says `--context-file` is inlined into the model prompt rather than attached as a file.

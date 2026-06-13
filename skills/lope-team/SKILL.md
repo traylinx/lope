@@ -187,6 +187,18 @@ lope team test <name> --timeout 120
 
 Runs `validator.generate()` (the same codepath `ask`/`review`/`vote` use) and prints the raw response. Useful to confirm API keys, URLs, and binary paths before relying on the teammate in a real sprint.
 
+### Codex built-in smoke path
+
+When Codex is on the team and Lope says `codex timed out`, do not immediately mark Codex dead. First separate three cases: binary/auth, Lope adapter, and prompt size.
+
+```bash
+which codex
+PYTHONPATH=$HOME/.lope python3 -m lope team test codex "Reply exactly: CODEX-OK" --timeout 60
+PYTHONPATH=$HOME/.lope python3 -m lope ask --validators codex --timeout 120 "Reply exactly: CODEX-OK"
+```
+
+If trivial prompts pass but realistic prompts time out, Codex is alive and the prompt/config is too heavy. The Lope adapter should invoke Codex with `--ignore-user-config --skip-git-repo-check -s read-only -c 'model_reasoning_effort="low"'` so broken MCP startup or high interactive defaults do not poison validator calls. If `codex` startup shows MCP failures, fix `~/.codex/config.toml` separately, but keep Lope's Codex validator config-isolated.
+
 ## Flags reference
 
 `lope team add`:

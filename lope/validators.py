@@ -5,7 +5,7 @@ Concrete validators (all share the ---VERDICT---...---END--- block contract):
   - OpencodeValidator: `opencode run --format json` subprocess wrapper
   - GeminiCliValidator: `gemini --prompt ... --output-format json`
   - ClaudeCodeValidator: `claude --print "<prompt>"`
-  - CodexValidator: `codex exec "<prompt>"` (--quiet removed upstream in 2026)
+  - CodexValidator: `codex exec --ignore-user-config --skip-git-repo-check -s read-only -c model_reasoning_effort=low "<prompt>"`
   - AiderValidator: `aider --message "<prompt>" --no-git --no-auto-commits --yes`
   - StubValidator: deterministic canned response, for tests
 
@@ -1422,8 +1422,21 @@ class CodexValidator(Validator):
             # CWD not in codex's trust list. Pass --skip-git-repo-check
             # since lope is intentionally invoked from arbitrary project
             # dirs (LOPE_WORKDIR, the user's CWD, fixture sandboxes).
+            # v0.10.5: pass --ignore-user-config, read-only sandbox, and low
+            # reasoning so interactive Codex MCP startup or high defaults do
+            # not poison fast validator calls.
             proc = subprocess.run(
-                [self._binary, "exec", "--skip-git-repo-check", prompt],
+                [
+                    self._binary,
+                    "exec",
+                    "--ignore-user-config",
+                    "--skip-git-repo-check",
+                    "-s",
+                    "read-only",
+                    "-c",
+                    'model_reasoning_effort="low"',
+                    prompt,
+                ],
                 input="",
                 capture_output=True,
                 text=True,
@@ -1451,9 +1464,19 @@ class CodexValidator(Validator):
         started = time.time()
         try:
             # v0.4.3: pipe empty stdin; v0.8.3: --skip-git-repo-check
-            # for codex 0.125.0+ (see generate() comment above).
+            # for codex 0.125.0+; isolate from user config/MCPs and keep reasoning low (see generate() comment above).
             proc = subprocess.run(
-                [self._binary, "exec", "--skip-git-repo-check", self._build_prompt(prompt)],
+                [
+                    self._binary,
+                    "exec",
+                    "--ignore-user-config",
+                    "--skip-git-repo-check",
+                    "-s",
+                    "read-only",
+                    "-c",
+                    'model_reasoning_effort="low"',
+                    self._build_prompt(prompt),
+                ],
                 input="",
                 capture_output=True,
                 text=True,

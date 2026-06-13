@@ -10,6 +10,9 @@ set -euo pipefail
 LOPE_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILLS_DIR="$LOPE_DIR/skills"
 COMMANDS_DIR="$LOPE_DIR/commands"
+INSTALL_HEADROOM="${LOPE_INSTALL_HEADROOM:-1}"
+HEADROOM_AGENT_FILTER="${LOPE_HEADROOM_AGENT:-}"
+HEADROOM_PROXY_URL_VALUE="${HEADROOM_PROXY_URL:-http://127.0.0.1:8787}"
 
 # Parse args (POSIX-compatible, no bash 4+ features)
 HOST="all"
@@ -26,6 +29,19 @@ for i in "${!ARGS[@]}"; do
       next_i=$((i + 1))
       if [ "$next_i" -lt "${#ARGS[@]}" ]; then
         HOST="${ARGS[$next_i]}"
+        SKIP_NEXT=1
+      fi
+      ;;
+    --skip-headroom|--no-headroom)
+      INSTALL_HEADROOM="0"
+      ;;
+    --headroom-agent=*)
+      HEADROOM_AGENT_FILTER="${arg#--headroom-agent=}"
+      ;;
+    --headroom-agent)
+      next_i=$((i + 1))
+      if [ "$next_i" -lt "${#ARGS[@]}" ]; then
+        HEADROOM_AGENT_FILTER="${ARGS[$next_i]}"
         SKIP_NEXT=1
       fi
       ;;
@@ -180,6 +196,101 @@ install_pi() {
   done
 }
 
+# Headroom: MCP compression layer for bulky tool/validator output.
+# Best-effort: never fail the Lope install because Python/PyPI/agent config is unavailable.
+find_headroom_python() {
+  for candidate in python3.12 python3.11 python3.10 python3; do
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    if "$candidate" - <<'PYCHECK' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+PYCHECK
+    then
+      command -v "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ensure_headroom_cli() {
+  if command -v headroom >/dev/null 2>&1; then
+    echo "  headroom: $(command -v headroom)"
+    headroom --version 2>/dev/null || true
+    return 0
+  fi
+
+  local pybin
+  pybin="$(find_headroom_python || true)"
+  if [ -z "${pybin:-}" ]; then
+    echo "  headroom: skipped — Python 3.10+ required for headroom-ai[mcp]"
+    return 1
+  fi
+
+  if command -v pipx >/dev/null 2>&1; then
+    echo "  headroom: installing headroom-ai[mcp] via pipx ($pybin)"
+    if pipx install --python "$pybin" 'headroom-ai[mcp]>=0.25.0'; then
+      export PATH="$HOME/.local/bin:$PATH"
+      return 0
+    fi
+    echo "  headroom: pipx failed, trying $pybin -m pip --user"
+  fi
+
+  if "$pybin" -m pip install --user 'headroom-ai[mcp]>=0.25.0'; then
+    local user_base
+    user_base="$($pybin - <<'PYBASE' 2>/dev/null || true
+import site
+print(site.USER_BASE)
+PYBASE
+)"
+    if [ -n "${user_base:-}" ]; then
+      export PATH="$user_base/bin:$HOME/.local/bin:$PATH"
+    else
+      export PATH="$HOME/.local/bin:$PATH"
+    fi
+    return 0
+  fi
+  return 1
+}
+
+headroom_agent_for_host() {
+  if [ -n "$HEADROOM_AGENT_FILTER" ]; then
+    printf '%s\n' "$HEADROOM_AGENT_FILTER"
+    return 0
+  fi
+  case "$HOST" in
+    claude|codex|cursor) printf '%s\n' "$HOST" ;;
+    all) printf '\n' ;;
+    *) printf '__skip__\n' ;;
+  esac
+}
+
+install_headroom() {
+  [ "$INSTALL_HEADROOM" = "0" ] && { echo "  headroom: skipped (--skip-headroom/LOPE_INSTALL_HEADROOM=0)"; return 0; }
+
+  if ! ensure_headroom_cli; then
+    echo "  headroom: WARNING install failed; run: pipx install --python python3.11 'headroom-ai[mcp]>=0.25.0' && headroom mcp install"
+    return 0
+  fi
+
+  command -v headroom >/dev/null 2>&1 || { echo "  headroom: WARNING executable not on PATH after install"; return 0; }
+
+  local agent
+  agent="$(headroom_agent_for_host)"
+  if [ "$agent" = "__skip__" ]; then
+    echo "  headroom: CLI installed; no MCP registrar for host '$HOST'"
+    return 0
+  fi
+
+  if [ -n "$agent" ]; then
+    echo "  headroom: registering MCP for $agent at $HEADROOM_PROXY_URL_VALUE"
+    headroom mcp install --agent "$agent" --proxy-url "$HEADROOM_PROXY_URL_VALUE" || echo "  headroom: WARNING MCP registration failed"
+  else
+    echo "  headroom: registering MCP for every detected agent at $HEADROOM_PROXY_URL_VALUE"
+    headroom mcp install --proxy-url "$HEADROOM_PROXY_URL_VALUE" || echo "  headroom: WARNING MCP registration failed"
+  fi
+}
+
 install_host() {
   case "$1" in
     claude)   install_claude ;;
@@ -195,7 +306,7 @@ install_host() {
 }
 
 echo ""
-echo "Lope v0.10.4 — Installing skills and commands"
+echo "Lope v0.10.5 — Installing skills and commands"
 echo "─────────────────────────────────────────────"
 echo ""
 
@@ -208,6 +319,10 @@ else
 fi
 
 echo ""
+echo "Installing Headroom MCP compression (best-effort)..."
+install_headroom
+
+echo ""
 echo "Verifying lope engine..."
 if python3 -c "import sys; sys.path.insert(0, '$LOPE_DIR'); import lope; print('  OK — lope v' + lope.__version__)" 2>/dev/null; then
   :
@@ -217,11 +332,11 @@ else
 fi
 echo ""
 echo "Slash commands by host (honest state — not every host supports user slash commands):"
-echo "  Claude Code  /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate"
-echo "  Gemini CLI   /lope:negotiate  /lope:execute  /lope:implement  /lope:audit  /lope:help  /lope:ask  /lope:review  /lope:vote  /lope:compare  /lope:pipe  /lope:team  /lope:memory  /lope:deliberate"
-echo "  OpenCode     /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate"
-echo "  pi           /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate"
-echo "  Qwen Code    /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate"
+echo "  Claude Code  /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate  /lope-headroom"
+echo "  Gemini CLI   /lope:negotiate  /lope:execute  /lope:implement  /lope:audit  /lope:help  /lope:ask  /lope:review  /lope:vote  /lope:compare  /lope:pipe  /lope:team  /lope:memory  /lope:deliberate  /lope:headroom"
+echo "  OpenCode     /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate  /lope-headroom"
+echo "  pi           /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate  /lope-headroom"
+echo "  Qwen Code    /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate  /lope-headroom"
 echo "  Cursor       (unverified — skills written to ~/.cursor/agents/)"
 echo ""
 echo "Codex notes:"
@@ -241,5 +356,6 @@ echo ""
 echo "Next steps:"
 echo "  1. Configure validators:  PYTHONPATH=$LOPE_DIR python3 -m lope configure"
 echo "  2. Check status:          PYTHONPATH=$LOPE_DIR python3 -m lope status"
-echo "  3. Alias for convenience: alias lope='PYTHONPATH=$LOPE_DIR python3 -m lope'"
+echo "  3. Verify Headroom:       headroom mcp status"
+echo "  4. Alias for convenience: alias lope='PYTHONPATH=$LOPE_DIR python3 -m lope'"
 echo ""

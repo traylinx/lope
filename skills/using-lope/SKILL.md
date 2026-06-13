@@ -151,6 +151,22 @@ Pass `--domain <name>` on negotiate to switch validator role, artifact labels, a
 
 Lope auto-detects these on `$PATH`: Claude Code, OpenCode, Gemini CLI, Codex, Mistral Vibe, Aider, Ollama, Goose, Open Interpreter, llama.cpp, GitHub Copilot CLI, Amazon Q. Custom providers via JSON config. At least two different ones are needed for a real ensemble — lope will still run with one but you lose the cross-model check.
 
+### Codex validator hygiene
+
+Codex is useful in Lope, but only when isolated from interactive Codex startup config. If `lope ask --validators codex` times out while trivial prompts work, suspect Codex config pollution before declaring the validator down. Broken/slow MCP startup, high default reasoning, and large prompts can turn a validator call into an 8-minute run.
+
+Fast diagnosis:
+
+```bash
+which lope codex
+PYTHONPATH=$HOME/.lope python3 -m lope team test codex "Reply exactly: CODEX-OK" --timeout 60
+PYTHONPATH=$HOME/.lope python3 -m lope ask --validators codex --timeout 120 "Reply exactly: CODEX-OK"
+```
+
+Expected Lope-side Codex invocation for validator work: `codex exec --ignore-user-config --skip-git-repo-check -s read-only -c 'model_reasoning_effort="low"' <prompt>`. This avoids loading user MCPs and keeps Codex as a validator, not a full interactive agent. If the installed adapter does not do this, patch `~/.lope/lope/validators.py` before trusting Codex timings.
+
+Use Codex with `--timeout 600` only for slow specialist/API research, or split the question into narrow prompts. For fast ensemble checks, keep prompts small or use another validator.
+
 ## If you invoke lope
 
 Route through the dedicated slash commands, not by calling the Python module directly:
