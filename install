@@ -13,6 +13,8 @@ COMMANDS_DIR="$LOPE_DIR/commands"
 INSTALL_HEADROOM="${LOPE_INSTALL_HEADROOM:-1}"
 HEADROOM_AGENT_FILTER="${LOPE_HEADROOM_AGENT:-}"
 HEADROOM_PROXY_URL_VALUE="${HEADROOM_PROXY_URL:-http://127.0.0.1:8787}"
+HEADROOM_DOCKER_INSTALL_URL_VALUE="${HEADROOM_DOCKER_INSTALL_URL:-https://raw.githubusercontent.com/chopratejas/headroom/main/scripts/install.sh}"
+HEADROOM_DOCKER_NATIVE=0
 
 # Parse args (POSIX-compatible, no bash 4+ features)
 HOST="all"
@@ -213,9 +215,150 @@ PYCHECK
   return 1
 }
 
+is_headroom_docker_native() {
+  local hr
+  hr="$(command -v headroom 2>/dev/null || true)"
+  [ -n "${hr:-}" ] || return 1
+  grep -q 'HEADROOM_IMAGE_DEFAULT' "$hr" 2>/dev/null
+}
+
+find_headroom_bash() {
+  local candidate bashbin
+  for candidate in "${BASH:-}" bash /usr/local/bin/bash /opt/homebrew/bin/bash; do
+    [ -n "$candidate" ] || continue
+    if [ -x "$candidate" ]; then
+      bashbin="$candidate"
+    else
+      bashbin="$(command -v "$candidate" 2>/dev/null || true)"
+    fi
+    [ -n "${bashbin:-}" ] || continue
+    if "$bashbin" -c '((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3)))' >/dev/null 2>&1; then
+      printf '%s\n' "$bashbin"
+      return 0
+    fi
+  done
+  return 1
+}
+
+install_headroom_docker_native() {
+  command -v docker >/dev/null 2>&1 || { echo "  headroom: Docker fallback unavailable (docker not found)"; return 1; }
+  docker version >/dev/null 2>&1 || { echo "  headroom: Docker fallback unavailable (docker not available)"; return 1; }
+  command -v curl >/dev/null 2>&1 || { echo "  headroom: Docker fallback unavailable (curl not found)"; return 1; }
+
+  local bashbin tmp
+  bashbin="$(find_headroom_bash || true)"
+  [ -n "${bashbin:-}" ] || { echo "  headroom: Docker fallback unavailable (bash >=4.3 not found)"; return 1; }
+
+  tmp="${TMPDIR:-/tmp}/headroom-install.$$"
+  rm -f "$tmp"
+  echo "  headroom: installing Docker-native wrapper via $HEADROOM_DOCKER_INSTALL_URL_VALUE"
+  if ! curl -fsSL "$HEADROOM_DOCKER_INSTALL_URL_VALUE" -o "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! "$bashbin" "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  rm -f "$tmp"
+  export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+  if command -v headroom >/dev/null 2>&1; then
+    HEADROOM_DOCKER_NATIVE=1
+    return 0
+  fi
+  return 1
+}
+
+write_headroom_docker_mcp_shim() {
+  mkdir -p "$HOME/.local/bin"
+  local shim="$HOME/.local/bin/headroom-mcp-stdio"
+  cat >"$shim" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+HEADROOM_IMAGE="${HEADROOM_DOCKER_IMAGE:-ghcr.io/chopratejas/headroom:latest}"
+HEADROOM_CONTAINER_HOME="${HEADROOM_CONTAINER_HOME:-/tmp/headroom-home}"
+HEADROOM_HOST_HOME="${HOME:?}"
+HEADROOM_PROXY_URL_VALUE="${HEADROOM_PROXY_URL:-http://127.0.0.1:8787}"
+
+mkdir -p \
+  "${HEADROOM_HOST_HOME}/.headroom" \
+  "${HEADROOM_HOST_HOME}/.claude" \
+  "${HEADROOM_HOST_HOME}/.codex" \
+  "${HEADROOM_HOST_HOME}/.gemini"
+
+user_args=()
+if command -v id >/dev/null 2>&1; then
+  user_args=(--user "$(id -u):$(id -g)")
+fi
+
+docker run --rm -i \
+  "${user_args[@]}" \
+  -w /workspace \
+  --env "HOME=${HEADROOM_CONTAINER_HOME}" \
+  --env "PYTHONUNBUFFERED=1" \
+  --env "HEADROOM_WORKSPACE_DIR=${HEADROOM_CONTAINER_HOME}/.headroom" \
+  --env "HEADROOM_CONFIG_DIR=${HEADROOM_CONTAINER_HOME}/.headroom/config" \
+  --env "HEADROOM_PROXY_URL=${HEADROOM_PROXY_URL_VALUE}" \
+  -v "${PWD}:/workspace" \
+  -v "${HEADROOM_HOST_HOME}/.headroom:${HEADROOM_CONTAINER_HOME}/.headroom" \
+  -v "${HEADROOM_HOST_HOME}/.claude:${HEADROOM_CONTAINER_HOME}/.claude" \
+  -v "${HEADROOM_HOST_HOME}/.codex:${HEADROOM_CONTAINER_HOME}/.codex" \
+  -v "${HEADROOM_HOST_HOME}/.gemini:${HEADROOM_CONTAINER_HOME}/.gemini" \
+  --entrypoint headroom \
+  "${HEADROOM_IMAGE}" \
+  mcp serve "$@"
+EOF
+  chmod +x "$shim"
+  printf '%s\n' "$shim"
+}
+
+register_headroom_claude_docker_mcp() {
+  local shim config
+  shim="$(write_headroom_docker_mcp_shim)"
+  if command -v claude >/dev/null 2>&1; then
+    claude mcp remove headroom -s user >/dev/null 2>&1 || true
+    claude mcp add headroom -s user -e "HEADROOM_PROXY_URL=$HEADROOM_PROXY_URL_VALUE" -- "$shim" >/dev/null || return 1
+    echo "  headroom: registered Docker-native MCP for Claude via $shim"
+    return 0
+  fi
+
+  mkdir -p "$HOME/.claude"
+  config="$HOME/.claude/mcp.json"
+  if command -v python3 >/dev/null 2>&1; then
+    HEADROOM_SHIM="$shim" HEADROOM_PROXY_URL_VALUE="$HEADROOM_PROXY_URL_VALUE" HEADROOM_CONFIG="$config" python3 - <<'PY' || return 1
+import json, os
+from pathlib import Path
+
+path = Path(os.environ["HEADROOM_CONFIG"])
+try:
+    data = json.loads(path.read_text()) if path.exists() else {}
+except Exception:
+    data = {}
+servers = data.setdefault("mcpServers", {})
+servers["headroom"] = {
+    "command": os.environ["HEADROOM_SHIM"],
+    "args": [],
+    "env": {"HEADROOM_PROXY_URL": os.environ["HEADROOM_PROXY_URL_VALUE"]},
+}
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(data, indent=2) + "\n")
+PY
+    echo "  headroom: registered Docker-native MCP for Claude in $config"
+    return 0
+  fi
+
+  echo "  headroom: WARNING Claude CLI not found and python3 unavailable; cannot write Claude MCP config"
+  return 1
+}
+
 ensure_headroom_cli() {
   if command -v headroom >/dev/null 2>&1; then
     echo "  headroom: $(command -v headroom)"
+    if is_headroom_docker_native; then
+      HEADROOM_DOCKER_NATIVE=1
+      echo "  headroom: detected Docker-native wrapper"
+    fi
     headroom --version 2>/dev/null || true
     return 0
   fi
@@ -223,8 +366,9 @@ ensure_headroom_cli() {
   local pybin
   pybin="$(find_headroom_python || true)"
   if [ -z "${pybin:-}" ]; then
-    echo "  headroom: skipped — Python 3.10+ required for headroom-ai[mcp]"
-    return 1
+    echo "  headroom: Python 3.10+ unavailable, trying Docker-native fallback"
+    install_headroom_docker_native
+    return $?
   fi
 
   if command -v pipx >/dev/null 2>&1; then
@@ -250,7 +394,8 @@ PYBASE
     fi
     return 0
   fi
-  return 1
+  echo "  headroom: Python install failed, trying Docker-native fallback"
+  install_headroom_docker_native
 }
 
 headroom_agent_for_host() {
@@ -269,7 +414,7 @@ install_headroom() {
   [ "$INSTALL_HEADROOM" = "0" ] && { echo "  headroom: skipped (--skip-headroom/LOPE_INSTALL_HEADROOM=0)"; return 0; }
 
   if ! ensure_headroom_cli; then
-    echo "  headroom: WARNING install failed; run: pipx install --python python3.11 'headroom-ai[mcp]>=0.25.0' && headroom mcp install"
+    echo "  headroom: WARNING install failed; run: pipx install --python python3.11 'headroom-ai[mcp]>=0.25.0' || curl -fsSL '$HEADROOM_DOCKER_INSTALL_URL_VALUE' | bash"
     return 0
   fi
 
@@ -279,6 +424,17 @@ install_headroom() {
   agent="$(headroom_agent_for_host)"
   if [ "$agent" = "__skip__" ]; then
     echo "  headroom: CLI installed; no MCP registrar for host '$HOST'"
+    return 0
+  fi
+
+  if [ "${HEADROOM_DOCKER_NATIVE:-0}" = "1" ]; then
+    if [ -z "$agent" ] || [ "$agent" = "claude" ]; then
+      register_headroom_claude_docker_mcp || echo "  headroom: WARNING Docker-native Claude MCP registration failed"
+      [ "$agent" = "claude" ] && return 0
+      echo "  headroom: Docker-native MCP fallback currently auto-registers Claude only"
+      return 0
+    fi
+    echo "  headroom: WARNING Docker-native MCP fallback cannot auto-register agent '$agent'"
     return 0
   fi
 
@@ -306,7 +462,7 @@ install_host() {
 }
 
 echo ""
-echo "Lope v0.10.5 — Installing skills and commands"
+echo "Lope v0.10.6 — Installing skills and commands"
 echo "─────────────────────────────────────────────"
 echo ""
 

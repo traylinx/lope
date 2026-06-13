@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.6 — Headroom Docker fallback
+
+- Added Docker-native Headroom fallback to `./install` so `headroom` still installs on hosts where `headroom-ai[mcp]` cannot build native dependencies.
+- Added a Docker-native Claude MCP stdio shim so Headroom's Docker wrapper works with Claude MCP health checks instead of dropping stdin.
+- Documented the Docker fallback in `/lope-headroom` while keeping Python/pipx as the first install path.
+
 ## 0.10.5 — Headroom MCP default install
 
 - Added `lope-headroom` skill guidance for Headroom MCP setup, retrieval, and safe compression during Lope work.
