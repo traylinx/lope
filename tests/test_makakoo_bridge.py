@@ -9,7 +9,6 @@ We never call a real ``makakoo`` binary or touch the user's
 from __future__ import annotations
 
 import datetime as _dt
-import os
 import stat
 import subprocess
 import textwrap

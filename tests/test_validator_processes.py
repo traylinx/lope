@@ -77,11 +77,11 @@ def test_timeout_cleans_descendants_ps():
     # Filter out lines that contain spawn_tree.py but are from ps itself
     # or the pytest runner
     orphans = [
-        l for l in lines
-        if "spawn_tree.py" in l
-        and "grep" not in l
-        and "ps " not in l
-        and "pytest" not in l
+        ln for ln in lines
+        if "spawn_tree.py" in ln
+        and "grep" not in ln
+        and "ps " not in ln
+        and "pytest" not in ln
     ]
     assert len(orphans) == 0, (
         f"Found {len(orphans)} orphan spawn_tree processes: {orphans}"

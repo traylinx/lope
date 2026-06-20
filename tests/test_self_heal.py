@@ -20,17 +20,15 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lope.config import LearnedAdapter, LopeCfg, default_path, load, save
+from lope.config import LearnedAdapter, LopeCfg, load
 from lope.healer import (
     LEARNED_ADAPTER_TTL_SECONDS,
     SelfHealer,

@@ -8,7 +8,6 @@ is never touched.
 
 from __future__ import annotations
 
-import os
 import sqlite3
 import time
 from pathlib import Path
@@ -19,7 +18,6 @@ from lope.findings import ConsensusFinding, ConsensusLevel
 from lope.memory import (
     ENV_DB_PATH,
     ENV_DISABLE,
-    FindingRecord,
     LopeMemory,
     ReviewSessionRecord,
     default_db_path,

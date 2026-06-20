@@ -7,16 +7,11 @@ Validators are stub callables; no real CLI ever runs.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Dict, List
 
 import pytest
 
 from lope.deliberation import (
-    DEPTHS,
-    CouncilTurn,
-    DeliberationRun,
-    RubricVerdict,
     TemplateSpec,
     build_critique_prompt,
     build_position_prompt,
@@ -27,7 +22,6 @@ from lope.deliberation import (
     list_templates,
     parse_rubric_response,
     run_deliberation,
-    write_run,
 )
 
 
@@ -410,7 +404,7 @@ def test_write_run_creates_expected_layout(tmp_path):
         return f"draft from {name}"
 
     out_dir = tmp_path / "lope-runs" / "20260427-adr"
-    run = run_deliberation(
+    run_deliberation(
         template=get_template("adr"),
         scenario="adopt JWT?",
         validators=["claude", "gemini"],

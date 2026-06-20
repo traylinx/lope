@@ -1,8 +1,7 @@
-from pathlib import Path
 import sys
 
 from lope.gates import (
-    GateSpec, compare_results, default_baseline_path, load_baseline,
+    GateSpec, compare_results, load_baseline,
     load_gate_specs, run_gate, run_gates, save_baseline,
 )
 
@@ -39,7 +38,7 @@ def test_regex_number_gate_extracts_capture(tmp_path):
 def test_baseline_compare_min_delta(tmp_path):
     before = [GateSpec(name='score', cmd=sys.executable + ' -c "print(100)"', type='regex_number', regex=r'(\d+)')]
     before_results = run_gates(before, tmp_path)
-    baseline = save_baseline(before_results, cwd=tmp_path)
+    save_baseline(before_results, cwd=tmp_path)
     loaded = load_baseline(cwd=tmp_path)
     after_spec = GateSpec(name='score', cmd=sys.executable + ' -c "print(90)"', type='regex_number', regex=r'(\d+)', min_delta=0)
     after_results = run_gates([after_spec], tmp_path)

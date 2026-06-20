@@ -11,7 +11,6 @@ import argparse
 import json
 import os
 import sys
-from pathlib import Path
 
 import pytest
 
@@ -23,7 +22,7 @@ from lope.cli import (
     _team_build_subprocess_entry,
     _team_classify_source,
 )
-from lope.config import LopeCfg, load, save
+from lope.config import LopeCfg, load
 
 
 def _mk_args(**kwargs):

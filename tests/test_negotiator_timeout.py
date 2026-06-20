@@ -17,7 +17,6 @@ We assert two things here:
 from __future__ import annotations
 
 import importlib
-import os
 
 from lope.negotiator import Negotiator
 from lope.validators import StubValidator, ValidatorPool

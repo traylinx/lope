@@ -17,7 +17,6 @@ Covers:
 
 from __future__ import annotations
 
-import pytest
 
 from lope.findings import ConsensusFinding, ConsensusLevel
 from lope.synthesis import (

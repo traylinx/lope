@@ -6,7 +6,7 @@ import sys
 from typing import List, Optional
 
 from .cli_discovery import CliInfo, defaults
-from .config import LopeCfg, save
+from .config import LopeCfg
 
 
 def is_interactive() -> bool:
@@ -37,7 +37,7 @@ def run_selector(
     max_disp = max(len(c.display_name) for c in available)
     for i, cli in enumerate(available, start=1):
         if cli.is_default:
-            marker = f"  \u25cf DEFAULT"
+            marker = "  \u25cf DEFAULT"
             padded = cli.display_name.ljust(max_disp)
             print(f"  [{i}] {padded}  ({cli.name}){marker}")
         else:
