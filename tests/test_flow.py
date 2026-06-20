@@ -1,0 +1,317 @@
+"""Tests for `lope flow` — the declarative graph workflow runner.
+
+Covers the DOT parser, routing/outcome contract, stylesheet cascade, static
+validation, and the FlowRunner over a stub validator pool (linear, fan-out,
+fan-in, and — critically — that a non-converging loop HALTS with an escalation
+instead of running forever).
+"""
+
+import pytest
+
+from lope.flow import (
+    FlowConfigError,
+    FlowRunner,
+    flow_report_to_execution_report,
+    get_template,
+    load_flow_graph,
+    parse_dot,
+    template_names,
+    validate_graph,
+)
+from lope.flow.dot import FlowSyntaxError
+from lope.flow.model import (
+    Blackboard,
+    FlowEdge,
+    FlowNode,
+    NodeKind,
+    NodeResult,
+    edge_matches,
+    parse_outcome_block,
+    verdict_to_outcome,
+)
+from lope.flow.stylesheet import Stylesheet
+from lope.models import PhaseVerdict, ValidatorResult, VerdictStatus
+from lope.validators import ValidatorPool
+
+QUIET = lambda *a, **k: None  # noqa: E731
+_OK_GEN = "Here is my output.\n---OUTCOME---\noutcome: ok\nnote: clear enough\n---END---"
+
+
+class _Cfg:
+    def __init__(self, parallel=False, timeout=5, primary="a"):
+        self.parallel = parallel
+        self.timeout = timeout
+        self.primary = primary
+
+
+class _FakeV:
+    """A minimal Validator: votes a fixed status, drafts a fixed string."""
+
+    def __init__(self, name, vs="PASS", gen=_OK_GEN):
+        self._n, self._vs, self._gen = name, vs, gen
+
+    @property
+    def name(self):
+        return self._n
+
+    def available(self):
+        return True
+
+    def validate(self, prompt, timeout=480):
+        return ValidatorResult(
+            self._n,
+            PhaseVerdict(status=VerdictStatus(self._vs), confidence=0.9,
+                         rationale="fake", validator_name=self._n),
+        )
+
+    def generate(self, prompt, timeout=480):
+        return self._gen
+
+
+def _pool(vs="PASS", gen=_OK_GEN):
+    return ValidatorPool([_FakeV("a", vs, gen), _FakeV("b", vs, gen)], primary="a")
+
+
+# ─── DOT parser ──────────────────────────────────────────────────
+
+
+def test_parse_minimal():
+    g = parse_dot('digraph t { A [type="start"] B [type="exit"] A -> B }')
+    assert g.name == "t"
+    assert set(g.nodes) == {"A", "B"}
+    assert len(g.edges) == 1 and g.edges[0].source == "A" and g.edges[0].target == "B"
+
+
+def test_parse_edge_chain():
+    g = parse_dot('digraph t { A[type="start"] B[type="agent",prompt="x"] C[type="exit"] A->B->C }')
+    assert {(e.source, e.target) for e in g.edges} == {("A", "B"), ("B", "C")}
+
+
+def test_parse_condition_and_loop():
+    g = parse_dot(
+        'digraph t { A[type="judge",prompt="p"] B[type="exit"] '
+        'A->B [condition="outcome=succeeded"] '
+        'A->A [loop_restart="true"] }'
+    )
+    to_b = [e for e in g.edges if e.target == "B"][0]
+    assert to_b.condition == "outcome=succeeded"
+    loop = [e for e in g.edges if e.target == "A"][0]
+    assert loop.loop_restart is True
+
+
+def test_parse_multiline_prompt():
+    src = 'digraph t {\n A [type="agent", prompt="line1\nline2"]\n B[type="exit"]\n A->B\n}'
+    g = parse_dot(src)
+    assert "line1\nline2" in g.nodes["A"].prompt
+
+
+def test_parse_when_alias_for_condition():
+    g = parse_dot('digraph t { A[type="judge",prompt="p"] B[type="exit"] A->B [when="outcome=ok"] }')
+    assert g.edges[0].condition == "outcome=ok"
+
+
+def test_parse_syntax_error_has_line():
+    with pytest.raises(FlowSyntaxError) as ei:
+        parse_dot('digraph t {\n A [type="start"\n')  # unterminated bracket
+    assert "line" in str(ei.value).lower()
+
+
+def test_unknown_type_rejected():
+    with pytest.raises(FlowConfigError):
+        parse_dot('digraph t { A [type="wizard"] }')
+
+
+def test_shape_implies_kind():
+    g = parse_dot('digraph t { A [shape="Mdiamond"] B[shape="Msquare"] A->B }')
+    assert g.nodes["A"].kind == NodeKind.START
+    assert g.nodes["B"].kind == NodeKind.EXIT
+
+
+def test_comments_ignored():
+    g = parse_dot('digraph t {\n // a comment\n A[type="start"] # trailing\n B[type="exit"] A->B\n}')
+    assert set(g.nodes) == {"A", "B"}
+
+
+# ─── Routing / outcome contract ──────────────────────────────────
+
+
+def test_edge_matches():
+    e = FlowEdge("a", "b", condition="outcome=succeeded")
+    assert edge_matches(e, NodeResult("a", "succeeded"))
+    assert not edge_matches(e, NodeResult("a", "failed"))
+    assert edge_matches(FlowEdge("a", "b"), NodeResult("a", "anything"))  # unconditional
+    ne = FlowEdge("a", "b", condition="outcome!=failed")
+    assert edge_matches(ne, NodeResult("a", "succeeded"))
+    assert not edge_matches(ne, NodeResult("a", "failed"))
+
+
+def test_verdict_to_outcome():
+    assert verdict_to_outcome(VerdictStatus.PASS) == "succeeded"
+    assert verdict_to_outcome(VerdictStatus.NEEDS_FIX) == "needs_fix"
+    assert verdict_to_outcome(VerdictStatus.FAIL) == "failed"
+    assert verdict_to_outcome(VerdictStatus.INFRA_ERROR) == "infra_error"
+
+
+def test_parse_outcome_block():
+    text = "reasoning...\n---OUTCOME---\noutcome: replan\nnote: try again\n---END---"
+    tok, note = parse_outcome_block(text, ["replan", "escalate"])
+    assert tok == "replan" and "try again" in note
+    tok2, _ = parse_outcome_block("no block here", ["a", "b"])
+    assert tok2 == "infra_error"
+    # token outside the allowed set is rejected
+    tok3, _ = parse_outcome_block("outcome: bogus", ["a", "b"])
+    assert tok3 == "infra_error"
+
+
+def test_blackboard_render():
+    bb = Blackboard({"task": "build X"})
+    bb.set("n1.out", "result")
+    assert bb.render("Goal: $task") == "Goal: build X"
+    assert bb.render("Use {n1.out}") == "Use result"
+    assert bb.render("keep {unknown} intact") == "keep {unknown} intact"
+
+
+# ─── Stylesheet cascade ──────────────────────────────────────────
+
+
+def test_stylesheet_cascade():
+    sheet = Stylesheet.parse(
+        "* { primary: opencode; } .frontier { primary: claude; } #Big { primary: codex; }"
+    )
+    assert sheet.resolve(FlowNode("X", NodeKind.AGENT, {}))["primary"] == "opencode"
+    assert sheet.resolve(FlowNode("Y", NodeKind.AGENT, {"class": "frontier"}))["primary"] == "claude"
+    # id beats class
+    assert sheet.resolve(FlowNode("Big", NodeKind.AGENT, {"class": "frontier"}))["primary"] == "codex"
+    # inline node attr beats everything
+    inline = FlowNode("Z", NodeKind.AGENT, {"class": "frontier", "primary": "aider"})
+    assert sheet.resolve(inline)["primary"] == "aider"
+
+
+# ─── Static validation ───────────────────────────────────────────
+
+
+def test_validate_missing_start():
+    g = parse_dot('digraph t { A[type="agent",prompt="p"] B[type="exit"] A->B }')
+    with pytest.raises(FlowConfigError) as ei:
+        validate_graph(g)
+    assert "start" in str(ei.value)
+
+
+def test_validate_dangling_edge():
+    g = parse_dot('digraph t { A[type="start"] A -> Ghost }')
+    with pytest.raises(FlowConfigError) as ei:
+        validate_graph(g)
+    assert "Ghost" in str(ei.value)
+
+
+def test_validate_dead_end():
+    g = parse_dot('digraph t { A[type="start"] B[type="agent",prompt="p"] C[type="exit"] A->B A->C }')
+    # B has no outgoing edge and is not an exit
+    with pytest.raises(FlowConfigError) as ei:
+        validate_graph(g)
+    assert "dead end" in str(ei.value).lower()
+
+
+def test_validate_unbounded_loop():
+    src = (
+        'digraph t { S[type="start"] I[type="agent",prompt="p"] R[type="judge",prompt="p"] '
+        'E[type="exit"] S->I I->R R->E [condition="outcome=succeeded"] '
+        'R->I [condition="outcome=failed", loop_restart="true"] }'
+    )
+    g = parse_dot(src)  # no max_visits, no max_node_visits
+    with pytest.raises(FlowConfigError) as ei:
+        validate_graph(g)
+    msg = str(ei.value).lower()
+    assert "loop" in msg or "bound" in msg
+
+
+def test_validate_bounded_loop_ok():
+    src = (
+        'digraph t { graph[max_node_visits="20"] S[type="start"] I[type="agent",prompt="p"] '
+        'R[type="judge",prompt="p"] E[type="exit"] S->I I->R '
+        'R->E [condition="outcome=succeeded"] R->I [condition="outcome=failed", loop_restart="true"] }'
+    )
+    g = parse_dot(src)
+    assert validate_graph(g) == []
+
+
+def test_all_templates_validate():
+    for name in template_names():
+        g = parse_dot(get_template(name))
+        assert validate_graph(g) == []
+
+
+# ─── Runner: linear / fan-out / fan-in / guards ──────────────────
+
+
+def test_runner_linear_happy():
+    g = parse_dot(get_template("judge-loop"))
+    r = FlowRunner(g, _pool("PASS"), _Cfg(), cwd="/tmp", print_fn=QUIET).run(task="x")
+    assert r.ok
+    assert r.path[-1] == "Exit"
+
+
+def test_runner_fanout_fanin():
+    g = parse_dot(get_template("consensus"))
+    r = FlowRunner(g, _pool("PASS"), _Cfg(), cwd="/tmp", print_fn=QUIET).run(task="x")
+    # all three proposers ran (fan-out)
+    assert {"ProposeA", "ProposeB", "ProposeC"}.issubset(set(r.path))
+    # the join fired exactly once, after all three proposers (fan-in barrier)
+    assert r.path.count("Consolidate") == 1
+    ci = r.path.index("Consolidate")
+    assert all(r.path.index(p) < ci for p in ("ProposeA", "ProposeB", "ProposeC"))
+    assert r.ok and r.path[-1] == "Exit"
+
+
+def test_runner_guard_halts_no_infinite_loop():
+    """A review that always FAILs must terminate via a visit cap, not hang."""
+    g = parse_dot(get_template("judge-loop"))
+    r = FlowRunner(g, _pool("FAIL"), _Cfg(), cwd="/tmp", print_fn=QUIET).run(task="x")
+    assert r.ok is False
+    assert r.escalation is not None
+    assert "max_visits" in str(r.escalation)
+    assert len(r.node_results) < 30  # bounded — no runaway
+
+
+def test_runner_global_cap():
+    g = parse_dot(get_template("judge-loop"))
+    r = FlowRunner(
+        g, _pool("FAIL"), _Cfg(), cwd="/tmp", max_node_visits=3, print_fn=QUIET
+    ).run(task="x")
+    assert r.ok is False
+    assert r.escalation is not None
+
+
+def test_runner_dead_end_escalates():
+    # judge emits an outcome with no matching out-edge -> escalation, not crash
+    src = (
+        'digraph t { graph[max_node_visits="10"] S[type="start"] '
+        'J[type="judge",mode="generate",outcomes="left",prompt="p"] '
+        'E[type="exit"] S->J J->E [condition="outcome=right"] }'
+    )
+    g = parse_dot(src)
+    # generate returns the _OK_GEN block whose outcome 'ok' is not in {left}
+    r = FlowRunner(g, _pool("PASS"), _Cfg(), cwd="/tmp", print_fn=QUIET).run(task="x")
+    assert r.ok is False
+    assert r.escalation is not None
+
+
+def test_report_adapter_feeds_auditor():
+    g = parse_dot(get_template("judge-loop"))
+    r = FlowRunner(g, _pool("PASS"), _Cfg(), cwd="/tmp", print_fn=QUIET).run(task="x")
+    er = flow_report_to_execution_report(r)
+    from lope.auditor import Auditor
+    from lope.models import ExecutionReport
+
+    assert isinstance(er, ExecutionReport)
+    assert er.ok and er.sprint_doc.phases
+    # the Auditor consumes it without error
+    assert "FLOW-judge_loop" in Auditor().scorecard(er)
+
+
+def test_load_flow_graph_from_disk(tmp_path):
+    p = tmp_path / "wf.dot"
+    p.write_text(get_template("judge-loop"))
+    g = load_flow_graph(str(p))
+    assert g.name == "judge_loop"
+    assert validate_graph(g) == []
