@@ -1,6 +1,6 @@
 ---
 name: lope
-description: "Autonomous sprint runner with multi-CLI validator ensemble. Any AI CLI implements, any AI CLI validates, majority vote decides. Use for any multi-phase work: code sprints, marketing campaigns, research protocols, budgets, legal reviews. Four sprint modes — negotiate a spec, execute phase by phase, implement with zero-human roster selection, audit the scorecard — plus a declarative graph mode (flow) that runs autonomous DOT workflows (fan-out proposers, consensus, fix-loops), bounded by visit caps. 12 built-in CLI adapters plus infinite custom providers via JSON config."
+description: "Autonomous sprint runner with multi-CLI validator ensemble. Any AI CLI implements, any AI CLI validates, majority vote decides. Use for any multi-phase work: code sprints, marketing campaigns, research protocols, budgets, legal reviews. Four sprint modes — negotiate a spec, execute phase by phase, implement with zero-human roster selection, audit the scorecard — plus a declarative graph mode (flow) that runs autonomous DOT workflows (fan-out proposers, consensus, fix-loops), bounded by visit caps. 15 built-in CLI adapters plus infinite custom providers via JSON config."
 ---
 
 # Lope — multi-CLI validator ensemble sprint runner
@@ -66,9 +66,9 @@ Pass `--domain <name>` on negotiate to switch validator role, artifact labels, a
 
 ## Supported validators
 
-12 built-in CLI adapters, auto-detected on `$PATH`:
+15 built-in CLI adapters, auto-detected on `$PATH`:
 
-Claude Code · OpenCode · Gemini CLI · Codex · Mistral Vibe · Aider · Ollama · Goose · Open Interpreter · llama.cpp · GitHub Copilot CLI · Amazon Q
+Claude Code · OpenCode · Gemini CLI · Codex · Mistral Vibe · Aider · Ollama · Goose · Open Interpreter · llama.cpp · GitHub Copilot CLI · Amazon Q · pi (Traylinx) · Qwen Code · Agy
 
 Plus infinite custom providers via `~/.lope/config.json` (subprocess or HTTP). You need at least two different ones for the ensemble to have signal.
 
