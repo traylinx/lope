@@ -1,6 +1,6 @@
 """Lope — multi-CLI validator ensemble for AI work.
 
-Version: 0.10.7
+Version: 0.11.0
 
 
 Four structured modes (`negotiate`, `execute`, `implement`, `audit`) cover multi-phase
@@ -9,10 +9,14 @@ sprints, including zero-human sprint implementation. Five single-shot modes
 critique, structured votes, A/B comparison, and stdin-fed fan-out. One roster-management mode (`team`) adds, removes,
 lists, and smoke-tests validators from any chat window — no JSON editing.
 `team add --from-curl` parses a pasted curl command and turns it into a
-registered HTTP provider in one step. Any CLI implements; any CLI validates.
+registered HTTP provider in one step. One graph mode (`flow`) runs declarative
+DOT workflows where nodes dispatch into the same executors (agent / ensemble
+review / shell gate / judge-router) and edges carry conditions and loops —
+fully autonomous, bounded by per-node and graph-wide visit caps so an
+unsupervised run can never loop forever. Any CLI implements; any CLI validates.
 """
 
-__version__ = "0.10.7"
+__version__ = "0.11.0"
 
 from .models import (
     ExecutionReport,
