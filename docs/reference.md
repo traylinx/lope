@@ -305,9 +305,9 @@ Project config lives at `./.lope/rules.json` by default:
 ```
 
 ```
-Usage: lope gate save  [--config PATH] [--baseline PATH] [--timeout SECS] [--json] [--remember]
-       lope gate check [--config PATH] [--baseline PATH] [--timeout SECS] [--json] [--remember]
-       lope check      [--config PATH] [--timeout SECS] [--json] [--remember]
+Usage: lope gate save  [--config PATH] [--baseline PATH] [--timeout SECS] [--json] [--remember] [--trust]
+       lope gate check [--config PATH] [--baseline PATH] [--timeout SECS] [--json] [--remember] [--trust]
+       lope check      [--config PATH] [--timeout SECS] [--json] [--remember] [--trust]
 ```
 
 Gate types:
@@ -325,7 +325,7 @@ Thresholds:
 
 Exit codes: `0` all required gates pass; `1` at least one required gate fails/regresses; `2` config or usage error. `--json` keeps stdout parseable for CI and agentic apps. `--remember` stores the run in Lope memory; `lope memory gates` lists recent gate sessions.
 
-Security note: gate commands are project-authored shell commands and run with the caller's permissions. Treat `.lope/rules.json` like CI configuration. Lope redacts captured output before display/storage, but it does not sandbox the commands.
+Security note: gate commands are project-authored shell commands and run with the caller's permissions. Treat `.lope/rules.json` like CI configuration — **only run gates from a repository you trust.** Because the commands come from the repo, Lope gates their execution behind an explicit trust decision: the first time a repo's gate commands would run, it lists them and asks for confirmation, remembering the choice per repository and per command-set (changing the commands re-prompts; trust is stored in `$LOPE_HOME/trusted_gates.json`). In a non-interactive session Lope **refuses** to run untrusted gate commands unless you pass `--trust` or set `LOPE_TRUST_GATES=1`. Lope redacts captured output before display/storage, but it does not sandbox the commands.
 
 `lope execute --gates [--gate-config PATH]` saves a baseline before execution, runs gates after each implementation attempt, includes the gate report in the quality-validation prompt, and downgrades a validator PASS to NEEDS_FIX when a required gate regresses. Default `lope execute` behavior is unchanged unless `--gates` is passed.
 
