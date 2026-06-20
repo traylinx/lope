@@ -169,6 +169,8 @@ lope execute SPRINT.md --gates
 
 Gates are opt-in, stdlib-only, and command-based: tests, lint, typecheck, build, coverage, or custom scripts provide the evidence; Lope coordinates baselines, comparisons, retries, and memory.
 
+> **Trust:** gate commands come from the repository's `.lope/rules.json` and run with your privileges. The first time a repo's gates would run, Lope shows the commands and asks for confirmation (remembered per repo + command-set). In a non-interactive session it refuses unless you pass `--trust` or set `LOPE_TRUST_GATES=1`. **Only run gates from repositories you trust.**
+
 ## Install — paste one line into any AI agent
 
 Open your AI agent (Claude Code, Codex, Cursor, Gemini CLI, OpenCode, GitHub Copilot CLI — whichever you already use) and paste this prompt:

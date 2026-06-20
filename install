@@ -3,6 +3,13 @@
 # native command/skill directory using the format that host expects.
 #
 # Usage: ./install [--host claude|codex|gemini|opencode|cursor|vibe|qwen|pi|all]
+#                  [--with-headroom]
+#
+# The optional Headroom MCP integration is OFF by default. Its Docker-native
+# fallback fetches and executes a remote install script; lope never runs that
+# automatically — enable Headroom with --with-headroom (or LOPE_INSTALL_HEADROOM=1)
+# and the remote-script step still asks for consent.
+#
 # Compatible with bash 3.2+ (stock macOS).
 
 set -euo pipefail
@@ -10,7 +17,9 @@ set -euo pipefail
 LOPE_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILLS_DIR="$LOPE_DIR/skills"
 COMMANDS_DIR="$LOPE_DIR/commands"
-INSTALL_HEADROOM="${LOPE_INSTALL_HEADROOM:-1}"
+# Headroom is opt-in: its Docker fallback executes a remote install script, so
+# it must never run on the default path. Enable with --with-headroom / =1.
+INSTALL_HEADROOM="${LOPE_INSTALL_HEADROOM:-0}"
 HEADROOM_AGENT_FILTER="${LOPE_HEADROOM_AGENT:-}"
 HEADROOM_PROXY_URL_VALUE="${HEADROOM_PROXY_URL:-http://127.0.0.1:8787}"
 HEADROOM_DOCKER_INSTALL_URL_VALUE="${HEADROOM_DOCKER_INSTALL_URL:-https://raw.githubusercontent.com/chopratejas/headroom/main/scripts/install.sh}"
@@ -36,6 +45,9 @@ for i in "${!ARGS[@]}"; do
       ;;
     --skip-headroom|--no-headroom)
       INSTALL_HEADROOM="0"
+      ;;
+    --with-headroom|--headroom)
+      INSTALL_HEADROOM="1"
       ;;
     --headroom-agent=*)
       HEADROOM_AGENT_FILTER="${arg#--headroom-agent=}"
@@ -248,6 +260,26 @@ install_headroom_docker_native() {
   local bashbin tmp
   bashbin="$(find_headroom_bash || true)"
   [ -n "${bashbin:-}" ] || { echo "  headroom: Docker fallback unavailable (bash >=4.3 not found)"; return 1; }
+
+  # Trust boundary: this fallback fetches and executes a remote install script
+  # (unpinned, main-tracking). Never run it automatically — require interactive
+  # consent, or an explicit env opt-in for non-interactive/automated installs.
+  if [ "${LOPE_HEADROOM_ALLOW_REMOTE_EXEC:-0}" != "1" ]; then
+    if [ -t 0 ] && [ -t 1 ]; then
+      echo "  headroom: the Docker-native install fetches and runs a remote script from:"
+      echo "      $HEADROOM_DOCKER_INSTALL_URL_VALUE"
+      printf "  headroom: download and execute it? [y/N] "
+      read -r _hr_ans
+      case "$_hr_ans" in
+        y|Y|yes|YES) ;;
+        *) echo "  headroom: skipped Docker-native fallback (declined)"; return 1 ;;
+      esac
+    else
+      echo "  headroom: skipping Docker-native fallback — it would execute an unpinned remote script."
+      echo "            Set LOPE_HEADROOM_ALLOW_REMOTE_EXEC=1 to allow it non-interactively."
+      return 1
+    fi
+  fi
 
   tmp="${TMPDIR:-/tmp}/headroom-install.$$"
   rm -f "$tmp"

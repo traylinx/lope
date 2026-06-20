@@ -260,6 +260,9 @@ def main():
                      help="Run objective evidence gates before/after each phase (opt-in)")
     exe.add_argument("--gate-config", dest="gate_config", default=None,
                      help="Path to .lope/rules.json gate config")
+    exe.add_argument("--trust", action="store_true",
+                     help="Trust this repo's gate commands and run them without prompting "
+                          "(or set LOPE_TRUST_GATES=1)")
     _add_pool_flags(exe)
 
     # implement — high-level zero-human wrapper around execute. The first
@@ -276,6 +279,9 @@ def main():
                      help="Run objective evidence gates before/after each phase (opt-in)")
     imp.add_argument("--gate-config", dest="gate_config", default=None,
                      help="Path to .lope/rules.json gate config")
+    imp.add_argument("--trust", action="store_true",
+                     help="Trust this repo's gate commands and run them without prompting "
+                          "(or set LOPE_TRUST_GATES=1)")
     imp.add_argument("--dry-run", action="store_true",
                      help="Resolve and print the roster without executing")
     imp.add_argument("--interactive", action="store_true",
@@ -572,18 +578,24 @@ def main():
     gate_save.add_argument("--timeout", type=int, default=480, help="Default per-gate timeout")
     gate_save.add_argument("--json", action="store_true", help="Emit JSON")
     gate_save.add_argument("--remember", action="store_true", help="Persist run in Lope memory")
+    gate_save.add_argument("--trust", action="store_true",
+                           help="Trust this repo's gate commands (or set LOPE_TRUST_GATES=1)")
     gate_check = gate_sub.add_parser("check", help="Run gates and compare with baseline")
     gate_check.add_argument("--config", default=None, help="Path to .lope/rules.json")
     gate_check.add_argument("--baseline", default=None, help="Baseline file path")
     gate_check.add_argument("--timeout", type=int, default=480, help="Default per-gate timeout")
     gate_check.add_argument("--json", action="store_true", help="Emit JSON")
     gate_check.add_argument("--remember", action="store_true", help="Persist run in Lope memory")
+    gate_check.add_argument("--trust", action="store_true",
+                            help="Trust this repo's gate commands (or set LOPE_TRUST_GATES=1)")
 
     chk = sub.add_parser("check", help="Run objective evidence gates without a baseline")
     chk.add_argument("--config", default=None, help="Path to .lope/rules.json")
     chk.add_argument("--timeout", type=int, default=480, help="Default per-gate timeout")
     chk.add_argument("--json", action="store_true", help="Emit JSON")
     chk.add_argument("--remember", action="store_true", help="Persist run in Lope memory")
+    chk.add_argument("--trust", action="store_true",
+                     help="Trust this repo's gate commands (or set LOPE_TRUST_GATES=1)")
 
     # status
     sub.add_parser("status", help="Show available validators and config")
@@ -715,6 +727,9 @@ def _cmd_gate(args):
     started = _time.perf_counter_ns()
     try:
         specs, config_path = load_gate_specs(args.config)
+        from .trust import ensure_gates_trusted
+        if not ensure_gates_trusted(specs, assume_yes=getattr(args, 'trust', False)):
+            sys.exit(3)
         baseline = Path(args.baseline).expanduser() if args.baseline else default_baseline_path()
         results = run_gates(specs, default_timeout=args.timeout)
         comparisons = []
@@ -741,6 +756,9 @@ def _cmd_check(args):
     started = _time.perf_counter_ns()
     try:
         specs, config_path = load_gate_specs(args.config)
+        from .trust import ensure_gates_trusted
+        if not ensure_gates_trusted(specs, assume_yes=getattr(args, 'trust', False)):
+            sys.exit(3)
         baseline = default_baseline_path()
         results = run_gates(specs, default_timeout=args.timeout)
         run = build_run('check', specs, config_path, baseline, results, [], started)
@@ -807,6 +825,10 @@ def _make_execute_gate_runner(args, timeout):
     except GateConfigError as exc:
         print(f"lope execute --gates: {exc}", file=sys.stderr)
         sys.exit(2)
+    from .trust import ensure_gates_trusted
+    if not ensure_gates_trusted(specs, assume_yes=getattr(args, 'trust', False)):
+        print("lope execute --gates: refused — repo gate commands not trusted.", file=sys.stderr)
+        sys.exit(3)
     baseline = default_baseline_path()
     if specs:
         initial = run_gates(specs, default_timeout=timeout)

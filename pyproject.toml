@@ -22,8 +22,10 @@ dependencies = []
 # Dev/CI tooling, pinned for reproducibility. Added in the OpenAI-readiness
 # sprint (2026-06): ruff is the blocking lint gate; mypy is advisory (D2).
 dev = [
-    "ruff==0.14.10",
-    "mypy==1.10.1",
+    "ruff==0.14.10",         # pinned: lint-gate output must be deterministic
+    "mypy==1.10.1",          # pinned: advisory gate, kept stable
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
 ]
 
 [project.scripts]

@@ -1,0 +1,39 @@
+# gitleaks config for lope (OpenAI-readiness sprint, 2026-06).
+#
+# Strategy: keep gitleaks' full default ruleset (`useDefault = true`) and
+# allowlist ONLY:
+#   (a) build artifacts / vendored editor tooling that should never be scanned, and
+#   (b) the specific placeholder + fixture credentials that lope's own docs and
+#       tests use to demonstrate its key-redaction and curl-parsing features.
+#
+# lope's whole job is to detect a literal API key in a pasted curl and swap it
+# for an env-var reference (and to redact secrets from output), so its docs and
+# tests are necessarily full of FAKE credentials. Every value allowlisted below
+# was eyeballed on 2026-06-20 and confirmed non-secret (placeholders, env-var
+# references, or fixtures the tests assert get redacted / refused).
+#
+# NEVER allowlist a real secret here. Add new entries by specific value, not by
+# blanket-allowlisting a source file.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Build artifacts + vendored editor tooling — never scan."
+paths = [
+  '''__pycache__''',
+  '''\.pyc$''',
+  '''\.opencode/''',
+]
+
+[[allowlists]]
+description = "Placeholder / fixture credentials in docs + tests (verified fake 2026-06-20)."
+regexTarget = "match"
+regexes = [
+  '''gsk_RAW[0-9]*''',                 # docs: groq "literal key" example before env-var swap
+  '''gsk_ABCDEFG[0-9]*''',             # skills/lope-team/SKILL.md: groq literal-key example
+  '''\$\{[A-Z0-9_]+\}''',              # docs: env-var references, e.g. ${OPENAI_API_KEY}
+  '''raw-key-12345''',                 # tests/test_curl_parser.py: literal-key refusal fixture
+  '''1234567890SECRET''',              # tests/test_redaction.py: fake PEM body
+  '''abcdefghijklmnopqrstuvwxyz''',    # tests/test_redaction.py: fake bearer token
+]
