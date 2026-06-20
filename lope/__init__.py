@@ -1,6 +1,6 @@
 """Lope — multi-CLI validator ensemble for AI work.
 
-Version: 0.10.1
+Version: 0.10.7
 
 
 Four structured modes (`negotiate`, `execute`, `implement`, `audit`) cover multi-phase
