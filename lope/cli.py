@@ -613,6 +613,49 @@ def main():
     # docs — prints the complete lope reference
     sub.add_parser("docs", help="Print the complete lope reference to stdout")
 
+    # flow — declarative autonomous graph workflows
+    flow = sub.add_parser(
+        "flow",
+        help="Run declarative graph workflows (autonomous multi-agent, bounded)",
+    )
+    flow_sub = flow.add_subparsers(dest="flow_cmd")
+
+    flow_run = flow_sub.add_parser("run", help="Run a .dot workflow")
+    flow_run.add_argument("workflow", help="Path to the .dot workflow file")
+    flow_run.add_argument("--task", default="",
+                          help="The goal, substituted for $task in the graph")
+    flow_run.add_argument("--cwd", default=None,
+                          help="Working directory for agent/script nodes (default: cwd)")
+    flow_run.add_argument("--out", default=None,
+                          help="Write trace.jsonl + report.md to this directory")
+    flow_run.add_argument("--max-node-visits", dest="max_node_visits", type=int, default=None,
+                          help="Global runaway cap (default: graph value or max(50, 8*nodes))")
+    flow_run.add_argument("--no-journal", action="store_true",
+                          help="Skip the Brain journal entry")
+    flow_run.add_argument("--dry-run", action="store_true",
+                          help="Validate and print the plan without executing")
+    _add_pool_flags(flow_run)
+
+    flow_val = flow_sub.add_parser("validate", aliases=["lint"],
+                                   help="Statically check a workflow is runnable + bounded")
+    flow_val.add_argument("workflow", help="Path to the .dot workflow file")
+
+    flow_render = flow_sub.add_parser("render",
+                                      help="Render a workflow to SVG/PNG (uses system graphviz)")
+    flow_render.add_argument("workflow", help="Path to the .dot workflow file")
+    flow_render.add_argument("-o", "--out", dest="out", default="",
+                             help="Output file, e.g. flow.svg")
+    flow_render.add_argument("-T", "--format", dest="fmt", default="svg",
+                             help="svg | png | dot (dot prints normalized DOT)")
+
+    flow_init = flow_sub.add_parser("init", help="Write a starter workflow template")
+    flow_init.add_argument("template", nargs="?", default="consensus",
+                           help="consensus | judge-loop | review-gate")
+    flow_init.add_argument("--out", default=None,
+                           help="Target path (default .lope/flow/<name>.dot)")
+
+    flow_sub.add_parser("list", help="List bundled flow templates")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -662,6 +705,10 @@ def main():
 
     if args.command == "check":
         _cmd_check(args)
+        return
+
+    if args.command == "flow":
+        _cmd_flow(args)
         return
 
     if args.command == "deliberate":
@@ -715,6 +762,154 @@ def main():
         return
 
 
+
+
+def _cmd_flow(args):
+    """Dispatch `lope flow {run,validate,render,init,list}`."""
+    sub_cmd = getattr(args, "flow_cmd", None)
+    if sub_cmd in ("validate", "lint"):
+        _cmd_flow_validate(args)
+    elif sub_cmd == "render":
+        _cmd_flow_render(args)
+    elif sub_cmd == "init":
+        _cmd_flow_init(args)
+    elif sub_cmd == "list":
+        _cmd_flow_list(args)
+    elif sub_cmd == "run":
+        from .runlock import acquire as _runlock
+        with _runlock("flow"):
+            _cmd_flow_run(args)
+    else:
+        print("Usage: lope flow {run,validate,render,init,list} <workflow.dot>",
+              file=sys.stderr)
+        print("Start with: lope flow init consensus", file=sys.stderr)
+        print("Then run:   lope flow run .lope/flow/consensus.dot --task \"<goal>\"",
+              file=sys.stderr)
+        sys.exit(2)
+
+
+def _cmd_flow_run(args):
+    from .flow import FlowRunner, flow_report_to_execution_report, load_flow_graph, write_flow_run
+    from .flow.model import FlowConfigError
+
+    try:
+        graph = load_flow_graph(args.workflow)
+    except FlowConfigError as exc:
+        print(f"lope flow: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    if getattr(args, "dry_run", False):
+        from .flow.validate import validate_graph
+        try:
+            warnings = validate_graph(graph)
+        except FlowConfigError as exc:
+            print(f"lope flow: {exc}", file=sys.stderr)
+            sys.exit(2)
+        cap = getattr(args, "max_node_visits", None) or graph.max_node_visits
+        print(f"Flow: {graph.name}  ·  {len(graph.nodes)} nodes, {len(graph.edges)} edges")
+        print(f"Start: {graph.start_node().id}  ·  "
+              f"Exits: {', '.join(e.id for e in graph.exits())}")
+        print(f"Runaway cap: {cap} node visits")
+        for w in warnings:
+            print(f"  warning: {w}")
+        print("Dry run — nothing executed.")
+        return
+
+    cfg, pool = _ensure_config(args)
+    cwd = args.cwd or os.getcwd()
+    print(f"\nLope flow: {graph.name} ({len(graph.nodes)} nodes)  ·  cwd={cwd}\n")
+    runner = FlowRunner(
+        graph, pool, cfg, cwd=cwd,
+        max_node_visits=getattr(args, "max_node_visits", None),
+    )
+    try:
+        report = runner.run(task=args.task)
+    except FlowConfigError as exc:
+        print(f"lope flow: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    from .auditor import Auditor
+    exec_report = flow_report_to_execution_report(report)
+    auditor = Auditor()
+    print(f"\n{auditor.scorecard(exec_report)}")
+
+    if getattr(args, "out", None):
+        out = write_flow_run(report, args.out)
+        print(f"\nTrace written to: {out}")
+
+    if not getattr(args, "no_journal", False):
+        try:
+            auditor.write_journal(exec_report)
+        except Exception:
+            pass
+
+    if report.ok:
+        print("\nFlow complete.")
+        from .logo import mascot
+        print()
+        print(mascot("flowed. autonomously."))
+    elif report.escalation is not None:
+        print(f"\nEscalation: {report.escalation}")
+        sys.exit(1)
+    else:
+        print("\nFlow ended at a fail-exit (changes requested) — not an escalation.")
+        sys.exit(1)
+
+
+def _cmd_flow_validate(args):
+    from .flow import load_flow_graph, validate_graph
+    from .flow.model import FlowConfigError
+
+    try:
+        graph = load_flow_graph(args.workflow)
+        warnings = validate_graph(graph)
+    except FlowConfigError as exc:
+        print(f"INVALID: {exc}", file=sys.stderr)
+        sys.exit(1)
+    print(f"OK: {graph.name} — {len(graph.nodes)} nodes, {len(graph.edges)} edges, "
+          f"runaway cap {graph.max_node_visits}")
+    for w in warnings:
+        print(f"  warning: {w}")
+
+
+def _cmd_flow_render(args):
+    from .flow.model import FlowConfigError
+    from .flow.render import render_file
+
+    try:
+        msg = render_file(args.workflow, out_path=args.out, fmt=args.fmt)
+    except FlowConfigError as exc:
+        print(f"lope flow: {exc}", file=sys.stderr)
+        sys.exit(2)
+    print(msg)
+
+
+def _cmd_flow_init(args):
+    from .flow.templates import get_template
+
+    name = args.template
+    try:
+        content = get_template(name)
+    except KeyError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(2)
+    target = Path(args.out) if args.out else Path(".lope/flow") / f"{name}.dot"
+    if target.exists():
+        print(f"refusing to overwrite existing file: {target}", file=sys.stderr)
+        sys.exit(1)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    print(f"Wrote {target}")
+    print(f"Next: lope flow run {target} --task \"<your goal>\"")
+
+
+def _cmd_flow_list(args):
+    from .flow.templates import template_names
+
+    print("Bundled flow templates:")
+    for n in template_names():
+        print(f"  {n}")
+    print("\nCreate one with: lope flow init <name>")
 
 
 def _cmd_gate(args):

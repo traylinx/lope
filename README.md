@@ -438,7 +438,23 @@ After install, these work in any supported CLI host (Gemini uses the `/lope:<ver
 | `/lope-compare` | Each validator picks between two files given `--criteria`; tally + winner |
 | `/lope-pipe` | Read stdin as the prompt; fan out; per-validator sections |
 | `/lope-team` | Add / remove / list / test teammates — no JSON editing |
+| `/lope-flow` | Run an autonomous DOT graph workflow (fan-out, consensus, fix-loops) |
 | `/lope-help` | Print the full reference into the current session |
+
+---
+
+## Autonomous graph workflows (`lope flow`)
+
+`lope flow` (v0.11) runs a workflow defined as a **Graphviz DOT graph**: nodes are agent turns, ensemble reviews, shell verify-steps, or judge/routers; edges carry conditions and loops. Each node dispatches into lope's existing multi-CLI executors — so any CLI implements and the ensemble votes — and the run is **fully autonomous** (human gates optional) and **bounded** (per-node and graph-wide visit caps guarantee a non-converging loop halts with an escalation, never an infinite loop).
+
+```bash
+lope flow init consensus                                   # writes .lope/flow/consensus.dot
+lope flow validate .lope/flow/consensus.dot                # runnable + bounded?
+lope flow render   .lope/flow/consensus.dot -o flow.svg    # see the graph (needs graphviz)
+lope flow run      .lope/flow/consensus.dot --task "Add a /health endpoint with a test"
+```
+
+Node types: `agent` (`generate`), `review` (ensemble vote), `judge` (router), `script` (`gates.run_gate`), plus `start`/`exit` and an optional human `gate`. A `cli_stylesheet` routes a node's class → which CLI plays the role (`.frontier { primary: claude; }`). Three bundled templates: `consensus`, `judge-loop`, `review-gate`. Full details in [docs/reference.md → Flow](docs/reference.md#flow--declarative-graph-workflows).
 
 ---
 

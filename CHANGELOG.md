@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0 — Flow: declarative autonomous graph workflows
+
+- **New `flow` mode.** `lope flow run <file.dot>` walks a declarative Graphviz **DOT** graph where nodes dispatch into lope's existing executors — `agent` (`Validator.generate`), `review` (`EnsemblePool.validate` majority vote), `judge` (ensemble vote or `generate` + structured `outcome:` block), and `script` (`gates.run_gate`) — and edges carry `condition="outcome=..."` and `loop_restart` back-edges. No new agent/validator/CLI code; flow is pure orchestration over the existing primitives.
+- **Autonomous, bounded.** Human gates are optional (`type="gate"`) and omitted in the autonomous templates. Every node has `max_visits` (default 3) and the graph has `max_node_visits` (default `max(50, 8*nodes)`), both enforced before a node runs — a non-converging loop terminates with a clean `EscalationRequired`, never an infinite loop or unbounded cost.
+- **Fan-out + fan-in.** A judge's single decision selects all matching out-edges (one decision → N parallel proposers), which run concurrently; a `join="true"` node barriers until all its non-loop predecessors complete.
+- **`cli_stylesheet`** routes a node's class/id → which CLI plays the role (`.frontier { primary: claude; }`), cascading global → `*` → `.class` → `#id` → inline, with `model_stylesheet` accepted as an alias so pasted graphs keep working.
+- **CLI surface:** `lope flow run | validate (alias lint) | render | init | list`. `init` writes one of three bundled templates (`consensus`, `judge-loop`, `review-gate`); `render` shells out to the system Graphviz `dot` when present and degrades gracefully when absent; `validate` statically checks the graph is runnable + bounded (one start, reachable exit, no dangling edges, no dead ends, no unbounded loops).
+- **Audit reuse:** flow runs feed the existing `Auditor` (scorecard + `[[lope]]` journal) via a `FlowReport → ExecutionReport` adapter; `--out` writes redacted `trace.jsonl` + `report.md`.
+- Stdlib only — preserves lope's zero-runtime-dependency posture (the DOT parser is a ~250-line hand-rolled tokenizer, same lineage as the VERDICT-block parser). 27 new tests in `tests/test_flow.py`.
+- **New validator auto-discovered:** the `agy` multi-model agent CLI (Gemini / Claude / GPT-OSS) is now recognized by lope's CLI discovery — usable as any ensemble validator or `flow` node (e.g. `--validators codex,agy`), same generic-subprocess shape as `qwen`.
+
 ## 0.10.7 — Security & CI hardening
 
 - Gate trust boundary (F1): `.lope/rules.json` gate commands now require a per-(repo, command-set) trust record before they run via the shell. Fail-closed in non-interactive use; opt in with `--trust` or `LOPE_TRUST_GATES`.

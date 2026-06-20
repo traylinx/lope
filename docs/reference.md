@@ -24,7 +24,7 @@ Repo: https://github.com/traylinx/lope · MIT · Zero Python dependencies (pure 
 
 ## The modes
 
-Four structured sprint modes + five single-shot verbs + one roster verb + two v0.7 verbs (`memory`, `deliberate`). Pick the mode that fits the shape of the work — don't force everything through `negotiate`.
+Four structured sprint modes + five single-shot verbs + one roster verb + two v0.7 verbs (`memory`, `deliberate`) + one graph mode (`flow`, v0.11). Pick the mode that fits the shape of the work — don't force everything through `negotiate`.
 
 | Mode | CLI | Slash command (where supported) | What it does |
 |---|---|---|---|
@@ -42,6 +42,7 @@ Four structured sprint modes + five single-shot verbs + one roster verb + two v0
 | **Check** | `lope check` | — | CI-friendly one-shot run of project-defined objective evidence gates. |
 | **Memory** *(v0.7)* | `lope memory {stats,search,file,hotspots,forget}` | — | Query the persistent finding store written by `lope review --remember`. See [docs/memory.md](memory.md). |
 | **Deliberate** *(v0.7)* | `lope deliberate <template> <scenario>` | — | Run a 7-stage Agent-Order-style council on an ADR / PRD / RFC / build-vs-buy / migration-plan / incident-review. See [docs/deliberation.md](deliberation.md). |
+| **Flow** *(v0.11)* | `lope flow {run,validate,render,init,list}` | `/lope-flow` | Run a declarative DOT **graph** workflow — agent / ensemble-review / shell-gate / judge-router nodes, conditioned edges, fan-out + fix-loops. Autonomous (no human gates), bounded by per-node and graph-wide visit caps. See [Flow](#flow--declarative-graph-workflows). |
 
 Default flow for multi-phase work: **negotiate → implement/execute → audit**. For single-prompt / single-file / piped work, the single-shot verbs run in one pass without a sprint doc. `team` is runtime-independent — it only edits `~/.lope/config.json` and runs 0 validators (except on `test`).
 
@@ -63,6 +64,73 @@ These flags layer on top of the existing modes. They are **opt-in** — every co
 | `--brain-context QUERY` | `ask`, `review`, `pipe`, `negotiate`, `deliberate` | Pull `makakoo search QUERY` and prepend to the validator prompts. |
 | `--brain-budget N` | same as above | Approximate token budget for brain context (default 1200). |
 | `--brain-log` | same as above | Append a `[[Lope]]` / `[[Makakoo OS]]` bullet to today's Brain journal. |
+
+---
+
+## Flow — declarative graph workflows
+
+`lope flow` (v0.11) runs a workflow defined as a **Graphviz DOT graph**. Where `negotiate`/`execute`/`implement` are fixed linear pipelines, `flow` lets you *draw the topology* — fan out to N proposers, consolidate, implement, fan out reviewers, loop on failure — and version-control it. Every node dispatches into lope's existing executors, so there is **no new agent runtime**: any CLI implements, the ensemble votes.
+
+It is built for **autonomous, no-human runs**: human gates are optional, and every loop is bounded so an unsupervised run can never spin forever.
+
+### Subcommands
+
+```bash
+lope flow init <consensus|judge-loop|review-gate> [--out PATH]   # write a starter graph
+lope flow validate <file.dot>                                    # alias: lint
+lope flow render <file.dot> [-o out.svg] [-T svg|png|dot]        # needs system graphviz
+lope flow run <file.dot> --task "<goal>" [pool flags] [--out DIR]
+                         [--max-node-visits N] [--dry-run] [--no-journal] [--cwd DIR]
+lope flow list                                                   # bundled templates
+```
+
+`run` accepts the same pool flags as the other modes (`--validators`, `--primary`, `--timeout`, `--parallel`/`--sequential`). `--task` is substituted for `$task` in the graph. `--out` writes a redacted `trace.jsonl` + `report.md`. Flow runs are scored by the `Auditor` and appended to the `[[lope]]` journal (skip with `--no-journal`).
+
+### Node types
+
+| `type=` | Runs | Outcome token(s) |
+|---|---|---|
+| `start` / `exit` | entry / terminal (`exit` may set `status="fail"`) | `started` / `exited` |
+| `agent` | `Validator.generate()` — single-writer implementer turn | `succeeded` / `failed` |
+| `review` | `EnsemblePool.validate()` — majority vote | `succeeded` / `needs_fix` / `failed` |
+| `judge` | router: ensemble vote (`mode="ensemble"`) or `generate` + `outcome:` block (`mode="generate"`, declare `outcomes="a,b"`) | a declared label |
+| `script` | `gates.run_gate()` — inline `cmd="..."` or named `gate="..."` from `.lope/rules.json` | `succeeded` / `failed` |
+| `gate` | optional human approval pause (omit for autonomous runs) | `succeeded` / `failed` |
+
+Node shapes also imply kinds for pasted fabro graphs (`Mdiamond`=start, `Msquare`=exit, `parallelogram`=script, `hexagon`=gate). Aliases `implement→agent`, `ensemble→review`, `consensus/steer→judge`, `verify→script` are accepted.
+
+### Edges and routing
+
+Edges carry `condition="outcome=<token>"` (or `outcome!=<token>`), an optional `label`, and `loop_restart="true"` for back-edges. A node's outcome selects **all** out-edges whose condition matches — so a judge's single decision (`outcome=ok`) can fan out to N proposers. Mark a fan-in node `join="true"` so it barriers until all its non-loop predecessors complete.
+
+### Bounded autonomy
+
+`max_visits` per node (default 3) and graph-level `max_node_visits` (default `max(50, 8*nodes)`) are enforced **before** each node runs. A non-converging loop terminates with an `EscalationRequired` recorded in the report — never an infinite loop or unbounded cost. `lope flow validate` rejects any cycle with no visit bound.
+
+### `cli_stylesheet`
+
+lope's analog of fabro's `model_stylesheet`, routing a node's class/id → which CLI plays the role:
+
+```
+cli_stylesheet="
+  *          { primary: opencode; }
+  .frontier  { primary: claude; }
+  #Reviewers { validators: claude,codex,gemini; }
+"
+```
+
+Cascade lowest→highest: global config → `*` → `.class` → `#id` → inline node attrs. `model_stylesheet` is accepted as an alias.
+
+### Example
+
+```bash
+lope flow init consensus
+lope flow validate .lope/flow/consensus.dot
+lope flow render   .lope/flow/consensus.dot -o consensus.svg
+lope flow run      .lope/flow/consensus.dot --task "Add a /health endpoint with a test"
+```
+
+The `consensus` template is fully autonomous: `Start → CheckDoD → 3 proposers (parallel) → Consolidate → Implement → ensemble Review → pass:Exit / fail:Postmortem → replan loops back`, with no human gates and every loop bounded.
 
 ---
 
@@ -510,11 +578,11 @@ The ensemble checks the same thing across all three domains: specific plan, meas
 
 ## Supported validators
 
-14 built-in CLI adapters, auto-detected on `$PATH`:
+15 built-in CLI adapters, auto-detected on `$PATH`:
 
-Claude Code · OpenCode · Gemini CLI · Codex · Mistral Vibe · Aider · Ollama · Goose · Open Interpreter · llama.cpp · GitHub Copilot CLI · Amazon Q · **pi (Traylinx)** · **Qwen Code**
+Claude Code · OpenCode · Gemini CLI · Codex · Mistral Vibe · Aider · Ollama · Goose · Open Interpreter · llama.cpp · GitHub Copilot CLI · Amazon Q · **pi (Traylinx)** · **Qwen Code** · **Agy**
 
-pi and Qwen were added in v0.5.0 as first-class built-in validators via the generic subprocess path (`pi -p "{prompt}"`, `qwen -p "{prompt}"`). They now appear in `lope status` automatically when the binaries are on PATH — no config.json hack needed.
+pi and Qwen were added in v0.5.0, and **Agy** (a multi-model agent CLI — Gemini / Claude / GPT-OSS) in v0.11.0, as first-class built-in validators via the generic subprocess path (`pi -p "{prompt}"`, `qwen -p "{prompt}"`, `agy -p "{prompt}"`). They appear in `lope status` automatically when the binary is on PATH — no config.json hack needed. Use any of them as an ensemble validator or a `flow` node, e.g. `--validators codex,agy`.
 
 **You need at least two different validators for the ensemble to have signal.** A pool of one is not an ensemble. For `ask` / `review` / `vote` / `compare` / `pipe` a single validator still works (fan-out of 1), but the whole point is multi-model perspective.
 

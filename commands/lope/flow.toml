@@ -1,0 +1,53 @@
+description = "Run a declarative DOT graph workflow where AI agents negotiate autonomously — fan-out proposers, ensemble review, judge-routers, fix-loops. No human gates required; bounded by per-node and graph-wide visit caps so an unsupervised run can never loop forever."
+
+prompt = """
+<objective>
+Run an autonomous multi-agent GRAPH workflow for the user with lope's flow mode.
+A flow is a Graphviz DOT graph: nodes are agent turns, ensemble reviews, shell
+verify-steps, or judge/routers; edges carry conditions and loops. Each node
+dispatches into lope's existing multi-CLI executors — any CLI implements, the
+ensemble votes. The run is autonomous (human gates optional) and bounded (a
+non-converging loop halts with an escalation, never an infinite loop).
+</objective>
+
+<process>
+
+1. **Determine the goal**. Read `{{args}}` as the task. If empty, ask what the user wants the agents to build or do.
+
+2. **Start from a template** — do not hand-write DOT the first time:
+```bash
+lope flow init consensus        # writes .lope/flow/consensus.dot
+# templates: consensus | judge-loop | review-gate  (see: lope flow list)
+```
+
+3. **Validate** it is runnable and bounded:
+```bash
+lope flow validate .lope/flow/consensus.dot
+```
+
+4. **(Optional) render** it so the user can see the graph (needs system graphviz):
+```bash
+lope flow render .lope/flow/consensus.dot -o flow.svg
+```
+
+5. **Run it** — autonomous, scored, journaled:
+```bash
+PYTHONPATH=~/.lope python3 -m lope flow run .lope/flow/consensus.dot --task "$GOAL"
+```
+Use `--dry-run` first to print the plan without invoking any model. `--out DIR`
+writes a trace; `--max-node-visits N` overrides the runaway cap.
+
+6. **Present the result**: the per-node path taken, the final outcome, and any
+escalation. If it escalated on a visit cap, that means the loop did not converge
+— summarize what the reviews flagged.
+
+</process>
+
+<constraints>
+- Node types: agent (generate), review (ensemble vote), judge (router), script (shell gate), plus start/exit and an optional human gate. A cli_stylesheet routes a node's class to which CLI plays the role.
+- Do NOT add a human `gate` node to an autonomous flow — it blocks on stdin.
+- Do NOT remove the visit caps to "let it finish" — raise max_visits deliberately.
+- Do NOT wrap lope flow in a script. Edit the .dot graph, run the CLI.
+- Reach for flow when the SHAPE of the collaboration (fan-out, consensus, loops) is the point. For a one-shot plan use /lope:negotiate; for a fixed linear sprint use /lope:execute or /lope:implement.
+</constraints>
+"""

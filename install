@@ -494,7 +494,7 @@ install_host() {
 }
 
 echo ""
-echo "Lope v0.10.7 — Installing skills and commands"
+echo "Lope v0.11.0 — Installing skills and commands"
 echo "─────────────────────────────────────────────"
 echo ""
 
@@ -520,11 +520,11 @@ else
 fi
 echo ""
 echo "Slash commands by host (honest state — not every host supports user slash commands):"
-echo "  Claude Code  /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate  /lope-headroom"
-echo "  Gemini CLI   /lope:negotiate  /lope:execute  /lope:implement  /lope:audit  /lope:help  /lope:ask  /lope:review  /lope:vote  /lope:compare  /lope:pipe  /lope:team  /lope:memory  /lope:deliberate  /lope:headroom"
-echo "  OpenCode     /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate  /lope-headroom"
-echo "  pi           /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate  /lope-headroom"
-echo "  Qwen Code    /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-memory  /lope-deliberate  /lope-headroom"
+echo "  Claude Code  /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-flow  /lope-memory  /lope-deliberate  /lope-headroom"
+echo "  Gemini CLI   /lope:negotiate  /lope:execute  /lope:implement  /lope:audit  /lope:help  /lope:ask  /lope:review  /lope:vote  /lope:compare  /lope:pipe  /lope:team  /lope:flow  /lope:memory  /lope:deliberate  /lope:headroom"
+echo "  OpenCode     /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-flow  /lope-memory  /lope-deliberate  /lope-headroom"
+echo "  pi           /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-flow  /lope-memory  /lope-deliberate  /lope-headroom"
+echo "  Qwen Code    /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-flow  /lope-memory  /lope-deliberate  /lope-headroom"
 echo "  Cursor       (unverified — skills written to ~/.cursor/agents/)"
 echo ""
 echo "Codex notes:"

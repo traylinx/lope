@@ -27,10 +27,22 @@ SAMPLE_SCENARIO = REPO_ROOT / "tests" / "fixtures" / "scenario.md"
 # ---------------------------------------------------------------------------
 
 
-def test_version_strings_in_sync_at_0107():
+def _canonical_version() -> str:
+    """The single source of truth: the version in pyproject.toml."""
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    for line in text.splitlines():
+        if line.startswith("version = "):
+            return line.split('"')[1]
+    raise AssertionError('no `version = "..."` line in pyproject.toml')
+
+
+def test_version_strings_in_sync():
+    # Read the canonical version dynamically so a release bump never strands
+    # this test on a stale literal — which is exactly what happened at 0.11.0
+    # (three manifests + this test were left pinned to 0.10.7).
     from lope import __version__
 
-    assert __version__ == "0.10.7"
+    assert __version__ == _canonical_version()
 
 
 def test_check_version_script_passes():
@@ -41,7 +53,7 @@ def test_check_version_script_passes():
         timeout=20,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "0.10.7" in proc.stdout
+    assert _canonical_version() in proc.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +85,7 @@ def test_required_artifact_exists(relpath):
 def test_changelog_lists_latest_at_top():
     text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     head = text.split("\n", 4)
-    assert "0.10.7" in "\n".join(head[:4])
+    assert _canonical_version() in "\n".join(head[:4])
 
 
 def test_pyproject_has_no_new_dependency():
