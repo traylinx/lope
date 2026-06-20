@@ -1,6 +1,6 @@
 ---
 name: lope
-description: "Autonomous sprint runner with multi-CLI validator ensemble. Any AI CLI implements, any AI CLI validates, majority vote decides. Use for any multi-phase work: code sprints, marketing campaigns, research protocols, budgets, legal reviews. Four sprint modes — negotiate a spec, execute phase by phase, implement with zero-human roster selection, audit the scorecard. 12 built-in CLI adapters plus infinite custom providers via JSON config."
+description: "Autonomous sprint runner with multi-CLI validator ensemble. Any AI CLI implements, any AI CLI validates, majority vote decides. Use for any multi-phase work: code sprints, marketing campaigns, research protocols, budgets, legal reviews. Four sprint modes — negotiate a spec, execute phase by phase, implement with zero-human roster selection, audit the scorecard — plus a declarative graph mode (flow) that runs autonomous DOT workflows (fan-out proposers, consensus, fix-loops), bounded by visit caps. 12 built-in CLI adapters plus infinite custom providers via JSON config."
 ---
 
 # Lope — multi-CLI validator ensemble sprint runner
@@ -17,6 +17,7 @@ Lope is an autonomous sprint runner. One AI CLI implements. Others independently
 | Execute | `/lope-execute` | Run sprint phases one at a time. After each phase, validators independently vote PASS / NEEDS_FIX / FAIL. NEEDS_FIX retries with specific fix instructions (3 attempts). |
 | Implement | `/lope-implement` | Select implementation/escalation agents once, then run a sprint without further human input. Single-writer safety model. |
 | Audit | `/lope-audit` | Generate a scorecard from the executed sprint — per-phase verdicts, confidence scores, durations, overall status — and append to the journal. |
+| Flow | `/lope-flow` | Run a declarative DOT **graph** workflow: agent / ensemble-review / shell-gate / judge-router nodes, conditioned edges, fan-out + fix-loops. Autonomous (no human gates), bounded by per-node and graph-wide visit caps. For shaping *how* agents collaborate, not a fixed linear sprint. |
 
 ## How to pick which mode to run
 
@@ -24,6 +25,7 @@ Lope is an autonomous sprint runner. One AI CLI implements. Others independently
 - User has a sprint doc and wants normal phase running → **`/lope-execute`**
 - User has a sprint doc and wants zero-human execution / out-of-the-loop mode → **`/lope-implement`**
 - User has already run a sprint and wants the scorecard → **`/lope-audit`**
+- User wants agents to **negotiate autonomously as a graph** (fan-out proposers, consensus, fix-loops) or to reshape *how* they collaborate → **`/lope-flow`** (`lope flow init consensus` to start)
 - User just wants to know what validators lope found on their machine → `lope status` (plain shell)
 - User wants to pick which validators to use → `lope configure` (plain shell)
 

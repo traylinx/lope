@@ -5,7 +5,7 @@ description: "You MUST consider using lope whenever cross-model perspective woul
 
 # Using Lope
 
-Lope is a multi-CLI ensemble for AI work. Any AI CLI drafts, any AI CLI validates, multiple perspectives cover each other's blind spots. Core philosophy: **no single-model blindspot**. Eleven modes — three for structured sprint work, five single-shot verbs, one roster verb, two v0.7 verbs:
+Lope is a multi-CLI ensemble for AI work. Any AI CLI drafts, any AI CLI validates, multiple perspectives cover each other's blind spots. Core philosophy: **no single-model blindspot**. Twelve modes — three for structured sprint work, five single-shot verbs, one roster verb, two v0.7 verbs, one graph verb:
 
 | Mode | Skill | Shape of input/output |
 |---|---|---|
@@ -13,6 +13,7 @@ Lope is a multi-CLI ensemble for AI work. Any AI CLI drafts, any AI CLI validate
 | `execute`   | [lope-execute]   | Sprint doc → implemented deliverables with per-phase review |
 | `implement` | [lope-implement] | Sprint doc + selected roster → zero-human sprint execution |
 | `audit`     | [lope-audit]     | Sprint doc → scorecard |
+| `flow`      | [lope-flow]      | DOT graph → autonomous multi-agent run (fan-out, consensus, fix-loops), bounded by visit caps |
 | `ask`       | [lope-ask]       | One question → N raw answers (one per model) |
 | `review`    | [lope-review]    | One file + focus → N raw critiques **or** consensus-ranked findings (`--consensus`, v0.7) |
 | `vote`      | [lope-vote]      | Question + options → tally + winner |
@@ -24,7 +25,7 @@ Lope is a multi-CLI ensemble for AI work. Any AI CLI drafts, any AI CLI validate
 
 `ask`, `review`, `vote`, `compare`, and `pipe` are the lightweight verbs — no sprint, no phases, no validator retry loop. `team` manages the roster. `lope memory` and `lope deliberate` are the v0.7 verbs that turn raw fan-out into durable judgment. The cross-cutting flags `--consensus`, `--synth`, `--remember`, `--brain-context`, `--brain-log`, `--divide`, `--roles` layer on top of the existing modes — every one is opt-in.
 
-When this skill triggers, consider which of the twelve modes fits — don't force every request into `negotiate`.
+When this skill triggers, consider which of the thirteen modes fits — don't force every request into `negotiate`.
 
 ## How the user will invoke lope
 
@@ -98,7 +99,17 @@ Examples of natural-language triggers and the invocation you should run:
 | "Test if the new mistral teammate works" | `lope team test mistral` |
 | "Make openclaw the primary" | `lope team add openclaw --url ... --force --primary` |
 
-Pattern: **plan → negotiate**, **ask → ask**, **critique artifact → review**, **predefined choices → vote**, **A/B files → compare**, **piped from shell → pipe**, **manage roster → team**. Don't force an `ask`-shaped request through `negotiate` — it wastes tokens and produces a sprint doc the user didn't want.
+**Autonomous multi-agent graph → `flow`:**
+
+| User says | You invoke |
+|---|---|
+| "Run agents autonomously to build X, let them negotiate the approach" | `lope flow init consensus` then `lope flow run .lope/flow/consensus.dot --task "build X"` |
+| "I want a propose → consolidate → implement → review loop, no babysitting" | `lope flow run .lope/flow/consensus.dot --task "<goal>"` |
+| "Set up a fix-loop: implement, ensemble-review, retry until it passes" | `lope flow init judge-loop` then `lope flow run .lope/flow/judge-loop.dot --task "<goal>"` |
+| "Show me / draw what the agents will do" | `lope flow render <file>.dot -o flow.svg` |
+| "Change how the agents collaborate" | edit the `.dot` graph, then `lope flow validate` + `lope flow run` |
+
+Pattern: **plan → negotiate**, **ask → ask**, **critique artifact → review**, **predefined choices → vote**, **A/B files → compare**, **piped from shell → pipe**, **manage roster → team**, **shape an autonomous agent graph → flow**. Don't force an `ask`-shaped request through `negotiate` — it wastes tokens and produces a sprint doc the user didn't want. Reach for `flow` when the *shape of the collaboration* (fan-out, consensus, loops) is the point and the run must be autonomous + bounded.
 
 ## When to trigger
 
@@ -122,7 +133,7 @@ Skip lope — just do the work directly — when:
 - **Exploratory questions.** "What could we do about X?", "How should we approach this?". Have the conversation first. Only lope the agreed plan.
 - **Urgent fire-fighting.** Production is down, user needs a fix in 10 minutes. Don't negotiate a sprint — patch the bug. Lope is for planned work.
 
-## The twelve modes
+## The thirteen modes
 
 | Mode | Slash command | When |
 |---|---|---|
@@ -136,6 +147,7 @@ Skip lope — just do the work directly — when:
 | Compare | `/lope-compare <a> <b>` | A/B file comparison. `--criteria` binds "better" to dimensions. |
 | Pipe | `<cmd> \| lope pipe` | stdin-fed fan-out. Composable shell verb. |
 | Team | `/lope-team add NAME ...` | Roster management. Add/remove/list/test validators without editing JSON. |
+| Flow | `/lope-flow run <file.dot>` | Autonomous DOT graph workflow. Agent / ensemble / shell-gate / judge nodes, conditioned edges, fan-out + loops, bounded by visit caps. `lope flow init consensus` to start. |
 
 Default flow for a *planned* task: **negotiate → implement/execute → audit**. Skip to one of the single-shot verbs (`ask`/`review`/`vote`/`compare`/`pipe`) when the user just wants multi-model output on a single prompt or artifact. Use `team` whenever the user's intent is to change who is ON the ensemble, not run it.
 
@@ -181,6 +193,7 @@ Route through the dedicated slash commands, not by calling the Python module dir
 - `/lope-compare` for A/B file comparison with explicit criteria
 - `/lope-pipe` for stdin-fed fan-out in shell pipelines
 - `/lope-team` for adding, removing, listing, or testing validators
+- `/lope-flow` for autonomous declarative graph workflows (fan-out, consensus, fix-loops)
 
 Each slash command has its own SKILL.md with the full flow. Read that skill when you invoke it, don't paraphrase.
 
