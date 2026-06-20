@@ -346,3 +346,93 @@ def test_verdict_instructions_round_trip_through_parser():
     )
     verdict = parse_opencode_verdict(reply, validator_name="probe", fallback_duration=0.0)
     assert verdict.status.name == "NEEDS_FIX"
+
+
+# ---------------------------------------------------------------------------
+# Hardening fixes surfaced by the PR #6 dogfood review (codex + agy)
+# ---------------------------------------------------------------------------
+
+
+def test_retry_is_clamped_to_max_retries():
+    """Finding 1: an uncapped `retry` lets one counted visit fan out into
+    unbounded model calls. retry is clamped to MAX_RETRIES."""
+    from lope.flow.model import MAX_RETRIES
+
+    assert FlowNode(id="x", kind=NodeKind.AGENT, attrs={"retry": "100"}).retry == MAX_RETRIES
+    assert FlowNode(id="y", kind=NodeKind.AGENT, attrs={"retry": "2"}).retry == 2
+    assert FlowNode(id="z", kind=NodeKind.AGENT, attrs={"retry": "-5"}).retry == 0
+
+
+def test_validate_warns_on_excessive_retry():
+    from lope.flow.model import MAX_RETRIES
+
+    dot = (
+        'digraph g {\n'
+        '  graph [max_node_visits="10"]\n'
+        '  S [type="start"]\n'
+        f'  A [type="agent", prompt="do it", retry="{MAX_RETRIES + 50}"]\n'
+        '  E [type="exit"]\n'
+        '  S -> A\n'
+        '  A -> E [condition="outcome=succeeded"]\n'
+        '}'
+    )
+    warnings = validate_graph(parse_dot(dot))
+    assert any("retry" in w and "clamp" in w.lower() for w in warnings)
+
+
+def _agent_graph(prompt: str) -> str:
+    return (
+        'digraph g {\n'
+        '  graph [max_node_visits="5"]\n'
+        '  S [type="start"]\n'
+        f'  A [type="agent", prompt="{prompt}"]\n'
+        '  E [type="exit"]\n'
+        '  S -> A\n'
+        '  A -> E [condition="outcome=succeeded"]\n'
+        '}'
+    )
+
+
+def test_at_file_rejects_absolute_path(tmp_path):
+    """Finding 4: a hostile graph must not exfiltrate arbitrary files."""
+    p = tmp_path / "wf.dot"
+    p.write_text(_agent_graph("@/etc/passwd"))
+    with pytest.raises(FlowConfigError):
+        load_flow_graph(str(p))
+
+
+def test_at_file_rejects_parent_escape(tmp_path):
+    (tmp_path / "secret.txt").write_text("TOPSECRET")
+    sub = tmp_path / "graphs"
+    sub.mkdir()
+    p = sub / "wf.dot"
+    p.write_text(_agent_graph("@../secret.txt"))
+    with pytest.raises(FlowConfigError):
+        load_flow_graph(str(p))
+
+
+def test_at_file_loads_relative_within_dir(tmp_path):
+    (tmp_path / "p.md").write_text("REVIEW THIS CODE")
+    p = tmp_path / "wf.dot"
+    p.write_text(_agent_graph("@p.md"))
+    g = load_flow_graph(str(p))
+    assert g.nodes["A"].prompt == "REVIEW THIS CODE"
+
+
+def test_report_md_and_trace_redact_secrets(tmp_path):
+    """Finding 5: report.md is built from scorecard() which embeds node errors
+    verbatim; secrets in a CLI's stderr must not land on disk."""
+    from lope.flow import write_flow_run
+    from lope.flow.report import FlowReport
+
+    fr = FlowReport(graph_name="g")
+    fr.add(NodeResult("N", "infra_error", label="agent",
+                      error="leaked key sk-ABCD1234deadbeefXYZ in stderr"))
+    fr.ok = False
+    out = write_flow_run(fr, str(tmp_path / "run"))
+
+    md = (out / "report.md").read_text(encoding="utf-8")
+    trace = (out / "trace.jsonl").read_text(encoding="utf-8")
+    assert "sk-ABCD1234deadbeefXYZ" not in md
+    assert "sk-ABCD1234deadbeefXYZ" not in trace
+    assert "sk-<redacted>" in md

@@ -256,16 +256,35 @@ def load_flow_graph(path: str) -> FlowGraph:
 
 
 def _resolve_prompt_files(graph: FlowGraph, base_dir: Optional[str]) -> None:
-    """Expand `prompt="@relative/file.md"` to the file's contents."""
+    """Expand `prompt="@relative/file.md"` to the file's contents.
+
+    The path is confined to ``base_dir`` (the graph file's directory): absolute
+    paths and ``..`` escapes are rejected. Without this, a hostile ``.dot`` could
+    set ``prompt="@/etc/passwd"`` or ``@../../secret`` and exfiltrate arbitrary
+    local files into the prompt sent to a model/CLI.
+    """
     if base_dir is None:
         return
-    base = Path(base_dir)
+    base = Path(base_dir).resolve()
     for node in graph.nodes.values():
         prompt = node.attrs.get("prompt", "")
-        if prompt.startswith("@"):
-            target = base / prompt[1:].strip()
-            if not target.exists():
-                raise FlowConfigError(
-                    f"node {node.id!r}: prompt file not found: {target}"
-                )
-            node.attrs["prompt"] = target.read_text(encoding="utf-8")
+        if not prompt.startswith("@"):
+            continue
+        rel = prompt[1:].strip()
+        if not rel:
+            raise FlowConfigError(f"node {node.id!r}: empty @file reference")
+        if Path(rel).is_absolute():
+            raise FlowConfigError(
+                f"node {node.id!r}: @file must be a relative path inside the "
+                f"graph directory, got absolute {rel!r}"
+            )
+        target = (base / rel).resolve()
+        if target != base and base not in target.parents:
+            raise FlowConfigError(
+                f"node {node.id!r}: @file path escapes the graph directory: {rel!r}"
+            )
+        if not target.is_file():
+            raise FlowConfigError(
+                f"node {node.id!r}: prompt file not found: {target}"
+            )
+        node.attrs["prompt"] = target.read_text(encoding="utf-8")

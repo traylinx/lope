@@ -11,6 +11,10 @@ It walks breadth-first in "waves": all currently-ready nodes run concurrently
 until all its non-loop barrier sources complete. Loops are just back-edges,
 bounded entirely by per-node `max_visits` and the graph-wide `max_node_visits`
 so an unsupervised run can never loop forever or run unbounded cost.
+
+Cost bound is on *handler executions*, not just node visits: a node's retry
+attempts (capped at MAX_RETRIES) are each charged to `max_node_visits`, so the
+total number of model calls in a run is bounded by `max_node_visits`, full stop.
 """
 
 from __future__ import annotations
@@ -311,11 +315,20 @@ class FlowRunner:
                 break
 
             next_ready: List[FlowNode] = []
-            for node, result in self._run_wave(runnable, ctx):
+            wave_results = self._run_wave(runnable, ctx)
+
+            # Record every result first, so the trace reflects ALL parallel work
+            # even when a sibling node terminates the run this wave. Also charge
+            # each retry attempt to the global execution budget (a retry is
+            # another model call); the cap is enforced at the top of the next wave.
+            for node, result in wave_results:
                 report.add(result)
                 bb.put_result(result)
                 self._print_step(node, result)
+                global_visits += max(0, result.attempts - 1)
 
+            # Then route in deterministic node order; the first terminal node wins.
+            for node, result in wave_results:
                 if node.kind == NodeKind.EXIT:
                     report.ok = node.status != "fail"
                     terminated = True
@@ -355,9 +368,15 @@ class FlowRunner:
 
         if not terminated and not ready and report.ok and report.escalation is None:
             report.ok = False
+            stalled = {k: sorted(v) for k, v in pending_joins.items() if v}
+            reason = "frontier drained without reaching an exit node"
+            if stalled:
+                reason += (
+                    f"; join(s) still waiting on upstream sources that never "
+                    f"arrived this lap: {stalled}"
+                )
             report.escalation = self._escalation(
-                start, len(report.node_results),
-                "frontier drained without reaching an exit node",
+                start, len(report.node_results), reason,
             )
 
         report.total_duration_seconds = time.perf_counter() - t0
@@ -407,10 +426,12 @@ class FlowRunner:
         handler = _HANDLERS.get(node.kind)
         if handler is None:
             return NodeResult(node.id, "infra_error", error=f"no handler for {node.kind}")
-        attempts = node.retry + 1
+        attempts = node.retry + 1  # node.retry is clamped to MAX_RETRIES
         last: Optional[NodeResult] = None
+        made = 0
         t0 = time.perf_counter()
         for _ in range(attempts):
+            made += 1
             try:
                 last = handler(node, ctx)
             except Exception as exc:  # handlers shouldn't raise; treat as infra
@@ -421,6 +442,7 @@ class FlowRunner:
         if last is None:  # pragma: no cover - defensive
             last = NodeResult(node.id, "infra_error", error="handler produced no result")
         last.duration_seconds = time.perf_counter() - t0
+        last.attempts = made
         return last
 
     def _escalation(self, node, index, reason, verdict=None):

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import List, Set
 
-from .model import FlowConfigError, FlowGraph, NodeKind
+from .model import MAX_RETRIES, FlowConfigError, FlowGraph, NodeKind
 
 
 def validate_graph(graph: FlowGraph) -> List[str]:
@@ -51,6 +51,12 @@ def validate_graph(graph: FlowGraph) -> List[str]:
             errors.append(f"node {node.id!r} (type={node.kind.value}) needs a prompt=")
         if node.kind == NodeKind.SCRIPT and not (node.attr("cmd") or node.attr("gate")):
             errors.append(f"script node {node.id!r} needs cmd= or gate=")
+        raw_retry = node.int_attr("retry", 0)
+        if raw_retry > MAX_RETRIES:
+            warnings.append(
+                f"node {node.id!r}: retry={raw_retry} exceeds the cap and will be "
+                f"clamped to MAX_RETRIES={MAX_RETRIES} (each retry is another model call)"
+            )
 
     # 5. reachability + dead ends (only if structure is otherwise sound)
     if starts and not errors:

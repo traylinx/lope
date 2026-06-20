@@ -52,7 +52,13 @@ class FlowReport:
             if r.error:
                 lines.append(f"  error: {r.error[:160]}")
         lines.append("---")
-        lines.append("Overall: " + ("OK" if self.ok else "ESCALATED"))
+        if self.ok:
+            overall = "OK"
+        elif self.escalation is not None:
+            overall = "ESCALATED"
+        else:
+            overall = "FAILED (reached a fail-exit)"
+        lines.append("Overall: " + overall)
         if self.escalation is not None:
             lines.append(f"Escalation: {self.escalation}")
         return "\n".join(lines)
@@ -153,8 +159,11 @@ def write_flow_run(fr: FlowReport, out_dir: str) -> Path:
             f.write(json.dumps(line) + "\n")
 
     report_md = base / "report.md"
+    # scorecard() embeds node errors verbatim; redact before persisting so a
+    # secret leaked into a CLI's stderr never lands in report.md (trace.jsonl
+    # above is already redacted field-by-field).
     report_md.write_text(
-        f"# Flow run: {fr.graph_name}\n\n```\n{fr.scorecard()}\n```\n",
+        f"# Flow run: {fr.graph_name}\n\n```\n{redact_text(fr.scorecard())}\n```\n",
         encoding="utf-8",
     )
     return base

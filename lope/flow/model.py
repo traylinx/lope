@@ -92,6 +92,13 @@ def _truthy(value: Optional[str]) -> bool:
 
 # ─── Nodes + edges ───────────────────────────────────────────────
 
+# Hard cap on per-node `retry`. Each retry is another handler execution (another
+# model call), so an uncapped `retry` would let a single counted visit fan out
+# into unbounded cost. With this cap total executions stay bounded by
+# max_node_visits * (1 + MAX_RETRIES), and the runner additionally charges each
+# retry to the global visit budget. validate_graph warns when a node asks for more.
+MAX_RETRIES = 3
+
 
 @dataclass
 class FlowNode:
@@ -137,7 +144,10 @@ class FlowNode:
 
     @property
     def retry(self) -> int:
-        return self.int_attr("retry", 0)
+        # Clamp to [0, MAX_RETRIES] so one node visit can never trigger
+        # unbounded handler re-execution. validate_graph surfaces a warning
+        # when the raw attribute exceeds the cap, so the clamp is never silent.
+        return max(0, min(self.int_attr("retry", 0), MAX_RETRIES))
 
     @property
     def retry_target(self) -> Optional[str]:
@@ -255,6 +265,7 @@ class NodeResult:
     duration_seconds: float = 0.0
     error: str = ""
     raw: str = ""
+    attempts: int = 1  # handler executions incl. retries (charged to the global budget)
 
 
 _VERDICT_OUTCOME = {

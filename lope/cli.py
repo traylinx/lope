@@ -848,8 +848,11 @@ def _cmd_flow_run(args):
         from .logo import mascot
         print()
         print(mascot("flowed. autonomously."))
-    else:
+    elif report.escalation is not None:
         print(f"\nEscalation: {report.escalation}")
+        sys.exit(1)
+    else:
+        print("\nFlow ended at a fail-exit (changes requested) — not an escalation.")
         sys.exit(1)
 
 
