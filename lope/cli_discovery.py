@@ -141,6 +141,17 @@ KNOWN_CLIS = [
         is_default=False,
         generic_command=["qwen", "-p", "{prompt}"],
     ),
+    CliInfo(
+        name="agy",
+        binary="agy",
+        display_name="Agy",
+        tier=2,
+        is_default=False,
+        # Print mode: one stateless prompt -> response, no interactive session.
+        # Multi-model agent CLI (Gemini / Claude / GPT-OSS); the active model
+        # comes from the user's agy config. Same validator shape as qwen.
+        generic_command=["agy", "-p", "{prompt}"],
+    ),
 ]
 
 

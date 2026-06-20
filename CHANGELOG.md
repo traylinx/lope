@@ -9,6 +9,7 @@
 - **CLI surface:** `lope flow run | validate (alias lint) | render | init | list`. `init` writes one of three bundled templates (`consensus`, `judge-loop`, `review-gate`); `render` shells out to the system Graphviz `dot` when present and degrades gracefully when absent; `validate` statically checks the graph is runnable + bounded (one start, reachable exit, no dangling edges, no dead ends, no unbounded loops).
 - **Audit reuse:** flow runs feed the existing `Auditor` (scorecard + `[[lope]]` journal) via a `FlowReport → ExecutionReport` adapter; `--out` writes redacted `trace.jsonl` + `report.md`.
 - Stdlib only — preserves lope's zero-runtime-dependency posture (the DOT parser is a ~250-line hand-rolled tokenizer, same lineage as the VERDICT-block parser). 27 new tests in `tests/test_flow.py`.
+- **New validator auto-discovered:** the `agy` multi-model agent CLI (Gemini / Claude / GPT-OSS) is now recognized by lope's CLI discovery — usable as any ensemble validator or `flow` node (e.g. `--validators codex,agy`), same generic-subprocess shape as `qwen`.
 
 ## 0.10.7 — Security & CI hardening
 
