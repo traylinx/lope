@@ -9,13 +9,12 @@ v0.4.0 adds:
 
 from __future__ import annotations
 
-import errno
 import fcntl
 import json
 import os
 import tempfile
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 

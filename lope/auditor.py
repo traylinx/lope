@@ -22,7 +22,6 @@ from typing import List, Optional
 
 from .models import (
     ExecutionReport,
-    PhaseVerdict,
     VerdictStatus,
 )
 

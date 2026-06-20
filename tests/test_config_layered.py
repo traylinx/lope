@@ -13,25 +13,19 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
-import pytest
 
 # Ensure the package is importable from the repo root when run without install.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lope.config import (
     LopeCfg,
-    LearnedAdapter,
     VERSION,
-    default_path,
     load,
     load_layered,
     project_path,
-    save,
 )
 
 
@@ -129,7 +123,6 @@ def test_load_layered_global_only_matches_load(tmp_path, monkeypatch):
     cwd = str(tmp_path / "empty_project")
     os.makedirs(cwd, exist_ok=True)
 
-    from lope.config import default_path as _default_path
     # Monkey-patch default_path to return our temp global path
     monkeypatch.setattr("lope.config.default_path", lambda: global_cfg_path)
 
@@ -280,7 +273,7 @@ def test_configure_writes_to_global_path(tmp_path, monkeypatch):
 
     # _cmd_configure calls save_config(cfg, path) with path = default_path().
     # We simulate this directly.
-    from lope.config import save as _save, default_path as _default_path
+    from lope.config import save as _save
     import lope.config as _cfg_mod
     monkeypatch.setattr(_cfg_mod, "default_path", lambda: str(global_cfg_path))
 

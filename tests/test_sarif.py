@@ -10,9 +10,7 @@ deterministic rule extraction for the lope.<category>.<severity> id scheme.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
-import pytest
 
 from lope import sarif
 from lope.findings import (
@@ -176,7 +174,6 @@ def test_dumps_redacts_secrets_in_message_text():
 
 
 def test_full_pipeline_into_sarif_matches_real_findings():
-    text = "- [HIGH] auth.py:42 — Missing rate limit (confidence: 0.86)"
     findings = [
         Finding(
             message="Missing rate limit",

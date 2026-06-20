@@ -442,7 +442,7 @@ def _lint_proposal(text: str) -> List[str]:
             phase_errors = _lint_phase(phase_header, phase_body, idx)
             errors.extend(phase_errors)
             if len(errors) >= 10:
-                errors.append(f"(truncated at 10 errors; more phases unchecked)")
+                errors.append("(truncated at 10 errors; more phases unchecked)")
                 break
 
     return errors
@@ -509,7 +509,7 @@ def _has_nonempty_list(body: str, candidate_labels: List[str]) -> bool:
     """
     label_pattern = (
         r"\*\*(?:"
-        + "|".join(re.escape(l) for l in candidate_labels)
+        + "|".join(re.escape(lbl) for lbl in candidate_labels)
         + r")\*?\*?\s*:?\s*\*?\*?[ \t]*\n"  # only one newline, no \s* trail
     )
     for m in re.finditer(label_pattern, body, re.IGNORECASE):

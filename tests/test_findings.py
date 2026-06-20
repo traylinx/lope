@@ -14,11 +14,9 @@ from pathlib import Path
 import pytest
 
 from lope.findings import (
-    ConsensusFinding,
     ConsensusLevel,
     Finding,
     FindingParseResult,
-    MergedFinding,
     format_consensus_markdown,
     merge_findings,
     parse_findings,

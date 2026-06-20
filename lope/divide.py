@@ -19,9 +19,8 @@ Stdlib only; no IO beyond the directory walk in :func:`split_files`.
 
 from __future__ import annotations
 
-import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 

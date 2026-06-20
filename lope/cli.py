@@ -839,7 +839,6 @@ def _cmd_deliberate(args):
     """Dispatch ``lope deliberate <template> <scenario>``."""
 
     from .deliberation import (
-        DeliberationRun,
         default_output_dir,
         get_template,
         run_deliberation,
@@ -1132,7 +1131,7 @@ def _cmd_status():
     print(box())
     print("\nLope — Validator Status")
     print("-" * 40)
-    print(f"\nDetected built-in CLIs:")
+    print("\nDetected built-in CLIs:")
     for cli in available:
         marker = " * DEFAULT" if cli.is_default else ""
         print(f"  {cli.display_name:<20} ({cli.name}){marker}")
@@ -1156,7 +1155,7 @@ def _cmd_status():
         # v0.4.0: show learned adapters (self-healed CLI invocations)
         if cfg.learned_adapters:
             import time as _t
-            from .healer import is_adapter_expired, LEARNED_ADAPTER_TTL_SECONDS
+            from .healer import is_adapter_expired
             print(f"\nLearned adapters ({len(cfg.learned_adapters)}):")
             now = _t.time()
             for cli_name, adapter in cfg.learned_adapters.items():
@@ -1182,7 +1181,7 @@ def _cmd_status():
                 age = int((__import__("time").time() - ts) / 60) if ts else -1
                 print(f"  {evt.get('event', '?'):<16} {evt.get('cli', '?'):<16} {age}m ago")
     else:
-        print(f"\nNo config found. Run: lope configure")
+        print("\nNo config found. Run: lope configure")
     print()
     # Random gimmick (15% chance)
     gimmick = maybe_gimmick(rate=0.15)
@@ -1381,7 +1380,7 @@ def _path_with_extra_suffix(path: Path, extra_suffix: str) -> Path:
 def _write_negotiation_escalation_artifacts(
     out_path: str,
     negotiator: Negotiator,
-    result: "EscalationRequired",
+    result: "EscalationRequired",  # noqa: F821 — forward ref (lope.negotiator.EscalationRequired)
 ) -> Dict[str, str]:
     """Persist the last proposal + validator feedback when negotiate escalates."""
     from .models import Round
@@ -1846,8 +1845,8 @@ def _try_self_heal_from_generate(primary, err_msg: str, pool, timeout: int):
 
     healer = SelfHealer()
     if not healer.should_attempt(primary.name, reviewer_available=True):
-        print(f">>> self-heal skipped: set LOPE_SELF_HEAL=1 to enable "
-              f"automatic adapter repair on flag breaks")
+        print(">>> self-heal skipped: set LOPE_SELF_HEAL=1 to enable "
+              "automatic adapter repair on flag breaks")
         return None
 
     # Reconstruct the failing argv as best we can — the exception message
@@ -1858,7 +1857,7 @@ def _try_self_heal_from_generate(primary, err_msg: str, pool, timeout: int):
     binary = getattr(primary, "_binary", primary.name)
     old_argv = [binary, "<unknown>", "{prompt}"]
 
-    print(f">>> flag-surface error detected, attempting self-heal...")
+    print(">>> flag-surface error detected, attempting self-heal...")
     print(f">>> reviewer: {reviewers[0].name}  ·  target: {primary.name}")
     return healer.attempt(
         cli_name=primary.name,
@@ -2979,7 +2978,7 @@ def _cmd_compare(args):
     validator_names = [v.name for v in getattr(pool, "_validators", [])] or pool.names()
 
     if not args.json:
-        print(f"\nLope compare:")
+        print("\nLope compare:")
         print(f"  A: {file_a}  ({len(content_a)} chars)")
         print(f"  B: {file_b}  ({len(content_b)} chars)")
         print(f"  Criteria: {criteria}")
@@ -3342,7 +3341,7 @@ def _team_add(args, cfg, cfg_path):
         )
         sys.exit(2)
     if any(ch in name for ch in " \t\n,;|"):
-        print(f"ERROR: name must not contain whitespace or separators", file=sys.stderr)
+        print("ERROR: name must not contain whitespace or separators", file=sys.stderr)
         sys.exit(2)
 
     existing = next((p for p in cfg.providers if p.get("name") == name), None)
@@ -3598,7 +3597,7 @@ def _team_remove(args, cfg, cfg_path):
         if cfg.primary:
             print(f"     Primary: {cfg.primary}")
     else:
-        print(f"     No validators remaining — add one with `lope team add`.")
+        print("     No validators remaining — add one with `lope team add`.")
 
 
 def _team_test(args, cfg):

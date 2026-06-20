@@ -6,17 +6,12 @@ touched.
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 
 from lope.divide import (
-    DEFAULT_MAX_CHARS,
     FileChunk,
-    HunkChunk,
-    ROLE_LENSES,
     RoleLens,
-    SkippedFile,
     assign_roles,
     build_role_prompt,
     get_role,
@@ -62,7 +57,6 @@ def test_split_single_file_chunks_when_oversized(tmp_path):
     assert len(chunks) > 1
     # Line ranges are contiguous and cover the original.
     assert chunks[0].start_line == 1
-    last = chunks[-1]
     total_lines = sum(c.end_line - c.start_line + 1 for c in chunks)
     assert total_lines == 2000
     # Every chunk except possibly the last fits under the budget.

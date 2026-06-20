@@ -18,6 +18,14 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+# Dev/CI tooling, pinned for reproducibility. Added in the OpenAI-readiness
+# sprint (2026-06): ruff is the blocking lint gate; mypy is advisory (D2).
+dev = [
+    "ruff==0.14.10",
+    "mypy==1.10.1",
+]
+
 [project.scripts]
 lope = "lope.cli:main"
 
@@ -46,3 +54,24 @@ include = [
     "LICENSE",
     "pyproject.toml",
 ]
+
+[tool.ruff]
+# Lint config added in the OpenAI-readiness sprint (2026-06). The select set is
+# pinned (ruff's curated default) so a future ruff release can't silently widen
+# the gate; expand it (I, B, UP, …) in a follow-up once the backlog is zero and
+# held there. `.opencode` is editor tooling, not shipped source.
+line-length = 100
+target-version = "py39"
+extend-exclude = [".opencode", "node_modules"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+# Advisory, NOT a blocking gate (sprint decision D2). CI runs mypy for signal
+# but does not fail on its findings; full typing is scheduled later. Kept
+# lenient so it surfaces genuine errors without demanding total annotations.
+python_version = "3.9"
+ignore_missing_imports = true
+warn_return_any = false
+warn_unused_configs = true

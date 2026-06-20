@@ -15,7 +15,7 @@ deterministic stubs without touching the real validator subsystem.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .findings import (

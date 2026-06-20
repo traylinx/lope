@@ -68,7 +68,6 @@ def _run_with_group_kill(
             command, input_text=input_text, timeout=timeout, cwd=cwd
         )
     except subprocess.TimeoutExpired:
-        elapsed = time.time() - started
         raise RuntimeError(
             f"{command[0]} run timed out after {timeout}s (process group killed)"
         )
@@ -867,7 +866,7 @@ def parse_opencode_verdict(
     rat_match = _OPENCODE_RATIONALE_RE.search(block)
     if rat_match:
         rationale = "\n".join(
-            l.rstrip() for l in rat_match.group(1).splitlines()
+            line.rstrip() for line in rat_match.group(1).splitlines()
         ).strip()
 
     # Required fixes
@@ -1653,13 +1652,13 @@ class AiderValidator(Validator):
 # CLI-specific Validator subclasses in this file. `EnsemblePool` and
 # `synthesize` (plus the private alias `_synthesize`) remain importable
 # from `lope.validators` for backward compatibility.
-from .ensemble import EnsemblePool, synthesize, _synthesize  # noqa: F401 — re-exports
+from .ensemble import EnsemblePool, synthesize, _synthesize  # noqa: F401,E402 — intentional late re-export
 
 
 # ─── Config-driven pool builder ─────────────────────────────
 
 
-def build_validator_pool(cfg: "LopeCfg") -> "ValidatorPool":
+def build_validator_pool(cfg: "LopeCfg") -> "ValidatorPool":  # noqa: F821 — LopeCfg imported lazily in body
     """Build a ValidatorPool or EnsemblePool from config.
 
     Resolution order:
@@ -1667,7 +1666,6 @@ def build_validator_pool(cfg: "LopeCfg") -> "ValidatorPool":
       2. Generic providers from cfg.providers — subprocess or http, user-defined
       3. Auto-detected CLIs from cli_discovery KNOWN_CLIS (ollama, goose, etc.) — use generic subprocess
     """
-    from .config import LopeCfg
     from .cli_discovery import KNOWN_CLIS
 
     validator_map = {
@@ -1682,7 +1680,7 @@ def build_validator_pool(cfg: "LopeCfg") -> "ValidatorPool":
     generic_map = {}
     providers = getattr(cfg, "providers", []) or []
     if providers:
-        from .generic_validators import build_provider, ConfigError
+        from .generic_validators import build_provider
         for entry in providers:
             try:
                 pname = entry.get("name") if isinstance(entry, dict) else None
