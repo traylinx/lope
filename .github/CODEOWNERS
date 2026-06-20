@@ -1,0 +1,13 @@
+# Code owners for lope. The owner is auto-requested for review on PRs that
+# touch matching paths. Default owner covers the whole repo; security-critical
+# surfaces are listed explicitly so they can't be changed without owner review.
+
+* @rschumann
+
+# Security-critical surfaces.
+/.github/        @rschumann
+/.gitleaks.toml  @rschumann
+/SECURITY.md     @rschumann
+/lope/gates.py   @rschumann
+/install         @rschumann
+/scripts/        @rschumann
