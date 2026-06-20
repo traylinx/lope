@@ -40,15 +40,21 @@ from .stylesheet import parse_stylesheet, split_names
 DEFAULT_TIMEOUT_SECONDS = 480
 DEFAULT_MAX_WORKERS = 5
 
-# Appended to review / judge-ensemble prompts so validators emit a block that
-# models.parse_verdict_block can read (lope does not inject this for callers).
+# Appended to review / judge-ensemble prompts so validators emit the canonical
+# ---VERDICT---...---END--- block that every lope validator parser reads
+# (validators.parse_opencode_verdict / parse_verdict_block). This MUST match the
+# block emitted by executor.py / negotiator.py — a custom format here is silently
+# unparseable and surfaces as "no ---VERDICT--- block found" → INFRA_ERROR.
 VERDICT_INSTRUCTIONS = (
-    "\n\nReply with a verdict block in EXACTLY this format:\n"
-    "VERDICT: <PASS|NEEDS_FIX|FAIL> (confidence=<0.0-1.0>, 0s)\n"
-    "RATIONALE:\n"
-    "<one or two sentences; cite file:line where relevant>\n"
-    "REQUIRED_FIXES:\n"
-    "- <fix>   (include this section only when NEEDS_FIX or FAIL)"
+    "\n\nReply with a verdict block in EXACTLY this format. The literal "
+    "---VERDICT--- and ---END--- delimiter lines are REQUIRED:\n"
+    "---VERDICT---\n"
+    "status: PASS | NEEDS_FIX | FAIL\n"
+    "confidence: 0.0-1.0\n"
+    "rationale: 1-3 sentences, terse; cite file:line where relevant\n"
+    "required_fixes:\n"
+    "  - fix 1   (include this section only when NEEDS_FIX or FAIL)\n"
+    "---END---"
 )
 
 

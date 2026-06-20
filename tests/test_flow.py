@@ -315,3 +315,34 @@ def test_load_flow_graph_from_disk(tmp_path):
     g = load_flow_graph(str(p))
     assert g.name == "judge_loop"
     assert validate_graph(g) == []
+
+
+def test_verdict_instructions_round_trip_through_parser():
+    """Regression: flow's VERDICT_INSTRUCTIONS must elicit the canonical
+    ---VERDICT---...---END--- block that lope's validator parsers read.
+
+    A custom verdict format here is silently unparseable and surfaces on every
+    review/judge-ensemble node as "no ---VERDICT--- block found" -> INFRA_ERROR,
+    which then escalates the whole run. Caught by dogfooding PR #6 (codex + agy
+    reviewed the flow code and every verdict came back unparseable).
+    """
+    from lope.flow.runner import VERDICT_INSTRUCTIONS
+    from lope.validators import parse_opencode_verdict
+
+    assert "---VERDICT---" in VERDICT_INSTRUCTIONS
+    assert "---END---" in VERDICT_INSTRUCTIONS
+
+    # A model reply that follows the instructions must parse to a real status,
+    # not the INFRA_ERROR sentinel.
+    reply = (
+        "Sure, here is my assessment after reading the code.\n"
+        "---VERDICT---\n"
+        "status: NEEDS_FIX\n"
+        "confidence: 0.8\n"
+        "rationale: example rationale citing runner.py:1\n"
+        "required_fixes:\n"
+        "  - tighten the guard\n"
+        "---END---\n"
+    )
+    verdict = parse_opencode_verdict(reply, validator_name="probe", fallback_duration=0.0)
+    assert verdict.status.name == "NEEDS_FIX"
