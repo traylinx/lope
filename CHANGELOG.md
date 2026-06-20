@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.7 — Security & CI hardening
+
+- Gate trust boundary (F1): `.lope/rules.json` gate commands now require a per-(repo, command-set) trust record before they run via the shell. Fail-closed in non-interactive use; opt in with `--trust` or `LOPE_TRUST_GATES`.
+- Installer remote-exec consent (F2): the Headroom remote install script is now opt-in behind `LOPE_INSTALL_HEADROOM` plus an explicit consent gate (`LOPE_HEADROOM_ALLOW_REMOTE_EXEC`) instead of running unprompted.
+- CI & governance: PR/push CI (ruff, `py_compile`, pytest on 3.9/3.12, version-sync, gitleaks; mypy advisory), SHA-pinned actions, `.gitleaks.toml`, `SECURITY.md`, `CONTRIBUTING.md`, `CODEOWNERS`.
+- Lint hygiene: ruff-clean tree, pinned dev tooling (ruff 0.14.10, mypy 1.10.1), advisory mypy policy.
+
 ## 0.10.6 — Headroom Docker fallback
 
 - Added Docker-native Headroom fallback to `./install` so `headroom` still installs on hosts where `headroom-ai[mcp]` cannot build native dependencies.
