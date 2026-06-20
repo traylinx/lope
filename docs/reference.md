@@ -578,11 +578,11 @@ The ensemble checks the same thing across all three domains: specific plan, meas
 
 ## Supported validators
 
-14 built-in CLI adapters, auto-detected on `$PATH`:
+15 built-in CLI adapters, auto-detected on `$PATH`:
 
-Claude Code · OpenCode · Gemini CLI · Codex · Mistral Vibe · Aider · Ollama · Goose · Open Interpreter · llama.cpp · GitHub Copilot CLI · Amazon Q · **pi (Traylinx)** · **Qwen Code**
+Claude Code · OpenCode · Gemini CLI · Codex · Mistral Vibe · Aider · Ollama · Goose · Open Interpreter · llama.cpp · GitHub Copilot CLI · Amazon Q · **pi (Traylinx)** · **Qwen Code** · **Agy**
 
-pi and Qwen were added in v0.5.0 as first-class built-in validators via the generic subprocess path (`pi -p "{prompt}"`, `qwen -p "{prompt}"`). They now appear in `lope status` automatically when the binaries are on PATH — no config.json hack needed.
+pi and Qwen were added in v0.5.0, and **Agy** (a multi-model agent CLI — Gemini / Claude / GPT-OSS) in v0.11.0, as first-class built-in validators via the generic subprocess path (`pi -p "{prompt}"`, `qwen -p "{prompt}"`, `agy -p "{prompt}"`). They appear in `lope status` automatically when the binary is on PATH — no config.json hack needed. Use any of them as an ensemble validator or a `flow` node, e.g. `--validators codex,agy`.
 
 **You need at least two different validators for the ensemble to have signal.** A pool of one is not an ensemble. For `ask` / `review` / `vote` / `compare` / `pipe` a single validator still works (fan-out of 1), but the whole point is multi-model perspective.
 
