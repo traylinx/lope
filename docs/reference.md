@@ -43,6 +43,7 @@ Four structured sprint modes + five single-shot verbs + one roster verb + two v0
 | **Memory** *(v0.7)* | `lope memory {stats,search,file,hotspots,forget}` | — | Query the persistent finding store written by `lope review --remember`. See [docs/memory.md](memory.md). |
 | **Deliberate** *(v0.7)* | `lope deliberate <template> <scenario>` | — | Run a 7-stage Agent-Order-style council on an ADR / PRD / RFC / build-vs-buy / migration-plan / incident-review. See [docs/deliberation.md](deliberation.md). |
 | **Flow** *(v0.11)* | `lope flow {run,validate,render,init,list}` | `/lope-flow` | Run a declarative DOT **graph** workflow — agent / ensemble-review / shell-gate / judge-router nodes, conditioned edges, fan-out + fix-loops. Autonomous (no human gates), bounded by per-node and graph-wide visit caps. See [Flow](#flow--declarative-graph-workflows). |
+| **Update** | `lope update` (`lope upgrade` alias) | — | Self-update Lope. Git installs pull with `--ff-only` and refresh host skills; pip installs run `pip install --upgrade lope-agent`. |
 
 Default flow for multi-phase work: **negotiate → implement/execute → audit**. For single-prompt / single-file / piped work, the single-shot verbs run in one pass without a sprint doc. `team` is runtime-independent — it only edits `~/.lope/config.json` and runs 0 validators (except on `test`).
 
@@ -551,6 +552,20 @@ Interactive validator picker. Writes to `~/.lope/config.json`.
 ### `lope install`
 
 Engine-level installer pointer. Prefer the top-level `./install` bash script or the paste-a-prompt flow (see below).
+
+### `lope update` / `lope upgrade`
+
+Self-update Lope. Default mode auto-detects whether the running copy is a git checkout or a pip install.
+
+```bash
+lope update
+lope update --dry-run
+lope update --host codex       # refresh only one host's installed skills
+lope update --skip-install     # pull code only
+lope upgrade                   # legacy alias
+```
+
+For a git checkout, Lope refuses tracked dirty files unless `--allow-dirty` is passed, validates the requested host before mutating the checkout, then runs `git fetch --tags <remote>`, `git pull --ff-only <remote> <branch>`, and `./install --host <host>`. Untracked runtime state such as `~/.lope/config.json`, journals, and memory databases does not block the update. For a pip install, Lope runs `python -m pip install --upgrade lope-agent`; host slash-command refresh is available from the git checkout installer.
 
 ### `lope version`
 

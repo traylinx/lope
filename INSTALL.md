@@ -209,6 +209,16 @@ PYTHONPATH="$HOME/.lope" python3 -m lope status
 
 `version` prints the banner. `status` lists detected AI CLIs. Either failing means the engine is not importable — report the error.
 
+Future updates are one command:
+
+```bash
+PYTHONPATH="$HOME/.lope" python3 -m lope update
+# or, after you add the alias/wrapper:
+lope update
+```
+
+`lope update` auto-detects the install method. For the normal `~/.lope` git checkout it fetches tags, pulls the explicit tracked remote branch with `--ff-only`, and reruns `./install` so host skills stay current. `lope update --dry-run` previews the commands. `lope upgrade` is kept as a legacy alias. For pip installs, the command upgrades the `lope-agent` Python package only; host slash-command refresh is handled by the git checkout installer.
+
 ## Step 4 — Suggest a shell alias
 
 Show the user this line and tell them to add it to `~/.zshrc` or `~/.bashrc`:

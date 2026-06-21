@@ -493,17 +493,32 @@ install_host() {
   esac
 }
 
+if [ "${LOPE_INSTALL_ONE_HOST:-0}" = "1" ]; then
+  install_host "$HOST"
+  exit $?
+fi
+
 echo ""
-echo "Lope v0.11.0 — Installing skills and commands"
+echo "Lope v0.12.0 — Installing skills and commands"
 echo "─────────────────────────────────────────────"
 echo ""
 
+INSTALL_FAILED=0
 if [ "$HOST" = "all" ]; then
   for h in claude codex gemini opencode cursor vibe qwen pi; do
-    install_host "$h" 2>/dev/null || echo "  $h:      (skipped — not detected)"
+    if ! LOPE_INSTALL_ONE_HOST=1 "${BASH:-bash}" "$LOPE_DIR/install" --host "$h"; then
+      echo "  $h:      (failed — see error above)"
+      INSTALL_FAILED=1
+    fi
   done
 else
-  install_host "$HOST"
+  LOPE_INSTALL_ONE_HOST=1 "${BASH:-bash}" "$LOPE_DIR/install" --host "$HOST" || exit $?
+fi
+
+if [ "$INSTALL_FAILED" = "1" ]; then
+  echo ""
+  echo "ERROR: one or more host skill installs failed."
+  exit 1
 fi
 
 echo ""

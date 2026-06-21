@@ -1,6 +1,6 @@
 """Lope — multi-CLI validator ensemble for AI work.
 
-Version: 0.11.0
+Version: 0.12.0
 
 
 Four structured modes (`negotiate`, `execute`, `implement`, `audit`) cover multi-phase
@@ -16,7 +16,7 @@ fully autonomous, bounded by per-node and graph-wide visit caps so an
 unsupervised run can never loop forever. Any CLI implements; any CLI validates.
 """
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 from .models import (
     ExecutionReport,

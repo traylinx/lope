@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.0 — Self-update command
+
+- **Self-update command:** added `lope update` with `lope upgrade` as a legacy alias. Git checkouts fetch tags, pull the explicit remote branch with `--ff-only`, then refresh installed host skills via `./install`; pip installs run `python -m pip install --upgrade lope-agent`. Includes `--dry-run`, `--method`, `--host`, `--skip-install`, and `--allow-dirty`.
+- **Update safety:** validates `--host` before mutating a checkout, refuses missing git-checkout installers when skill refresh is requested, and pulls the same explicit remote branch it fetched instead of relying on implicit git upstream behavior.
+- **Installer safety:** `./install --host all` now exits nonzero when an attempted host skill install fails instead of silently converting every host error into a skip.
+
 ## 0.11.0 — Flow: declarative autonomous graph workflows
 
 - **New `flow` mode.** `lope flow run <file.dot>` walks a declarative Graphviz **DOT** graph where nodes dispatch into lope's existing executors — `agent` (`Validator.generate`), `review` (`EnsemblePool.validate` majority vote), `judge` (ensemble vote or `generate` + structured `outcome:` block), and `script` (`gates.run_gate`) — and edges carry `condition="outcome=..."` and `loop_restart` back-edges. No new agent/validator/CLI code; flow is pure orchestration over the existing primitives.

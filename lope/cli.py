@@ -605,7 +605,38 @@ def main():
 
     # install
     inst = sub.add_parser("install", help="Install lope skills into CLI hosts")
-    inst.add_argument("--host", default="all", help="Target host (claude, codex, gemini, opencode, cursor, all)")
+    inst.add_argument(
+        "--host",
+        default="all",
+        help="Target host (claude, codex, gemini, opencode, cursor, vibe, qwen, pi, all)",
+    )
+
+    # update / upgrade
+    def _add_update_flags(p):
+        p.add_argument("--dry-run", action="store_true",
+                       help="Print updater commands without executing them")
+        p.add_argument("--method", default="auto", choices=["auto", "git", "pip"],
+                       help="Update method (default: auto-detect git checkout vs pip install)")
+        p.add_argument(
+            "--host",
+            default="all",
+            help=(
+                "Host passed to ./install when refreshing skills "
+                "(claude, codex, gemini, opencode, cursor, vibe, qwen, pi, all)"
+            ),
+        )
+        p.add_argument("--skip-install", action="store_true",
+                       help="Do not rerun ./install after a git update")
+        p.add_argument("--allow-dirty", action="store_true",
+                       help="Proceed even when tracked git files are modified")
+
+    upd = sub.add_parser(
+        "update",
+        help="Update Lope itself, then refresh installed host skills",
+    )
+    _add_update_flags(upd)
+    upg = sub.add_parser("upgrade", help="Legacy alias for `lope update`")
+    _add_update_flags(upg)
 
     # version
     sub.add_parser("version", help="Show version")
@@ -693,6 +724,10 @@ def main():
 
     if args.command == "install":
         _cmd_install(args.host)
+        return
+
+    if args.command in {"update", "upgrade"}:
+        _cmd_update(args)
         return
 
     if args.command == "memory":
@@ -1441,7 +1476,29 @@ def _cmd_install(host: str):
     args = [str(install_script)]
     if host != "all":
         args.extend(["--host", host])
-    subprocess.run(args, check=False)
+    try:
+        proc = subprocess.run(args, check=False)
+    except OSError as exc:
+        print(f"Install failed: cannot execute {install_script}: {exc}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(proc.returncode)
+
+
+def _cmd_update(args):
+    """Update Lope and refresh installed CLI host skills."""
+    from .update import UpdateError, run_update
+
+    try:
+        run_update(
+            method=args.method,
+            dry_run=args.dry_run,
+            reinstall_skills=not args.skip_install,
+            host=args.host,
+            allow_dirty=args.allow_dirty,
+        )
+    except UpdateError as exc:
+        print(f"lope update: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _ensure_config(args=None):

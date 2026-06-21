@@ -181,6 +181,17 @@ Read https://raw.githubusercontent.com/traylinx/lope/main/INSTALL.md and follow 
 
 That's it. Your agent fetches a single markdown file, follows six short steps, and reports back when lope is live. The install recipe is CLI-agnostic — it writes lope's slash commands into each host's **native** command directory using the format that host expects. Restart your CLI once to pick up the new slash commands.
 
+**Update later:**
+
+```bash
+lope update             # git checkout or pip install — auto-detects and updates
+lope update --dry-run   # preview the exact commands
+lope upgrade            # legacy alias for update
+```
+
+For the standard `~/.lope` git install, `lope update` pulls with `--ff-only` and reruns `./install` so host skills stay in sync. Pass `--skip-install` if you only want the engine code.
+For pip installs, `lope update` upgrades the `lope-agent` Python package only; host slash-command refresh is handled by the git checkout installer.
+
 **Requirements:** `git`, `python3 ≥ 3.9`, `bash ≥ 3.2`. That's all.
 
 **What gets installed:**
