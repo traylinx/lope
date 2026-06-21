@@ -288,6 +288,7 @@ def run_update(
     before = _python_version(None)
     commands = _pip_commands()
     emit("# install method: pip (lope-agent)")
+    emit("# WARNING: PyPI publishing is not live yet (Trusted Publisher pending); git checkout is the supported path")
     if dry_run:
         emit("# DRY RUN — would execute:")
         _emit_commands(emit, commands)

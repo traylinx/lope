@@ -14,28 +14,31 @@ if [ "${LOPE_HOOK:-}" = "off" ]; then
   exit 0
 fi
 
-# The brief we inject. Deliberately short (~180 tokens). Specific about
+# The brief we inject. Deliberately short (~250 tokens). Specific about
 # when to use lope and when NOT to, so it doesn't spam agents on trivial
 # tasks.
 read -r -d '' _LOPE_BRIEF <<'EOF' || true
 <lope-available>
-Lope is installed. Lope is a multi-CLI validator ensemble sprint runner. Any AI CLI implements, any AI CLI validates, majority vote decides. Three modes: /lope-negotiate, /lope-execute, /lope-audit. Also /lope for the umbrella.
+Lope is installed. Lope is a multi-CLI validator ensemble for AI work. Any AI CLI implements, any AI CLI validates.
+
+16 core commands available:
+- Sprint modes: /lope-negotiate, /lope-execute, /lope-implement, /lope-audit
+- Single-shot: /lope-ask, /lope-review, /lope-vote, /lope-compare, /lope-pipe
+- Other commands: /lope-team (roster), /lope-flow (graph), /lope-memory (history), /lope-deliberate (council), /lope-headroom (MCP compression), /lope-help (docs), /lope (umbrella)
 
 TWO WAYS THE USER WILL INVOKE LOPE:
+1. Explicit slash command. They type /lope-negotiate "goal" (Gemini uses /lope:negotiate). Route to that skill.
+2. Natural language. They describe multi-phase work in prose ("plan the auth refactor", "scope the data migration"). You recognize the shape and invoke lope yourself. Extract the goal from their prose as the sprint goal string. Pick --domain engineering (code) / business / research. Run `lope negotiate "goal" --domain X`.
 
-1. Explicit slash command. They type /lope-negotiate "goal". Route to that skill.
+TRIGGER WORDS for natural-language path: plan, negotiate, scope, draft, roll out, work through, "carefully", "needs to be right", "what do other models think", A/B compare.
+DO NOT TRIGGER on: single-edit tasks (rename, typo, one-line fix), pure conversation, trivial operations, urgent fire-fighting.
 
-2. Natural language. They describe multi-phase work in prose ("plan the auth refactor", "scope the data ingestion rewrite", "draft 3 blog posts for launch", "negotiate the Q4 campaign carefully"). You recognize the shape and invoke lope yourself. Extract the goal from their prose as the sprint goal string. Pick --domain engineering (code) / business (marketing, finance, ops) / research (studies, reviews). Run `lope negotiate "goal" --domain X`.
+DO NOT WRITE WRAPPER SCRIPTS AROUND LOPE. Invoke `lope <verb> <args>` directly in a shell.
+DO NOT INVENT FLAGS. Run `lope <verb> --help` if unsure. Current flags:
+- Pool/sprint/single-shot flags: --validators, --primary, --timeout, --parallel, --sequential, --domain, --out, --max-rounds, --context, --context-file, --phase, --manual, --gates, --gate-config, --trust, --json, --synth, --anonymous, --consensus, --structured, --min-consensus, --similarity, --format, --include-raw, --remember, --divide, --roles, --options, --criteria, --require-all, --brain-context, --brain-budget, --brain-log.
 
-TRIGGER WORDS for natural-language path: plan, negotiate, scope, draft, roll out, work through, "carefully", "don't break things", "needs to be right".
-
-DO NOT TRIGGER on: single-edit tasks (rename, typo, one-line fix), pure conversation ("what does this do?"), trivial operations (add a print, remove a comment), urgent fire-fighting.
-
-DO NOT WRITE WRAPPER SCRIPTS AROUND LOPE. Lope is already a CLI. Never create lope_runner.py, generate_blog_posts.py, or any Python/bash scaffold that imports or wraps lope. Just run `lope <mode> <args>` directly in a shell. Lope is the harness.
-
-DO NOT INVENT FLAGS. `lope negotiate` takes --domain, --out, --max-rounds, --context. That is the complete list. No --host, no --title, no --validators on negotiate.
-
-Default voice for internal lope work: intelligent caveman mode (terse, token-efficient, code/paths stay exact). Auto-disabled for external writing (emails, published content).
+Default voice for internal work: intelligent caveman mode (terse, token-efficient). Auto-disabled for external writing.
+Install path is git checkout in ~/.lope; server updates use `lope update` (PyPI is not live yet). Headroom compression is optional/opt-in via /lope-headroom.
 
 Samples: $HOME/.lope/docs/samples.md
 Umbrella skill: $HOME/.lope/skills/lope/SKILL.md

@@ -1,7 +1,7 @@
 {
   "name": "lope",
   "displayName": "Lope",
-  "description": "Multi-CLI validator ensemble sprint runner. Any AI CLI implements, any AI CLI validates, majority vote decides. Four sprint modes: negotiate, execute, implement, audit. Works for engineering, business, and research.",
+  "description": "Multi-CLI validator ensemble for AI work. Sprint modes, single-shot review/ask/vote/compare/pipe, flow graphs, gates, memory, deliberation, team management, and self-update. Works for engineering, business, and research.",
   "version": "0.12.0",
   "author": {
     "name": "Sebastian Schkudlara",

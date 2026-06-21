@@ -3,17 +3,19 @@
 Version: 0.12.0
 
 
-Four structured modes (`negotiate`, `execute`, `implement`, `audit`) cover multi-phase
-sprints, including zero-human sprint implementation. Five single-shot modes
-(`ask`, `review`, `vote`, `compare`, `pipe`) cover cross-model Q&A, file
-critique, structured votes, A/B comparison, and stdin-fed fan-out. One roster-management mode (`team`) adds, removes,
-lists, and smoke-tests validators from any chat window — no JSON editing.
-`team add --from-curl` parses a pasted curl command and turns it into a
-registered HTTP provider in one step. One graph mode (`flow`) runs declarative
-DOT workflows where nodes dispatch into the same executors (agent / ensemble
-review / shell gate / judge-router) and edges carry conditions and loops —
-fully autonomous, bounded by per-node and graph-wide visit caps so an
-unsupervised run can never loop forever. Any CLI implements; any CLI validates.
+Structured sprint modes (`negotiate`, `execute`, `implement`, `audit`) cover
+multi-phase work with validator retry and zero-human sprint implementation.
+Single-shot modes (`ask`, `review`, `vote`, `compare`, `pipe`) cover cross-model
+Q&A, file critique, structured votes, A/B comparison, and stdin-fed fan-out.
+Roster management (`team`) adds, removes, lists, and smoke-tests validators
+from any chat window — no JSON editing. `team add --from-curl` parses a pasted
+curl command into a registered HTTP provider in one step. Persistent judgment
+comes from `memory` and `deliberate`. Objective evidence comes from `gate` and
+`check`. Graph mode (`flow`) runs declarative DOT workflows where nodes dispatch
+into the same executors (agent / ensemble review / shell gate / judge-router)
+and edges carry conditions and loops, bounded by visit caps. Maintenance is
+`update` / `upgrade`, which refreshes git checkouts and installed host skills.
+Any CLI implements; any CLI validates.
 """
 
 __version__ = "0.12.0"

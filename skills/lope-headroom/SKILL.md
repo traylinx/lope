@@ -1,20 +1,22 @@
 ---
 name: lope-headroom
-description: Use when configuring, installing, verifying, or troubleshooting Headroom with Lope or Lope-installed agent hosts. Covers fresh-install Headroom MCP registration, large validator/tool-output compression, Claude/Codex/Cursor MCP status checks, and the `headroom-ai[mcp]` dependency installed by Lope.
+description: Use when configuring, installing, verifying, or troubleshooting optional Headroom MCP compression with Lope or Lope-installed agent hosts. Covers opt-in Headroom MCP registration, large validator/tool-output compression, Claude/Codex/Cursor MCP status checks, and the `headroom-ai[mcp]` dependency when the user asks for it.
 ---
 
 # Lope + Headroom
 
-Lope fresh installs include Headroom as the context-compression layer for bulky tool and MCP output.
+Headroom is Lope's optional context-compression layer for bulky tool and MCP output. It is not installed by default.
 
 ## Install and verify
 
-Lope's `./install` runs a best-effort Headroom setup unless `LOPE_INSTALL_HEADROOM=0` or `--skip-headroom` is passed.
+Lope's `./install` skips Headroom by default. Enable the best-effort setup only when the user asks for it:
 
 ```bash
-./install --host claude
+./install --host claude --with-headroom
 headroom mcp status
 ```
+
+For ordinary Lope updates, use `lope update`; do not install Headroom unless the user explicitly asks for compression setup.
 
 If `headroom` is missing, install manually with Python 3.10+:
 

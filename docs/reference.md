@@ -14,7 +14,7 @@ If you are an AI agent reading this because the user asked about lope, load it i
 
 Lope is a **multi-CLI validator ensemble for AI work**. One AI CLI drafts; others validate. Works for multi-phase sprints (negotiate → implement/execute → audit with validator-in-the-loop retry) **and** for single-shot multi-model tasks (ask, review, vote, compare, pipe). No single-model blindspot.
 
-Lope is primarily a CLI harness that runs **other** AI CLIs as validators. You invoke `lope <verb> <args>` from a shell and lope orchestrates subprocess calls to Claude Code, OpenCode, Gemini CLI, Codex, pi, Qwen, etc. As of v0.5.0, the parallel fan-out primitive (`EnsemblePool`) is also importable as a library — see [Library usage](#library-usage).
+Lope is primarily a CLI harness that runs **other** AI CLIs as validators. You invoke `lope <verb> <args>` from a shell and lope orchestrates subprocess calls to Claude Code, OpenCode, Gemini CLI, Codex, pi, Qwen, Agy, and custom HTTP/subprocess teammates. The parallel fan-out primitive (`EnsemblePool`) is also importable as a library — see [Library usage](#library-usage).
 
 Works for **three domains**: `engineering` (default), `business`, `research`. Same loop, different validator role prompt and artifact labels. The domain knob applies to `negotiate`; single-shot verbs are domain-agnostic.
 
@@ -24,7 +24,7 @@ Repo: https://github.com/traylinx/lope · MIT · Zero Python dependencies (pure 
 
 ## The modes
 
-Four structured sprint modes + five single-shot verbs + one roster verb + two v0.7 verbs (`memory`, `deliberate`) + one graph mode (`flow`, v0.11). Pick the mode that fits the shape of the work — don't force everything through `negotiate`.
+Command surface: structured sprint modes (`negotiate`, `execute`, `implement`, `audit`), single-shot verbs (`ask`, `review`, `vote`, `compare`, `pipe`), roster management (`team`), objective evidence gates (`gate`, `check`), persistent judgment (`memory`, `deliberate`), autonomous graph workflows (`flow`), and maintenance (`update` / `upgrade`). Pick the mode that fits the shape of the work — don't force everything through `negotiate`.
 
 | Mode | CLI | Slash command (where supported) | What it does |
 |---|---|---|---|
@@ -33,23 +33,25 @@ Four structured sprint modes + five single-shot verbs + one roster verb + two v0
 | **Implement** | `lope implement <sprint_doc>` | `/lope-implement` | High-level zero-human sprint execution. First selects implementation agents and escalation agents, then runs phases without asking the human again. v1 uses one writing lead for checkout safety while the selected team drives validation/escalation context. |
 | **Audit** | `lope audit <sprint_doc>` | `/lope-audit` | Generates a scorecard from executed sprint results — per-phase verdicts, confidence scores, duration, overall status. Appends to lope's journal. |
 | **Ask** | `lope ask "<question>"` | `/lope-ask` | Fan out one question to every validator; collect N raw answers (one per model). No VERDICT parsing, no phase retry. |
-| **Review** | `lope review <file>` | `/lope-review` | Send a file + optional `--focus` to every validator; collect N critiques. With `--consensus` (v0.7) merges, dedupes, and ranks findings; supports `--format text\|json\|markdown\|markdown-pr\|sarif`. |
+| **Review** | `lope review <file>` | `/lope-review` | Send a file + optional `--focus` to every validator; collect N critiques. With `--consensus`, merges, dedupes, and ranks findings; supports `--format text\|json\|markdown\|markdown-pr\|sarif`. |
 | **Vote** | `lope vote "<q>" --options A,B,C` | `/lope-vote` | Each validator picks exactly one option label. Tally + winner. Whole-token strict parsing. |
 | **Compare** | `lope compare <a> <b>` | `/lope-compare` | Each validator picks between two files against explicit `--criteria`. Tally + winner. |
 | **Pipe** | `<cmd> \| lope pipe` | `/lope-pipe` | Read stdin as the prompt; fan out; per-validator sections. Default per-validator isolation; `--require-all` for strict. |
 | **Team** | `lope team {list,enable,disable,add,remove,test}` | `/lope-team` | Manage the validator roster — enable built-ins, add local CLI binaries or OpenAI-compatible HTTP endpoints, disable/drop teammates, smoke-test keys/URLs/binaries. No JSON editing. |
 | **Gate** | `lope gate {save,check}` | — | Run project-defined objective evidence gates, save a baseline, and compare later runs for regressions. |
 | **Check** | `lope check` | — | CI-friendly one-shot run of project-defined objective evidence gates. |
-| **Memory** *(v0.7)* | `lope memory {stats,search,file,hotspots,forget}` | — | Query the persistent finding store written by `lope review --remember`. See [docs/memory.md](memory.md). |
-| **Deliberate** *(v0.7)* | `lope deliberate <template> <scenario>` | — | Run a 7-stage Agent-Order-style council on an ADR / PRD / RFC / build-vs-buy / migration-plan / incident-review. See [docs/deliberation.md](deliberation.md). |
+| **Memory** | `lope memory {stats,search,file,hotspots,forget}` | — | Query the persistent finding store written by `lope review --remember`. See [docs/memory.md](memory.md). |
+| **Deliberate** | `lope deliberate <template> <scenario>` | — | Run a 7-stage Agent-Order-style council on an ADR / PRD / RFC / build-vs-buy / migration-plan / incident-review. See [docs/deliberation.md](deliberation.md). |
 | **Flow** *(v0.11)* | `lope flow {run,validate,render,init,list}` | `/lope-flow` | Run a declarative DOT **graph** workflow — agent / ensemble-review / shell-gate / judge-router nodes, conditioned edges, fan-out + fix-loops. Autonomous (no human gates), bounded by per-node and graph-wide visit caps. See [Flow](#flow--declarative-graph-workflows). |
-| **Update** | `lope update` (`lope upgrade` alias) | — | Self-update Lope. Git installs pull with `--ff-only` and refresh host skills; pip installs run `pip install --upgrade lope-agent`. |
+| **Update** | `lope update` (`lope upgrade` alias) | — | Self-update Lope. Git installs pull with `--ff-only` and refresh host skills. Pip mode exists for future package installs, but the supported server path today is the `~/.lope` git checkout until PyPI Trusted Publisher is configured. |
+| **Headroom** | — | `/lope-headroom` | Configure, install, verify, or troubleshoot Headroom MCP compression for Lope and Lope-installed agent hosts. |
+| **Help** | `lope docs` | `/lope-help` | Print the complete reference containing all modes, flags, and hard rules. |
 
 Default flow for multi-phase work: **negotiate → implement/execute → audit**. For single-prompt / single-file / piped work, the single-shot verbs run in one pass without a sprint doc. `team` is runtime-independent — it only edits `~/.lope/config.json` and runs 0 validators (except on `test`).
 
-### v0.7 cross-cutting flags
+### Cross-cutting flags
 
-These flags layer on top of the existing modes. They are **opt-in** — every command behaves exactly as v0.6 unless one is passed.
+These flags layer on top of the existing modes. They are **opt-in** — commands keep their simple default behavior unless one is passed.
 
 | Flag | Available on | Effect |
 |---|---|---|
@@ -555,17 +557,19 @@ Engine-level installer pointer. Prefer the top-level `./install` bash script or 
 
 ### `lope update` / `lope upgrade`
 
-Self-update Lope. Default mode auto-detects whether the running copy is a git checkout or a pip install.
+Self-update Lope. Default mode auto-detects whether the running copy is a git checkout or a pip install. The supported server path today is the `~/.lope` git checkout; PyPI publishing is not live until Trusted Publisher is configured.
 
 ```bash
 lope update
 lope update --dry-run
-lope update --host codex       # refresh only one host's installed skills
+lope update --host codex       # update code, then refresh only Codex skills
 lope update --skip-install     # pull code only
 lope upgrade                   # legacy alias
 ```
 
-For a git checkout, Lope refuses tracked dirty files unless `--allow-dirty` is passed, validates the requested host before mutating the checkout, then runs `git fetch --tags <remote>`, `git pull --ff-only <remote> <branch>`, and `./install --host <host>`. Untracked runtime state such as `~/.lope/config.json`, journals, and memory databases does not block the update. For a pip install, Lope runs `python -m pip install --upgrade lope-agent`; host slash-command refresh is available from the git checkout installer.
+For a git checkout, Lope refuses tracked dirty files unless `--allow-dirty` is passed, validates the requested host before mutating the checkout, then runs `git fetch --tags <remote>` and `git pull --ff-only <remote> <branch>`. Unless `--skip-install` is passed, it then runs `./install --host <host>`. Untracked runtime state such as `~/.lope/config.json`, journals, and memory databases does not block the update. Pip mode exists for future package installs, but do not use it as the current server update path until the package publishing workflow is configured.
+
+`--host` scopes the installer run after the pull. For install-only host refresh without code update, run `~/.lope/install --host <host>` directly.
 
 ### `lope version`
 
@@ -680,7 +684,7 @@ There are **two invocation paths**, and the user will probably use #2.
 /lope-help         # prints this reference into your context
 ```
 
-Gemini CLI uses namespaced syntax: `/lope:negotiate`, `/lope:execute`, `/lope:implement`, `/lope:audit`, `/lope:help`.
+Gemini CLI uses namespaced syntax: `/lope:negotiate`, `/lope:execute`, `/lope:implement`, `/lope:audit`, `/lope:ask`, `/lope:review`, `/lope:vote`, `/lope:compare`, `/lope:pipe`, `/lope:team`, `/lope:flow`, `/lope:memory`, `/lope:deliberate`, `/lope:headroom`, `/lope:help`.
 
 ### 2. Natural language (any CLI, including Codex and Vibe)
 
@@ -696,17 +700,18 @@ When you recognize one of those + multi-phase work, construct the goal string fr
 
 ## Per-host support matrix
 
-Different CLIs have different slash-command mechanisms (or lack thereof). This is the honest state as of lope v0.3.2:
+Different CLIs have different slash-command mechanisms (or lack thereof). Current installer support:
 
 | Host | Slash commands | Natural language | Install path |
 |---|---|---|---|
-| **Claude Code** | ✅ `/lope`, `/lope-negotiate`, `/lope-execute`, `/lope-implement`, `/lope-audit`, `/lope-help`, `/using-lope` | ✅ | `~/.claude/skills/lope*/` (symlinks) |
-| **Codex** | ❌ does not register `/name` from SKILL.md (confirmed by asking Codex directly) | ✅ — skill content loaded, agent invokes via bash | `~/.codex/skills/lope*/` (content only) |
-| **Gemini CLI** | ✅ `/lope:negotiate`, `/lope:execute`, `/lope:implement`, `/lope:audit`, `/lope:help` (namespaced, colon not hyphen) | ✅ | `~/.gemini/commands/lope/*.toml` |
-| **OpenCode** | ✅ `/lope-*` | ✅ | `~/.config/opencode/commands/*.md` (PLURAL "commands") |
-| **Cursor** | ⚠️ unverified — uses `.cursor/skills/` format; test before relying | ✅ | `.cursor/skills/` (project-local) |
-| **Mistral Vibe** | ❌ no user slash commands (confirmed by Vibe directly) | ✅ — skill content loaded, agent invokes via bash | `~/.vibe/skills/lope*/` (content only) |
-| **GitHub Copilot CLI** | ❌ no user skill dir yet | ✅ — agent invokes via bash | none |
+| **Claude Code** | ✅ full `/lope-*` skill set plus `/lope` and `/using-lope` | ✅ | `~/.claude/skills/lope*/` |
+| **Codex** | Content skills, not guaranteed native slash commands | ✅ — skill content loaded, agent invokes via bash | `~/.codex/skills/lope*/` |
+| **Gemini CLI** | ✅ `/lope:<verb>` for negotiate, execute, implement, audit, ask, review, vote, compare, pipe, team, flow, memory, deliberate, headroom, help | ✅ | `~/.gemini/commands/lope/*.toml` |
+| **OpenCode** | ✅ full `/lope-*` command set plus `/lope` and `/using-lope` | ✅ | `~/.config/opencode/commands/*.md` (plural) |
+| **Cursor** | ⚠️ unverified slash UX; skills install as agent files | ✅ | `~/.cursor/agents/lope*.md` |
+| **Mistral Vibe** | Content skills, not native slash commands | ✅ — skill content loaded, agent invokes via bash | `~/.vibe/skills/lope*/` |
+| **Qwen Code** | ✅ standard skill dirs, same Lope skill set as Claude | ✅ | `~/.qwen/skills/lope*/` |
+| **pi (Traylinx)** | ✅ standard skill dirs in the shared agents tree | ✅ | `~/.agents/skills/lope*/` |
 
 **Takeaway:** If your CLI is in the ❌ slash-command column, `lope` still works perfectly from a terminal and the agent still knows about it. Just describe your task in prose and the agent will run `lope <mode> <args>` for you. Do not wait for an autocomplete that won't come.
 
@@ -776,7 +781,7 @@ Your agent fetches `INSTALL.md`, identifies which CLI it's running inside, and f
 **Manual:** Clone and run the bash installer.
 
 ```bash
-git clone --depth 1 https://github.com/traylinx/lope.git ~/.lope
+git clone https://github.com/traylinx/lope.git ~/.lope
 ~/.lope/install
 alias lope='PYTHONPATH=~/.lope python3 -m lope'
 ```
@@ -790,9 +795,9 @@ alias lope='PYTHONPATH=~/.lope python3 -m lope'
 | Symptom | Cause | Fix |
 |---|---|---|
 | `/lope*` doesn't autocomplete after install | Host caches skill list at session start | Quit and reopen the CLI |
-| `/lope*` doesn't autocomplete after restart in Claude Code | Skills were installed to the wrong path | Check `ls ~/.claude/skills/ \| grep lope` — should list 10 lope* dirs (v0.5.0) |
+| `/lope*` doesn't autocomplete after restart in Claude Code | Skills were installed to the wrong path | Check `ls ~/.claude/skills/ \| grep lope` — should list `lope`, `using-lope`, and the current `lope-*` skill dirs |
 | `/lope*` doesn't appear in Vibe or Codex | Vibe/Codex don't support user slash commands (by design) | Invoke via natural language: *"use lope to negotiate the auth refactor"* |
-| `lope status` shows 0 detected CLIs | No AI CLIs on `$PATH` | Install at least 2 of the 14 supported CLIs |
+| `lope status` shows 0 detected CLIs | No AI CLIs on `$PATH` | Install at least 2 of the 15 supported CLIs |
 | `lope negotiate` crashes with a traceback | Engine bug | Capture the full traceback and open an issue — do NOT patch lope source as the fix |
 | `LOPE_LLM_URL` returns 401 | `LOPE_LLM_API_KEY` not set | `export LOPE_LLM_API_KEY=sk-...` |
 | Negotiate escalates on round 1 | Validator pool disagreement, or lint caught a placeholder | Read the escalation message — it names the issue |
@@ -801,16 +806,12 @@ alias lope='PYTHONPATH=~/.lope python3 -m lope'
 
 ## Hard rules for agents invoking lope
 
-1. **Do not invent flags.** Each verb has a fixed flag surface:
-   - `negotiate`: `--out`, `--max-rounds`, `--context`, `--context-file`, `--domain`, `--validators`, `--primary`, `--timeout`, `--parallel`, `--sequential`
-   - `execute`: `--phase`, `--manual`, plus the shared pool flags
-   - `audit`: `--no-journal`, plus the shared pool flags
-   - `ask`: `--context`, `--json`, plus the shared pool flags
-   - `review`: `--focus`, `--json`, plus the shared pool flags
-   - `vote`: `--options` (required), `--json`, `--context`, plus the shared pool flags
-   - `compare`: `--criteria`, `--json`, plus the shared pool flags
-   - `pipe`: `--require-all`, `--json`, plus the shared pool flags
-   Run `lope <verb> --help` if unsure.
+1. **Do not invent flags.** Run `lope <verb> --help` if unsure. Current flag families:
+   - Shared pool flags: `--validators`, `--primary`, `--timeout`, `--parallel`, `--sequential`
+   - Brain flags where supported: `--brain-context`, `--brain-budget`, `--brain-log`
+   - Sprint flags: `negotiate --out/--max-rounds/--context/--context-file/--domain`; `execute --phase/--manual/--gates/--gate-config/--trust`; `implement --agents/--escalate-to/--phase/--gates/--gate-config/--trust/--dry-run/--interactive`; `audit --no-journal`
+   - Single-shot flags: `ask --context/--json/--synth/--anonymous`; `review --focus/--json/--consensus/--structured/--min-consensus/--similarity/--format/--include-raw/--remember/--divide/--roles/--synth/--anonymous`; `vote --options/--json/--synth/--anonymous`; `compare --criteria/--json/--synth/--anonymous`; `pipe --require-all/--json/--synth/--anonymous`
+   - Maintenance and gates: `gate save/check`, `check --config/--timeout/--json/--remember/--trust`, `update --dry-run/--method/--host/--skip-install/--allow-dirty`
 
 2. **Do not write a wrapper script around lope.** Lope is already a CLI. Never create `lope_runner.py`, `generate_with_lope.sh`, or any Python/bash scaffold that imports or wraps lope. Invoke `lope <verb> <args>` directly in a shell. The one exception: legitimate library use of `EnsemblePool` (see [Library usage](#library-usage)).
 

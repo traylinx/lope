@@ -33,7 +33,15 @@ jobs:
         run: git diff origin/${{ github.base_ref }}...HEAD > /tmp/pr.patch
 
       - name: Install Lope
-        run: pip install lope-agent==0.7.0
+        run: |
+          git clone https://github.com/traylinx/lope.git "$HOME/.lope"
+          mkdir -p "$HOME/.local/bin"
+          cat > "$HOME/.local/bin/lope" <<'SH'
+          #!/usr/bin/env bash
+          PYTHONPATH="$HOME/.lope" python3 -m lope "$@"
+          SH
+          chmod +x "$HOME/.local/bin/lope"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Run consensus review
         run: |
@@ -140,7 +148,7 @@ Set `LOPE_MEMORY_DB=/tmp/lope-memory.db` to relocate the file if you'd rather ke
 
 ## Hard rules
 
-- **No new dependency.** `lope review` runs against `pip install lope-agent` — no extra packages required.
+- **No new dependency.** `lope review` is stdlib-only. Install from the git checkout path until PyPI Trusted Publisher is configured.
 - **Never commit the SARIF.** Treat it as build output. The `upload-sarif` action ingests it directly into GitHub.
 - **Validators in CI.** Use cloud-API validators (claude, gemini, codex) plus `--require-all` only when you're certain every validator will be available. The default behavior is fail-soft so a transient outage in one CLI does not blank the run.
 - **Redaction.** Every text path through Lope passes through `lope.redaction.redact_text` before reaching disk or stdout. Bearer tokens, sk-* keys, GitHub PATs, and PEM blocks are scrubbed automatically.
@@ -182,4 +190,3 @@ lope gate check --json > /tmp/gates-after.json
 ```
 
 Gate commands are project-authored shell commands. Treat `.lope/rules.json` like CI config: trusted repo input, deterministic commands, bounded timeouts.
-

@@ -1,6 +1,6 @@
 ---
 name: lope
-description: "Autonomous sprint runner with multi-CLI validator ensemble. Any AI CLI implements, any AI CLI validates, majority vote decides. Use for any multi-phase work: code sprints, marketing campaigns, research protocols, budgets, legal reviews. Four sprint modes — negotiate a spec, execute phase by phase, implement with zero-human roster selection, audit the scorecard — plus a declarative graph mode (flow) that runs autonomous DOT workflows (fan-out proposers, consensus, fix-loops), bounded by visit caps. 15 built-in CLI adapters plus infinite custom providers via JSON config."
+description: "Multi-CLI validator ensemble for AI work. Use for multi-phase sprints, single-shot cross-model checks, autonomous flow graphs, evidence gates, team management, persistent finding memory, council deliberation, and self-update. Any AI CLI implements, any AI CLI validates. 15 built-in CLI adapters plus infinite custom providers via JSON config."
 ---
 
 # Lope — multi-CLI validator ensemble sprint runner
@@ -91,12 +91,16 @@ Treat the sprint as dynamic. If during work you discover a better approach or ha
 
 Lope is already a CLI. If the user says "use lope to do X", you invoke `lope <mode> <args>` in a shell. You do **not** write a Python wrapper script, a bash harness, or any other scaffolding that imports or calls lope. The whole point of the multi-CLI ensemble is that lope is the harness — you don't need another one. One command, no wrapper.
 
-## Install / self-check
+## Install / update / self-check
 
 ```bash
 lope status      # what validators are detected?
 lope configure   # pick which ones to use
 lope version     # show version + lion-face banner
+lope update      # self-update git checkout and refresh installed host skills
+lope update --dry-run  # preview update commands without changing files
 ```
 
 If `lope` isn't on PATH, prefix commands with `PYTHONPATH=~/.lope python3 -m lope` or tell the user to add `alias lope='PYTHONPATH=~/.lope python3 -m lope'` to their shell rc.
+
+Standard installs are git checkouts in `~/.lope`. `lope update` fetches tags, pulls the tracked branch with `--ff-only`, and reruns `./install` so Claude/Codex/Gemini/OpenCode/Cursor/Vibe/Qwen/pi skills stay current. PyPI publishing is not live yet, so use the git checkout path for servers.

@@ -2,9 +2,9 @@
 
 ## Supported versions
 
-Security fixes are released against the latest published version of
-`lope-agent` on PyPI. Older versions are not maintained — upgrade to the
-latest release to receive fixes.
+Security fixes are released against the latest GitHub release and the
+`main` branch git checkout. PyPI publishing is not live yet, so upgrade the
+standard `~/.lope` checkout with `lope update` to receive fixes.
 
 | Version  | Supported |
 | -------- | --------- |

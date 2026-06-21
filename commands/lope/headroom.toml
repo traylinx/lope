@@ -1,0 +1,19 @@
+description = "Configure, install, verify, or troubleshoot Headroom MCP compression for Lope and Lope-installed agent hosts."
+
+prompt = """
+<objective>
+Help the user install, verify, configure, or troubleshoot Headroom with Lope.
+</objective>
+
+<steps>
+1. Read `~/.lope/skills/lope-headroom/SKILL.md`. If this checkout is local and `~/.lope` is unavailable, read `skills/lope-headroom/SKILL.md`.
+2. Follow that skill's decision tree exactly.
+3. Use `lope update` only for Lope self-update. Headroom is optional and opt-in unless the user asks for it.
+</steps>
+
+<do_not>
+- Do not invent Headroom flags.
+- Do not run remote installer fallbacks unless the skill and user consent allow it.
+- Do not confuse Lope self-update with Headroom setup.
+</do_not>
+"""

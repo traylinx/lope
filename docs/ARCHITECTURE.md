@@ -1,13 +1,15 @@
 # Lope architecture
 
-Lope is a zero-dependency Python CLI that coordinates multiple AI CLIs as an ensemble. It has two execution shapes:
+Lope is a zero-dependency Python CLI that coordinates multiple AI CLIs as an ensemble. It has four execution shapes:
 
 1. **Sprint mode** — `negotiate -> implement/execute -> audit` for multi-phase work with validator-in-the-loop retries.
 2. **Single-shot mode** — `ask`, `review`, `vote`, `compare`, `pipe`, and `team` for one-pass fan-out, decisions, and roster management.
+3. **Graph mode** — `flow` for autonomous DOT workflows with agent, ensemble-review, shell-gate, and judge-router nodes.
+4. **Evidence / maintenance mode** — `gate`, `check`, and `update` for deterministic project gates, CI-friendly checks, self-update, and host skill refresh.
 
 ## Command surface
 
-- `lope/cli.py` owns argparse wiring and thin command handlers. It is intentionally kept backward-compatible; v0.7 should add new helpers instead of making this file the dumping ground.
+- `lope/cli.py` owns argparse wiring and thin command handlers. It stays backward-compatible while heavier behavior lives in focused modules.
 - `lope/negotiator.py` drafts sprint documents and loops through validator review rounds.
 - `lope/executor.py` runs sprint phases, handles two-stage validation, retries `NEEDS_FIX`, and produces execution reports.
 - `lope/auditor.py` renders scorecards and writes Lope journal entries.
@@ -28,6 +30,9 @@ Lope is a zero-dependency Python CLI that coordinates multiple AI CLIs as an ens
 - `lope/deliberation.py` owns the `lope deliberate` 7-stage council with 6 built-in templates (adr, prd, rfc, build-vs-buy, migration-plan, incident-review). Single label map at session start drives anonymization across every stage.
 - `lope/divide.py` is the v0.7 chunker: directory walk + binary skip + line-anchored chunks + symlink containment vs. the original tree, unified-diff hunk parser, role lens catalog with aliases.
 - `lope/exporters.py` ships markdown-pr / SARIF passthroughs to `lope/review.py` so callers have one consistent module entry point for export shapes.
+- `lope/flow/` parses, validates, renders, and runs DOT workflow graphs with bounded node/graph visits.
+- `lope/gates.py` runs trusted project evidence gates from `.lope/rules.json`, saves baselines, and compares later runs.
+- `lope/update.py` implements `lope update` / `lope upgrade`: detect install method, pull git checkouts with `--ff-only`, and refresh host skills via `./install`.
 
 ## Data paths
 
@@ -45,10 +50,10 @@ Lope is a zero-dependency Python CLI that coordinates multiple AI CLIs as an ens
 - Sprint verdicts use `---VERDICT--- ... ---END---` with JSON preferred and YAML-ish fallback retained for compatibility.
 - Public Lope does not require Makakoo. Makakoo integration activates through registered adapters or explicit bridge flags.
 
-## v0.8 extraction candidates
+## Extraction candidates
 
-`cli.py` is the current complexity hotspot. Avoid broad rewrites during v0.7. Good future extraction targets:
+`cli.py` remains the command wiring hotspot. Avoid broad rewrites; prefer extracting behavior behind stable command handlers. Good future extraction targets:
 
-- Move `ask`, `vote`, `compare`, and `pipe` orchestration out of `cli.py` after consensus review lands.
+- Move `ask`, `vote`, `compare`, and `pipe` orchestration out of `cli.py`.
 - Move team management commands into a dedicated `lope/team.py` module.
 - Unify human/JSON rendering through `lope/output.py` once structured output formats stabilize.

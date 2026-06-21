@@ -175,9 +175,9 @@ def main():
         prog="lope",
         description=(
             "Autonomous sprint runner with multi-CLI validator ensemble. "
-            "Any AI CLI implements, any AI CLI validates. Supports 14 built-in CLIs "
+            "Any AI CLI implements, any AI CLI validates. Supports 15 built-in CLIs "
             "(claude, opencode, gemini, codex, vibe, aider, ollama, goose, interpreter, "
-            "llama-cpp, gh-copilot, amazon-q, pi, qwen) plus infinite custom providers via JSON. "
+            "llama-cpp, gh-copilot, amazon-q, pi, qwen, agy) plus infinite custom providers via JSON. "
             "Three domains: engineering, business, research. "
             "Caveman mode (LOPE_CAVEMAN env var) compresses validator prompts 50-65%."
         ),

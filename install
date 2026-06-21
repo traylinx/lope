@@ -109,8 +109,8 @@ install_codex() {
 }
 
 # Gemini CLI: commands/<namespace>/<command>.toml format.
-# We write 3 TOML files under ~/.gemini/commands/lope/ so the user gets
-# /lope:negotiate, /lope:execute, /lope:audit (Gemini's slash syntax).
+# We link every commands/lope/*.toml file under ~/.gemini/commands/lope/
+# so the user gets /lope:<verb> namespaced slash commands.
 install_gemini() {
   local dir="$HOME/.gemini/commands/lope"
   mkdir -p "$dir"
@@ -522,7 +522,11 @@ if [ "$INSTALL_FAILED" = "1" ]; then
 fi
 
 echo ""
-echo "Installing Headroom MCP compression (best-effort)..."
+if [ "$INSTALL_HEADROOM" = "1" ]; then
+  echo "Installing Headroom MCP compression (best-effort)..."
+else
+  echo "Headroom MCP compression is optional; skipping by default (enable with --with-headroom)."
+fi
 install_headroom
 
 echo ""
@@ -535,11 +539,11 @@ else
 fi
 echo ""
 echo "Slash commands by host (honest state — not every host supports user slash commands):"
-echo "  Claude Code  /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-flow  /lope-memory  /lope-deliberate  /lope-headroom"
+echo "  Claude Code  /lope  /using-lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-flow  /lope-memory  /lope-deliberate  /lope-headroom"
 echo "  Gemini CLI   /lope:negotiate  /lope:execute  /lope:implement  /lope:audit  /lope:help  /lope:ask  /lope:review  /lope:vote  /lope:compare  /lope:pipe  /lope:team  /lope:flow  /lope:memory  /lope:deliberate  /lope:headroom"
-echo "  OpenCode     /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-flow  /lope-memory  /lope-deliberate  /lope-headroom"
-echo "  pi           /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-flow  /lope-memory  /lope-deliberate  /lope-headroom"
-echo "  Qwen Code    /lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-flow  /lope-memory  /lope-deliberate  /lope-headroom"
+echo "  OpenCode     /lope  /using-lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-flow  /lope-memory  /lope-deliberate  /lope-headroom"
+echo "  pi           /lope  /using-lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-flow  /lope-memory  /lope-deliberate  /lope-headroom"
+echo "  Qwen Code    /lope  /using-lope  /lope-negotiate  /lope-execute  /lope-implement  /lope-audit  /lope-help  /lope-ask  /lope-review  /lope-vote  /lope-compare  /lope-pipe  /lope-team  /lope-flow  /lope-memory  /lope-deliberate  /lope-headroom"
 echo "  Cursor       (unverified — skills written to ~/.cursor/agents/)"
 echo ""
 echo "Codex notes:"
@@ -559,6 +563,10 @@ echo ""
 echo "Next steps:"
 echo "  1. Configure validators:  PYTHONPATH=$LOPE_DIR python3 -m lope configure"
 echo "  2. Check status:          PYTHONPATH=$LOPE_DIR python3 -m lope status"
-echo "  3. Verify Headroom:       headroom mcp status"
+if [ "$INSTALL_HEADROOM" = "1" ]; then
+  echo "  3. Verify Headroom:       headroom mcp status"
+else
+  echo "  3. Optional Headroom:     $LOPE_DIR/install --with-headroom"
+fi
 echo "  4. Alias for convenience: alias lope='PYTHONPATH=$LOPE_DIR python3 -m lope'"
 echo ""
