@@ -37,10 +37,20 @@ Read https://raw.githubusercontent.com/traylinx/lope/main/INSTALL.md and follow 
 **Terminal install:**
 
 ```bash
-git clone https://github.com/traylinx/lope.git ~/.lope
-~/.lope/install
-echo "alias lope='PYTHONPATH=~/.lope python3 -m lope'" >> ~/.zshrc
+if [ -d "$HOME/.lope/.git" ]; then
+  git -C "$HOME/.lope" fetch --tags origin
+  git -C "$HOME/.lope" pull --ff-only origin main
+elif [ -e "$HOME/.lope" ]; then
+  echo "$HOME/.lope exists but is not a Lope git checkout. Move it aside manually, then rerun install." >&2
+  exit 1
+else
+  git clone https://github.com/traylinx/lope.git "$HOME/.lope"
+fi
+"$HOME/.lope/install"
+grep -qxF "alias lope='PYTHONPATH=$HOME/.lope python3 -m lope'" "$HOME/.zshrc" 2>/dev/null || echo "alias lope='PYTHONPATH=$HOME/.lope python3 -m lope'" >> "$HOME/.zshrc"
 ```
+
+If your installed Lope is older than v0.12.0 and says `invalid choice: 'update'`, run the block above once. After that, `lope update` exists.
 
 **Update later:**
 
@@ -240,8 +250,13 @@ Hosts you don't have installed are skipped silently. Eight hosts are supported t
 ### Manual install (for the 1% who prefer to read bash)
 
 ```bash
-git clone https://github.com/traylinx/lope.git ~/.lope
-~/.lope/install
+if [ -d "$HOME/.lope/.git" ]; then
+  git -C "$HOME/.lope" fetch --tags origin
+  git -C "$HOME/.lope" pull --ff-only origin main
+else
+  git clone https://github.com/traylinx/lope.git "$HOME/.lope"
+fi
+"$HOME/.lope/install"
 ```
 
 Target a single host:

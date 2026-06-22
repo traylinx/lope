@@ -781,10 +781,20 @@ Your agent fetches `INSTALL.md`, identifies which CLI it's running inside, and f
 **Manual:** Clone and run the bash installer.
 
 ```bash
-git clone https://github.com/traylinx/lope.git ~/.lope
-~/.lope/install
-alias lope='PYTHONPATH=~/.lope python3 -m lope'
+if [ -d "$HOME/.lope/.git" ]; then
+  git -C "$HOME/.lope" fetch --tags origin
+  git -C "$HOME/.lope" pull --ff-only origin main
+elif [ -e "$HOME/.lope" ]; then
+  echo "$HOME/.lope exists but is not a Lope git checkout. Move it aside manually, then rerun install." >&2
+  exit 1
+else
+  git clone https://github.com/traylinx/lope.git "$HOME/.lope"
+fi
+"$HOME/.lope/install"
+alias lope='PYTHONPATH=$HOME/.lope python3 -m lope'
 ```
+
+If the installed copy is older than v0.12.0 and does not know `lope update`, use this git pull block once, then use `lope update` for future updates.
 
 **Restart your CLI after install.** Every host caches its skill list at session start — freshly-installed commands won't appear until you quit and reopen the CLI.
 
