@@ -384,6 +384,12 @@ def _build_validation_prompt(
     from .caveman import get_directive as _caveman
     caveman = _caveman()
     stage_header = f"\n### {stage_label}\n" if stage_label else ""
+    try:
+        from .minimality import validator_rubric
+        minimality = validator_rubric(stage=stage)
+    except Exception:  # pragma: no cover - defensive; validation prompt must not fail
+        minimality = ""
+    minimality_block = f"\n## Minimality Discipline\n{minimality}\n" if minimality else ""
 
     evidence_instruction = (
         "\nInclude at least one file:line reference or a test output "
@@ -411,6 +417,7 @@ Review phase {phase.index} of sprint. Be critical. Verify claims. No rubber-stam
 ## {dc['check_label']}
 {check_block}
 {gate_block}
+{minimality_block}
 ## Task
 
 {review_task}{evidence_instruction}

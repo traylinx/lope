@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.0 — Minimality discipline
+
+- **Minimality discipline:** added opt-in `LOPE_MINIMALITY=off|audit|enforce` prompt and validator guidance inspired by Ponytail, defaulting off. Implementers can now prefer existing code, stdlib/native features, and the smallest safe custom code without weakening validation, security, accessibility, data-loss handling, or explicit requirements.
+- **Validator rubric:** quality-stage validation can flag unnecessary dependencies, duplicate helpers, one-implementation abstractions, broad rewrites, and symptom patches that miss sibling callers.
+- **Review focus aliases:** `lope review --focus over-engineering`, `--focus minimality`, and `--focus lazy-build` expand to a focused over-engineering rubric.
+- **Docs and tests:** documented the experimental discipline in `docs/minimality-discipline.md`, linked it from architecture/reference docs, and added regression tests for mode parsing and prompt inclusion.
+
 ## 0.12.0 — Self-update command
 
 - **Self-update command:** added `lope update` with `lope upgrade` as a legacy alias. Git checkouts fetch tags, pull the explicit remote branch with `--ff-only`, then refresh installed host skills via `./install`; pip installs run `python -m pip install --upgrade lope-agent`. Includes `--dry-run`, `--method`, `--host`, `--skip-install`, and `--allow-dirty`.

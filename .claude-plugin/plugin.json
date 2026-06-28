@@ -1,7 +1,7 @@
 {
   "name": "lope",
   "description": "Multi-CLI validator ensemble for AI work. Any AI CLI implements, any AI CLI validates. Sprint modes, single-shot review/ask/vote/compare/pipe, flow graphs, gates, memory, deliberation, team management, and self-update. 15 built-in CLI adapters plus custom providers. Works for engineering, business, and research.",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "author": {
     "name": "Sebastian Schkudlara",
     "email": "sebastian@traylinx.com"

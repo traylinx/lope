@@ -316,7 +316,10 @@ def main():
     )
     rev.add_argument("file", help="Path to the file to review")
     rev.add_argument("--focus", default="",
-                     help="Optional focus area (e.g. 'security', 'perf', 'tests')")
+                     help=(
+                         "Optional focus area (e.g. 'security', 'perf', 'tests'; "
+                         "'over-engineering', 'minimality', 'lazy-build' expand to a minimality rubric)"
+                     ))
     rev.add_argument("--json", action="store_true",
                      help="Emit machine-readable JSON instead of human sections")
     # v0.7 structured-mode flags. Default review behavior is unchanged: raw
@@ -2782,6 +2785,11 @@ def _cmd_review(args):
     """
     file_path = Path(args.file)
     divide_mode = getattr(args, "divide", None)
+    try:
+        from .minimality import resolve_review_focus
+        args.focus = resolve_review_focus(getattr(args, "focus", ""))
+    except Exception:
+        args.focus = (getattr(args, "focus", "") or "").strip()
 
     # ``--divide files`` lets the target be a directory; everything else
     # still requires a regular file.

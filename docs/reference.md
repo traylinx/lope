@@ -285,6 +285,8 @@ Positional:
 
 Flags:
   --focus FOCUS               Focus area — 'security', 'perf', 'tests', etc.
+                              Aliases 'over-engineering', 'minimality', and
+                              'lazy-build' expand to the minimality rubric.
                               Default: "bugs, code-smells, design issues,
                               improvements with line references".
   --json                      Emit JSON `[{"validator": ..., "review": ..., "error": ...}]`.

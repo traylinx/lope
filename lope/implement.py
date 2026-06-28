@@ -250,6 +250,15 @@ def build_swarm_prompt(
         "- Strict constraint: the human is out of the loop after roster selection.",
         "- Repository safety: you are the single file-writing agent for this phase. Do not spawn parallel editors in the same checkout.",
         "",
+    ]
+    try:
+        from .minimality import implementation_directive
+        minimality = implementation_directive()
+    except Exception:  # pragma: no cover - defensive; prompt assembly must not fail
+        minimality = ""
+    if minimality:
+        parts.extend(["## Minimality discipline", minimality, ""])
+    parts.extend([
         "## Selected team",
         f"- Implementation agents: {', '.join(roster.agents)}",
         f"- Escalation agents: {', '.join(roster.escalation_agents)}",
@@ -260,7 +269,7 @@ def build_swarm_prompt(
         "",
         f"Goal: {phase.goal}",
         "",
-    ]
+    ])
     if phase.criteria:
         parts.append("## Exit criteria")
         parts.extend(f"- {c}" for c in phase.criteria)
