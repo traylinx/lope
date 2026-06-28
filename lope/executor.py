@@ -386,7 +386,7 @@ def _build_validation_prompt(
     stage_header = f"\n### {stage_label}\n" if stage_label else ""
     try:
         from .minimality import validator_rubric
-        minimality = validator_rubric(stage=stage)
+        minimality = validator_rubric(stage=stage, domain=domain)
     except Exception:  # pragma: no cover - defensive; validation prompt must not fail
         minimality = ""
     minimality_block = f"\n## Minimality Discipline\n{minimality}\n" if minimality else ""

@@ -76,6 +76,10 @@ Plus infinite custom providers via `~/.lope/config.json` (subprocess or HTTP). Y
 
 On by default. Validator prompts get compressed by dropping articles, filler, and hedging, while keeping code, paths, line numbers, and error messages exact. 50-65% token savings per validator call. Disable with `LOPE_CAVEMAN=off` for tasks that need full prose (external writing, papers).
 
+## Minimality discipline — engineering default audit
+
+Normal engineering `execute` and `implement` runs include Ponytail-inspired minimality guidance by default in `audit` mode. Implementers are told to prefer existing code, stdlib/native features, and the smallest safe custom code; quality-stage validators flag material over-engineering without failing spec-compliant work for style alone. Disable with `LOPE_MINIMALITY=off`. Use `LOPE_MINIMALITY=enforce` only when material bloat should block. Business/research domains stay off unless explicitly enabled.
+
 ## Dynamic sprint mode
 
 Treat the sprint as dynamic. If during work you discover a better approach or have an "aha" moment, do not silently expand scope and do not ignore it. Raise it with your lope teammates, negotiate whether it belongs, and fold it in if agreed.

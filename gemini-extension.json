@@ -1,6 +1,6 @@
 {
   "name": "lope",
   "description": "Multi-CLI validator ensemble for AI work. Use /lope:help for sprint modes, single-shot review/ask/vote/compare/pipe, flow graphs, gates, memory, deliberation, team management, and self-update.",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "contextFileName": "GEMINI.md"
 }

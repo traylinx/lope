@@ -218,6 +218,8 @@ Flags:
 
 Interactive TTY flow asks for implementation agents first, then escalation agents. After that, Lope must not ask the human again. Non-interactive runs must pass both `--agents` and `--escalate-to` so CI and host agents are deterministic.
 
+Engineering `execute` and `implement` runs include the minimality discipline in audit mode by default: implementation prompts prefer existing code, stdlib/native features, and the smallest safe custom code; quality-stage validators flag material over-engineering without failing spec-compliant work for style alone. Disable with `LOPE_MINIMALITY=off`; make material bloat blocking with `LOPE_MINIMALITY=enforce`. Business and research domains stay off unless explicitly enabled.
+
 Examples:
 
 ```bash
@@ -616,6 +618,7 @@ Custom providers via `~/.lope/config.json` — subprocess or HTTP. Schema in the
 | Var | Effect |
 |---|---|
 | `LOPE_CAVEMAN` | `full` (default) / `lite` / `off`. Caveman mode token compression on validator prompts. |
+| `LOPE_MINIMALITY` | `audit` by default for engineering `execute`/`implement`; non-engineering default `off`. Set `off` to disable, `enforce` to let validators NEEDS_FIX material bloat with a concrete safer replacement. |
 | `LOPE_LINT` | `off` to skip no-placeholder lint on drafts. |
 | `LOPE_EVIDENCE_GATE` | `off` to skip the PASS-needs-evidence downgrade. |
 | `LOPE_SINGLE_STAGE` | `1` to revert execute mode to legacy single-pass validation. |
@@ -730,7 +733,7 @@ Each execute phase gets validated twice per retry attempt:
    - Only runs if spec PASS
    - NEEDS_FIX or FAIL feed back into the retry loop
 
-Separates "clever slop that misses the requirement" from "meets spec but rough around the edges." Disable by setting `LOPE_SINGLE_STAGE=1`.
+Separates "clever slop that misses the requirement" from "meets spec but rough around the edges." Engineering quality passes also include minimality audit by default; spec passes and objective gates do not. Disable two-stage review by setting `LOPE_SINGLE_STAGE=1`.
 
 ---
 

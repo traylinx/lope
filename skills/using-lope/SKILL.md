@@ -30,6 +30,8 @@ Lope is a multi-CLI ensemble for AI work. Any AI CLI drafts, any AI CLI validate
 
 `ask`, `review`, `vote`, `compare`, and `pipe` are the lightweight verbs — no sprint, no phases, no validator retry loop. `team` manages the roster. `flow` shapes autonomous collaboration. `lope memory` and `lope deliberate` turn raw fan-out into durable judgment. `gate` / `check` run deterministic evidence commands from the project. `update` keeps the git checkout and host skills current. The cross-cutting flags `--consensus`, `--synth`, `--remember`, `--brain-context`, `--brain-log`, `--divide`, and `--roles` are opt-in.
 
+Engineering `execute`/`implement` runs include minimality audit by default. Agents should expect Lope to prefer existing code, stdlib/native features, and the smallest safe custom code, and to have quality-stage validators flag material over-engineering. This is not part of `gate`/`check` because those commands run deterministic evidence checks. Disable with `LOPE_MINIMALITY=off`; enforce material bloat with `LOPE_MINIMALITY=enforce`.
+
 When this skill triggers, consider which command shape fits — don't force every request into `negotiate`.
 
 ## How the user will invoke lope
@@ -217,6 +219,10 @@ Each slash command has its own SKILL.md with the full flow. Read that skill when
 ## Caveman mode
 
 Lope compresses validator prompts 50-65% by default via intelligent caveman mode. This is ON unless the user explicitly asks for verbose output. Don't disable it unless the task requires full prose (external writing, papers).
+
+## Minimality discipline
+
+For engineering sprint execution, minimality audit is ON by default. Keep requirements, security, validation, accessibility, and data-loss handling intact; the point is to cut unnecessary dependency/abstraction/rewrite bloat, not to under-build. Business/research domains stay off unless explicitly enabled.
 
 ## Do not
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.1 — Engineering minimality audit default
+
+- **Normal engineering runs now use minimality audit:** `lope execute` quality-stage review and `lope implement` prompts include the Ponytail-inspired minimality discipline by default for engineering sprints. This makes ordinary Lope runs flag over-engineering without requiring `LOPE_MINIMALITY=audit`.
+- **Domain-aware safety:** business and research domains stay off unless explicitly enabled; `LOPE_MINIMALITY=off` disables the engineering default, and `LOPE_MINIMALITY=enforce` remains the explicit mode for blocking material bloat.
+- **Docs and host skills:** updated reference docs, architecture docs, Codex/OpenCode/Gemini command surfaces, and Lope skills so agents know the normal engineering process includes minimality audit while deterministic `gate` / `check` remain unchanged.
+- **Regression coverage:** expanded minimality tests for engineering defaults, non-engineering defaults, explicit overrides, spec-stage exclusion, and enforce-mode blocking threshold text.
+
 ## 0.13.0 — Minimality discipline
 
 - **Minimality discipline:** added opt-in `LOPE_MINIMALITY=off|audit|enforce` prompt and validator guidance inspired by Ponytail, defaulting off. Implementers can now prefer existing code, stdlib/native features, and the smallest safe custom code without weakening validation, security, accessibility, data-loss handling, or explicit requirements.

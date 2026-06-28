@@ -1,7 +1,10 @@
-"""Optional minimality discipline for Lope prompts.
+"""Minimality discipline for Lope prompts.
 
 Ponytail-inspired, but Lope-native: prompt/rubric text only, no third-party
-runtime hooks. Defaults off so public Lope behavior remains unchanged.
+runtime hooks. Defaults to audit for engineering execute/implement paths so
+normal Lope runs get over-engineering review without making every finding a
+hard failure. Set ``LOPE_MINIMALITY=off`` to disable or ``enforce`` to gate
+material bloat.
 """
 
 from __future__ import annotations
@@ -9,7 +12,11 @@ from __future__ import annotations
 import os
 
 VALID_MODES = {"off", "audit", "enforce"}
-DEFAULT_MODE = "off"
+DEFAULT_MODE = "audit"
+
+
+def _env_has_override() -> bool:
+    return "LOPE_MINIMALITY" in os.environ
 
 
 def mode(value: str | None = None) -> str:
@@ -20,10 +27,25 @@ def mode(value: str | None = None) -> str:
     return resolved if resolved in VALID_MODES else DEFAULT_MODE
 
 
-def implementation_directive(value: str | None = None) -> str:
-    """Return implementer guidance for the current minimality mode."""
+def _effective_mode(value: str | None = None, *, domain: str | None = None) -> str:
+    """Resolve mode with domain-aware defaults.
+
+    Engineering gets default audit. Business/research stay off unless the user
+    explicitly sets LOPE_MINIMALITY or tests pass a value.
+    """
 
     resolved = mode(value)
+    normalized_domain = str(domain or "engineering").strip().lower()
+    explicit = value is not None or _env_has_override()
+    if not explicit and normalized_domain not in ("", "engineering"):
+        return "off"
+    return resolved
+
+
+def implementation_directive(value: str | None = None, *, domain: str | None = None) -> str:
+    """Return implementer guidance for the current minimality mode."""
+
+    resolved = _effective_mode(value, domain=domain)
     if resolved == "off":
         return ""
 
@@ -37,10 +59,15 @@ def implementation_directive(value: str | None = None) -> str:
 - Leave one runnable check for non-trivial logic."""
 
 
-def validator_rubric(value: str | None = None, *, stage: str | None = None) -> str:
+def validator_rubric(
+    value: str | None = None,
+    *,
+    stage: str | None = None,
+    domain: str | None = None,
+) -> str:
     """Return validator minimality rubric for quality/legacy review stages."""
 
-    resolved = mode(value)
+    resolved = _effective_mode(value, domain=domain)
     if resolved == "off":
         return ""
     if stage not in (None, "quality"):

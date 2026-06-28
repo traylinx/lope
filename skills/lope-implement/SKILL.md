@@ -49,6 +49,10 @@ lope implement SPRINT.md --agents pi --escalate-to claude,opencode --gates
 lope implement SPRINT.md --agents pi --escalate-to claude,opencode --dry-run
 ```
 
+## Minimality discipline
+
+For engineering sprints, `lope implement` injects minimality audit guidance by default: prefer existing code, stdlib/native features, and the smallest safe custom code; avoid duplicate helpers, one-implementation abstractions, broad rewrites, and symptom patches. This is audit guidance unless `LOPE_MINIMALITY=enforce` is set. Disable with `LOPE_MINIMALITY=off`. Business/research domains stay off unless explicitly enabled.
+
 ## Safety model
 
 v1 is a **single-writer swarm**.

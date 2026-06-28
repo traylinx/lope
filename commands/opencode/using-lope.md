@@ -31,6 +31,8 @@ lope negotiate "<goal>" --domain <engineering|business|research>
 
 4. After completion, read the generated sprint doc and summarize the phases for the user. Ask whether to proceed with `lope execute`.
 
+Engineering `execute`/`implement` includes minimality audit by default. Expect quality-stage validators to flag material over-engineering, unnecessary dependencies, duplicate helpers, one-implementation abstractions, broad rewrites, and symptom patches. This is not part of `gate`/`check`, which stay deterministic evidence commands. Disable with `LOPE_MINIMALITY=off`; enforce material bloat with `LOPE_MINIMALITY=enforce`.
+
 ## Do not
 
 - Do not wait for the user to type `/lope-negotiate`. If the shape matches, invoke lope immediately.

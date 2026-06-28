@@ -253,7 +253,7 @@ def build_swarm_prompt(
     ]
     try:
         from .minimality import implementation_directive
-        minimality = implementation_directive()
+        minimality = implementation_directive(domain=getattr(doc, "domain", "engineering"))
     except Exception:  # pragma: no cover - defensive; prompt assembly must not fail
         minimality = ""
     if minimality:

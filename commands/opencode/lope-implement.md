@@ -32,6 +32,8 @@ Useful flags:
 - `--dry-run` — print resolved roster only
 - `--validators`, `--primary`, `--timeout`, `--parallel`, `--sequential` — same pool override flags as other Lope verbs
 
+Engineering `implement` prompts include minimality audit by default: prefer existing code, stdlib/native features, and the smallest safe custom code; avoid duplicate helpers, one-implementation abstractions, broad rewrites, and symptom patches. Disable with `LOPE_MINIMALITY=off`; enforce material bloat with `LOPE_MINIMALITY=enforce`. Business/research domains stay off unless explicitly enabled.
+
 ## Safety model
 
 v1 is single-writer. The first `--agents` entry edits the checkout. Other selected agents are part of the prompt/validator/escalation context. Do not claim Lope is doing parallel same-checkout patching.

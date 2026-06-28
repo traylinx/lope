@@ -1,6 +1,8 @@
 # Lope minimality discipline
 
-Status: implemented as an opt-in prompt/rubric slice, experimental only.
+Status: implemented as a Lope-native prompt/rubric slice. Engineering
+`execute`/`implement` runs use soft audit by default; hard enforcement remains
+explicit.
 
 ## Decision
 
@@ -21,11 +23,11 @@ Lope already has `lope/caveman.py` for token-efficient validator communication. 
 - Do not import Ponytail hooks, MCP server, Pi/OpenCode/Gemini/Hermes adapters, statusline code, or mode-state files.
 - Do not use Ponytail benchmark claims as Lope marketing proof.
 - Do not merge minimality with caveman output compression.
-- Do not make minimality default-on until the acceptance gates pass on real Lope work.
+- Do not make hard enforcement default-on, or apply the discipline to non-engineering domains by default, until the acceptance gates pass on real Lope work.
 
 ## Mode model
 
-Proposed environment switch:
+Environment switch:
 
 ```bash
 LOPE_MINIMALITY=off      # no prompt/rubric changes
@@ -33,7 +35,12 @@ LOPE_MINIMALITY=audit    # validators report minimality findings; implementers g
 LOPE_MINIMALITY=enforce  # implementers must apply ladder; validators can NEEDS_FIX real bloat
 ```
 
-Current default: `off`. Use `audit` or `enforce` only in Makakoo-driven experiments until the acceptance gates pass.
+Current default:
+
+- Engineering `lope execute` / `lope implement`: `audit`.
+- Business/research `lope execute` / `lope implement`: `off`, unless `LOPE_MINIMALITY` is explicitly set or a caller passes a mode.
+- `LOPE_MINIMALITY=off`: disables the engineering default.
+- `LOPE_MINIMALITY=enforce`: remains explicit. It can block material bloat, but only with a concrete safer replacement and no regression to security, validation, accessibility, data-loss handling, or explicit requirements.
 
 ## Implementer prompt addition
 
@@ -98,11 +105,11 @@ Never recommend removing validation, security, accessibility, data-loss handling
 If nothing real: Lean already. Ship.
 ```
 
-This can ship before implement/executor integration because it is pure prompt surface.
+This remains available for explicit one-off over-engineering reviews outside a sprint.
 
-## Acceptance gates before default-on
+## Acceptance gates before hard enforcement / broader defaults
 
-Run on at least 30 real Lope/Makakoo tasks before promotion:
+Run on at least 30 real Lope/Makakoo tasks before promoting `enforce` to a default or applying minimality by default outside engineering:
 
 1. No drop in phase PASS rate.
 2. Zero dropped explicit requirements.
@@ -126,9 +133,7 @@ Run on at least 30 real Lope/Makakoo tasks before promotion:
    - `implementation_directive()`,
    - `validator_rubric()`,
    - `resolve_review_focus()`.
-2. `lope/implement.py::build_swarm_prompt` injects implementation guidance when mode is `audit` or `enforce`.
-3. `lope/executor.py::_build_validation_prompt` injects the validator rubric for quality/legacy review stages, not spec-only review.
+2. `lope/implement.py::build_swarm_prompt` injects implementation guidance for engineering runs by default in `audit`, and for any domain when explicitly enabled.
+3. `lope/executor.py::_build_validation_prompt` injects the validator rubric for engineering quality/legacy review stages by default, not spec-only review. Business/research stay off unless explicitly enabled.
 4. `lope review --focus over-engineering` / `--focus minimality` / `--focus lazy-build` expands to the over-engineering rubric.
 5. `tests/test_minimality.py` covers mode parsing and prompt inclusion.
-
-Next required step before default changes: run a Makakoo holdout task set and evaluate the acceptance gates above.

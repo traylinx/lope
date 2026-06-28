@@ -30,6 +30,8 @@ Each phase gets validated twice per retry attempt:
 
 Set `LOPE_SINGLE_STAGE=1` to disable.
 
+Engineering quality passes include minimality audit by default. Validators should flag material over-engineering, unnecessary dependencies, duplicate helpers, one-implementation abstractions, broad rewrites, and symptom patches, without failing spec-compliant work for style alone. Disable with `LOPE_MINIMALITY=off`; enforce material bloat with `LOPE_MINIMALITY=enforce`. Business/research domains stay off unless explicitly enabled.
+
 ## Evidence gate
 
 Any validator returning PASS with a rationale lacking evidence (no `file:line`, no test output, no explicit verification phrase) gets auto-downgraded to NEEDS_FIX. Set `LOPE_EVIDENCE_GATE=off` to disable.

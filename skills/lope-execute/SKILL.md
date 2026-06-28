@@ -21,6 +21,8 @@ Each phase gets validated **twice** back-to-back:
 
 Set `LOPE_SINGLE_STAGE=1` to revert to legacy single-pass validation.
 
+For engineering sprints, the quality stage also includes minimality audit by default. Validators should flag unnecessary dependencies, duplicate helpers, one-implementation abstractions, broad rewrites, and symptom patches, but should not fail spec-compliant work for style alone. Disable with `LOPE_MINIMALITY=off`; enforce material bloat with `LOPE_MINIMALITY=enforce`. Business/research domains stay off unless explicitly enabled.
+
 ## Steps
 
 1. Determine the sprint doc path (explicit arg OR infer from context).

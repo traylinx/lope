@@ -21,6 +21,8 @@ Run `lope implement` on a sprint doc. This is the zero-human sprint execution mo
 lope implement "$SPRINT_DOC_PATH" --agents pi --escalate-to claude,opencode --dry-run
 ```
 
+Engineering implementation prompts include minimality audit by default: prefer existing code, stdlib/native features, and the smallest safe custom code; avoid duplicate helpers, one-implementation abstractions, broad rewrites, and symptom patches. Disable with `LOPE_MINIMALITY=off`; enforce material bloat with `LOPE_MINIMALITY=enforce`. Business/research domains stay off unless explicitly enabled.
+
 4. **Execute**:
 ```bash
 lope implement "$SPRINT_DOC_PATH" --agents "$AGENTS" --escalate-to "$ESCALATION_AGENTS"

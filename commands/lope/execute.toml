@@ -21,6 +21,7 @@ PYTHONPATH=~/.lope python3 -m lope execute "$SPRINT_DOC_PATH"
    - You (the CLI agent) implement the phase — edit files, run tests, whatever the phase requires
    - Press Enter when the phase is ready for validation
    - Lope's validator ensemble votes: PASS / NEEDS_FIX / FAIL
+   - Engineering quality-stage validation includes minimality audit by default: flag material over-engineering, unnecessary dependencies, duplicate helpers, one-implementation abstractions, broad rewrites, and symptom patches. Disable with `LOPE_MINIMALITY=off`; enforce material bloat with `LOPE_MINIMALITY=enforce`.
    - On NEEDS_FIX, apply the specific fixes and press Enter again
    - On PASS, the phase advances
    - Up to 3 retry rounds per phase before escalation
