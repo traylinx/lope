@@ -26,7 +26,7 @@ validator output before it leaves the module.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .findings import ConsensusFinding
 from .redaction import redact_text
@@ -45,6 +45,12 @@ REQUIRED_SECTIONS: Tuple[str, ...] = (
 OPTIONAL_SECTIONS: Tuple[str, ...] = (
     "## Follow-up questions",
 )
+
+DEFAULT_SOURCE_BYTE_LIMIT = 64 * 1024
+HARD_SOURCE_BYTE_LIMIT = 256 * 1024
+DEFAULT_TOTAL_PROMPT_BYTE_LIMIT = 96 * 1024
+HARD_TOTAL_PROMPT_BYTE_LIMIT = 1024 * 1024
+_TRUNCATION_MARKER = "\n...[source truncated; head and tail retained]...\n"
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +72,11 @@ class SynthesisResult:
     text: str = ""
     error: str = ""
     primary: str = ""
+    truncations: List[Dict[str, Any]] = None
+
+    def __post_init__(self) -> None:
+        if self.truncations is None:
+            self.truncations = []
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +98,37 @@ def _anon_label(index: int) -> str:
     first = (index // 26) - 1
     second = index % 26
     return f"Response {chr(ord('A') + first)}{chr(ord('A') + second)}"
+
+
+def _truncate_utf8(text: str, limit: int) -> Tuple[str, int]:
+    raw = (text or "").encode("utf-8")
+    if len(raw) <= limit:
+        return text, 0
+    marker = _TRUNCATION_MARKER.encode("utf-8")[:limit]
+    remaining = max(0, limit - len(marker))
+    head_size = remaining // 2
+    tail_size = remaining - head_size
+    head = raw[:head_size]
+    tail = raw[-tail_size:] if tail_size else b""
+    while head:
+        try:
+            head_text = head.decode("utf-8")
+            break
+        except UnicodeDecodeError:
+            head = head[:-1]
+    else:
+        head_text = ""
+    while tail:
+        try:
+            tail_text = tail.decode("utf-8")
+            break
+        except UnicodeDecodeError:
+            tail = tail[1:]
+    else:
+        tail_text = ""
+    rendered = head_text + marker.decode("utf-8", errors="ignore") + tail_text
+    retained = len(rendered.encode("utf-8"))
+    return rendered, max(0, len(raw) - retained)
 
 
 def _format_finding_line(f: ConsensusFinding, name_mapper=None) -> str:
@@ -143,6 +185,9 @@ def build_synthesis_prompt(
     *,
     structured_findings: Optional[Sequence[ConsensusFinding]] = None,
     anonymous: bool = False,
+    source_byte_limit: int = DEFAULT_SOURCE_BYTE_LIMIT,
+    total_byte_limit: int = DEFAULT_TOTAL_PROMPT_BYTE_LIMIT,
+    truncation_log: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Build the synthesis prompt the primary validator will execute.
 
@@ -158,7 +203,17 @@ def build_synthesis_prompt(
     one-line ack so the synthesizer has provenance.
     """
 
+    source_byte_limit = max(1024, min(int(source_byte_limit), HARD_SOURCE_BYTE_LIMIT))
+    total_byte_limit = max(16 * 1024, min(int(total_byte_limit), HARD_TOTAL_PROMPT_BYTE_LIMIT))
+    truncations = truncation_log if truncation_log is not None else []
     task_text = redact_text(task or "").strip() or "(no task description provided)"
+    task_text, task_omitted = _truncate_utf8(task_text, 32 * 1024)
+    if task_omitted:
+        truncations.append({
+            "source": "task",
+            "omitted_bytes": task_omitted,
+            "retained_bytes": len(task_text.encode("utf-8")),
+        })
     parts = [
         "You are synthesizing N independent AI critiques of the same task.",
         "",
@@ -166,11 +221,20 @@ def build_synthesis_prompt(
         "",
     ]
 
-    successes = [
-        (redact_text(name or "").strip(), redact_text(answer or "").strip())
-        for name, answer, error in responses
-        if not error and (answer or "").strip()
-    ]
+    successes = []
+    for name, answer, error in responses:
+        if error or not (answer or "").strip():
+            continue
+        safe_name = redact_text(name or "").strip()
+        safe_answer = redact_text(answer or "").strip()
+        safe_answer, omitted = _truncate_utf8(safe_answer, source_byte_limit)
+        if omitted:
+            truncations.append({
+                "source": safe_name or "unknown",
+                "omitted_bytes": omitted,
+                "retained_bytes": len(safe_answer.encode("utf-8")),
+            })
+        successes.append((safe_name, safe_answer))
     errors = [
         (redact_text(name or "").strip(), redact_text(error or "").strip())
         for name, _answer, error in responses
@@ -195,10 +259,35 @@ def build_synthesis_prompt(
         if not structured_findings:
             parts.append("- (no findings parsed by the consensus pipeline)")
         else:
-            for f in structured_findings:
-                parts.append(
-                    redact_text(_format_finding_line(f, name_mapper=label_of))
-                )
+            findings_budget = max(8 * 1024, total_byte_limit // 2)
+            used = 0
+            for index, f in enumerate(structured_findings):
+                line = redact_text(_format_finding_line(f, name_mapper=label_of))
+                line, omitted = _truncate_utf8(line, min(8 * 1024, findings_budget))
+                encoded = len((line + "\n").encode("utf-8"))
+                if used + encoded > findings_budget:
+                    remaining = max(0, findings_budget - used)
+                    if remaining >= 1024:
+                        line, extra_omitted = _truncate_utf8(line, remaining)
+                        parts.append(line)
+                        omitted += extra_omitted
+                    truncations.append({
+                        "source": f"structured_findings[{index}]",
+                        "omitted_bytes": omitted + sum(
+                            len(_format_finding_line(rest).encode("utf-8"))
+                            for rest in structured_findings[index + 1:]
+                        ),
+                        "retained_bytes": max(0, remaining),
+                    })
+                    break
+                parts.append(line)
+                used += encoded
+                if omitted:
+                    truncations.append({
+                        "source": f"structured_findings[{index}]",
+                        "omitted_bytes": omitted,
+                        "retained_bytes": len(line.encode("utf-8")),
+                    })
         parts.append("")
         if successes:
             label_kind = "validators" if not anonymous else "responses"
@@ -251,7 +340,15 @@ def build_synthesis_prompt(
             "guess validator identity."
         )
 
-    return "\n".join(parts).rstrip() + "\n"
+    prompt = "\n".join(parts).rstrip() + "\n"
+    if len(prompt.encode("utf-8")) > total_byte_limit:
+        prompt, omitted = _truncate_utf8(prompt, total_byte_limit)
+        truncations.append({
+            "source": "aggregate_synthesis_prompt",
+            "omitted_bytes": omitted,
+            "retained_bytes": len(prompt.encode("utf-8")),
+        })
+    return prompt
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +356,14 @@ def build_synthesis_prompt(
 # ---------------------------------------------------------------------------
 
 
-def run_synthesis(primary: Any, prompt: str, timeout: int) -> SynthesisResult:
+def run_synthesis(
+    primary: Any,
+    prompt: str,
+    timeout: int,
+    *,
+    truncations: Optional[Sequence[Dict[str, Any]]] = None,
+    context=None,
+) -> SynthesisResult:
     """Run the synthesis call against ``primary`` with fail-soft semantics.
 
     ``primary`` must expose ``.generate(prompt, timeout)`` returning text.
@@ -274,14 +378,24 @@ def run_synthesis(primary: Any, prompt: str, timeout: int) -> SynthesisResult:
             ok=False,
             primary="",
             error="No primary validator available for synthesis.",
+            truncations=list(truncations or []),
         )
     try:
-        text = primary.generate(prompt, timeout)
+        from .invocation import invoke_generate
+
+        text = invoke_generate(
+            primary,
+            prompt,
+            timeout,
+            context=context,
+            stage="synthesis",
+        )
     except Exception as exc:
         return SynthesisResult(
             ok=False,
             primary=name,
             error=redact_text(f"{type(exc).__name__}: {exc}").strip(),
+            truncations=list(truncations or []),
         )
 
     redacted = redact_text(text or "").strip()
@@ -290,9 +404,15 @@ def run_synthesis(primary: Any, prompt: str, timeout: int) -> SynthesisResult:
             ok=False,
             primary=name,
             error="Primary returned empty synthesis output.",
+            truncations=list(truncations or []),
         )
 
-    return SynthesisResult(ok=True, primary=name, text=redacted)
+    return SynthesisResult(
+        ok=True,
+        primary=name,
+        text=redacted,
+        truncations=list(truncations or []),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +441,11 @@ def format_synthesis(
         )
 
     header = f"━━━ synthesis ({result.primary or 'primary'}) ━━━"
-    return f"{header}\n{result.text.rstrip()}\n"
+    truncation_note = (
+        f"[bounded input: {len(result.truncations)} source truncation(s)]\n"
+        if result.truncations else ""
+    )
+    return f"{header}\n{truncation_note}{result.text.rstrip()}\n"
 
 
 __all__ = [
@@ -329,6 +453,8 @@ __all__ = [
     "OPTIONAL_SECTIONS",
     "REQUIRED_SECTIONS",
     "SynthesisResult",
+    "DEFAULT_SOURCE_BYTE_LIMIT",
+    "DEFAULT_TOTAL_PROMPT_BYTE_LIMIT",
     "build_synthesis_prompt",
     "format_synthesis",
     "run_synthesis",

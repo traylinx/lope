@@ -23,12 +23,17 @@ import json
 import logging
 import os
 import re
+import secrets
 import subprocess
+import tempfile
 import time
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
+from pathlib import Path
 from typing import List, Optional, Tuple
 
-from .processes import run_subprocess_group
+from .processes import OutputLimitExceeded, run_subprocess_group
+from .runtime import DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
 
 from .models import (
     PhaseVerdict,
@@ -39,12 +44,50 @@ from .models import (
 log = logging.getLogger("lope.validators")
 
 
-DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("LOPE_TIMEOUT", "960"))
-DEFAULT_MAX_TOKENS = int(os.environ.get("LOPE_MAX_TOKENS", "100000"))
+DEFAULT_TIMEOUT_SECONDS = int(
+    os.environ.get("LOPE_TIMEOUT", str(DEFAULT_MODEL_CALL_TIMEOUT_SECONDS))
+)
 MIN_CONFIDENCE_FOR_PASS = 0.7
 DEFAULT_OPENCODE_BIN = os.environ.get(
     "OPENCODE_BIN", "opencode"
 )
+
+
+@contextmanager
+def _secure_prompt_file(prompt: str, context=None):
+    """Write a 0600 prompt file owned by the current call and remove it."""
+
+    registry = context.metadata.get("registry") if context is not None else None
+    run_id = context.run_id if context is not None else ""
+    call_id = str(context.metadata.get("call_id") or "") if context is not None else ""
+    if registry is not None and run_id and call_id:
+        base = registry.run_work_dir(run_id) / call_id
+        base.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = base / f"prompt-{secrets.token_hex(8)}.txt"
+        owned = context.metadata.setdefault("owned_paths", [])
+        if str(path) not in owned:
+            owned.append(str(path))
+        # Persist ownership before the file exists. A crash between this write
+        # and open leaves a harmless missing path that reconciliation can clear.
+        registry.update_call(run_id, call_id, owned_paths=list(owned))
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(str(path), flags, 0o600)
+    else:
+        fd, name = tempfile.mkstemp(prefix="lope-prompt-", suffix=".txt")
+        path = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(prompt)
+            handle.flush()
+            os.fsync(handle.fileno())
+        yield str(path)
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 # ─── Safe subprocess runner wrapper ────────────────────────────
 
@@ -54,6 +97,7 @@ def _run_with_group_kill(
     input_text: Optional[str],
     timeout: int,
     cwd: str,
+    context=None,
 ) -> Tuple[subprocess.CompletedProcess, float]:
     """Run *command* via run_subprocess_group, translating errors.
 
@@ -65,7 +109,8 @@ def _run_with_group_kill(
     started = time.time()
     try:
         proc = run_subprocess_group(
-            command, input_text=input_text, timeout=timeout, cwd=cwd
+            command, input_text=input_text, timeout=timeout, cwd=cwd,
+            context=context,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(
@@ -73,6 +118,8 @@ def _run_with_group_kill(
         )
     except FileNotFoundError:
         raise RuntimeError(f"{command[0]} binary not found")
+    except OutputLimitExceeded as exc:
+        raise RuntimeError(f"{command[0]} output limit: {exc}")
     except OSError as e:
         raise RuntimeError(f"{command[0]} failed to launch: {e}")
     return proc, time.time() - started
@@ -245,7 +292,7 @@ class Validator(ABC):
         return True
 
     def generate(
-        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, *, context=None
     ) -> str:
         """Run the underlying CLI with a raw prompt, return raw text.
 
@@ -266,6 +313,23 @@ class Validator(ABC):
             f"aider all support drafting), or set LOPE_LLM_URL to fall back "
             f"to a hosted endpoint."
         )
+
+    def validate_with_context(self, prompt: str, timeout: float, context) -> ValidatorResult:
+        """Versioned internal bridge; legacy subclasses remain source-compatible."""
+        try:
+            return self.validate(prompt, timeout, context=context)
+        except TypeError as exc:
+            if "unexpected keyword argument 'context'" not in str(exc):
+                raise
+            return self.validate(prompt, timeout)
+
+    def generate_with_context(self, prompt: str, timeout: float, context) -> str:
+        try:
+            return self.generate(prompt, timeout, context=context)
+        except TypeError as exc:
+            if "unexpected keyword argument 'context'" not in str(exc):
+                raise
+            return self.generate(prompt, timeout)
 
 
 # ─── Opencode validator — the real thing ───────────────────────
@@ -296,7 +360,7 @@ class OpencodeValidator(Validator):
         return shutil.which(self._binary) is not None
 
     def generate(
-        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, *, context=None
     ) -> str:
         if not self.available():
             raise RuntimeError(f"opencode binary not found at {self._binary}")
@@ -308,10 +372,14 @@ class OpencodeValidator(Validator):
         # provider; LOPE_OPENCODE_ARGS still overrides this default.
         extra_args = _opencode_extra_args() or ["--pure", "--model", "myprovider/ail-compound"]
         cmd = [self._binary, "run"] + extra_args + ["--format", "json", prompt]
+        deadline = time.monotonic() + float(timeout)
         try:
-            proc, elapsed = _run_with_group_kill(
-                cmd, input_text=None, timeout=timeout, cwd=self._workdir
-            )
+            runner_kwargs = {
+                "input_text": None, "timeout": timeout, "cwd": self._workdir,
+            }
+            if context is not None:
+                runner_kwargs["context"] = context
+            proc, elapsed = _run_with_group_kill(cmd, **runner_kwargs)
         except RuntimeError:
             raise  # already wrapped by _run_with_group_kill
         if proc.returncode != 0:
@@ -320,9 +388,13 @@ class OpencodeValidator(Validator):
             )
         text = _extract_text_from_json_stream(proc.stdout)
         if not text:
-            text = _extract_text_from_opencode_export(
-                self._binary, proc.stdout, timeout=timeout, cwd=self._workdir
-            )
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                text = _extract_text_from_opencode_export(
+                    self._binary, proc.stdout,
+                    timeout=remaining,
+                    cwd=self._workdir, context=context,
+                )
         if not text:
             diag = _diagnose_empty_opencode_stream(proc.stdout)
             raise RuntimeError(
@@ -331,7 +403,7 @@ class OpencodeValidator(Validator):
         return text
 
     def validate(
-        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, *, context=None
     ) -> ValidatorResult:
         if not self.available():
             return _infra_error(
@@ -343,9 +415,11 @@ class OpencodeValidator(Validator):
         cmd = [self._binary, "run"] + extra_args + ["--format", "json", prompt]
 
         started = time.time()
+        deadline = time.monotonic() + float(timeout)
         try:
             proc, elapsed = _run_with_group_kill(
-                cmd, input_text=None, timeout=timeout, cwd=self._workdir
+                cmd, input_text=None, timeout=timeout, cwd=self._workdir,
+                context=context,
             )
         except RuntimeError as e:
             return _infra_error(
@@ -366,9 +440,13 @@ class OpencodeValidator(Validator):
 
         text = _extract_text_from_json_stream(proc.stdout)
         if not text:
-            text = _extract_text_from_opencode_export(
-                self._binary, proc.stdout, timeout=timeout, cwd=self._workdir
-            )
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                text = _extract_text_from_opencode_export(
+                    self._binary, proc.stdout,
+                    timeout=remaining,
+                    cwd=self._workdir, context=context,
+                )
         if not text:
             diag = _diagnose_empty_opencode_stream(proc.stdout)
             return _infra_error(
@@ -458,8 +536,9 @@ def _opencode_session_id_from_stdout(stdout: str) -> Optional[str]:
 def _extract_text_from_opencode_export(
     binary: str,
     stdout: str,
-    timeout: int,
+    timeout: float,
     cwd: str,
+    context=None,
 ) -> str:
     """Fallback for OpenCode 1.15 streams that only print step_start.
 
@@ -469,14 +548,18 @@ def _extract_text_from_opencode_export(
     opencode teammate stays usable across this upstream event-stream drift.
     """
     session_id = _opencode_session_id_from_stdout(stdout)
-    if not session_id:
+    if not session_id or timeout <= 0:
         return ""
     try:
+        runner_kwargs = {
+            "input_text": None,
+            "timeout": min(timeout, 60),
+            "cwd": cwd,
+        }
+        if context is not None:
+            runner_kwargs["context"] = context
         proc, _elapsed = _run_with_group_kill(
-            [binary, "export", session_id],
-            input_text=None,
-            timeout=min(timeout, 60),
-            cwd=cwd,
+            [binary, "export", session_id], **runner_kwargs
         )
     except RuntimeError:
         return ""
@@ -992,22 +1075,18 @@ class GeminiCliValidator(Validator):
         return shutil.which(self._binary) is not None
 
     def generate(
-        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, *, context=None
     ) -> str:
         if not self.available():
             raise RuntimeError(f"gemini binary not found: {self._binary}")
         try:
-            proc = subprocess.run(
+            proc, _elapsed = _run_with_group_kill(
                 [self._binary, "--prompt", prompt, "--output-format", "json"],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()),
+                input_text=None, timeout=timeout,
+                cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()), context=context,
             )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"gemini-cli timed out after {timeout}s")
-        except OSError as e:
-            raise RuntimeError(f"gemini-cli failed to launch: {e}")
+        except RuntimeError as e:
+            raise RuntimeError(f"gemini-cli failed: {e}")
         if proc.returncode != 0:
             raise RuntimeError(
                 f"gemini-cli exited {proc.returncode}: {(proc.stderr or '')[:500]}"
@@ -1024,7 +1103,7 @@ class GeminiCliValidator(Validator):
         return text
 
     def validate(
-        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, *, context=None
     ) -> ValidatorResult:
         started = time.time()
 
@@ -1036,23 +1115,15 @@ class GeminiCliValidator(Validator):
         )
 
         try:
-            proc = subprocess.run(
+            proc, _elapsed = _run_with_group_kill(
                 [self._binary, "--prompt", full_prompt, "--output-format", "json"],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()),
+                input_text=None, timeout=timeout,
+                cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()), context=context,
             )
-        except subprocess.TimeoutExpired:
+        except RuntimeError as e:
             return _infra_error(
                 self.name,
-                f"gemini-cli timed out after {timeout}s",
-                duration=time.time() - started,
-            )
-        except OSError as e:
-            return _infra_error(
-                self.name,
-                f"gemini-cli failed to launch: {e}",
+                f"gemini-cli failed: {e}",
                 duration=time.time() - started,
             )
 
@@ -1135,8 +1206,12 @@ class ValidatorPool:
         return list(self._ordered[1:])
 
     def validate(
-        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, *, context=None
     ) -> ValidatorResult:
+        from .runtime import BudgetExhausted
+
+        if context is None:
+            context = getattr(self, "_invocation_context", None)
         last_error = ""
         attempts: List[str] = []
         for validator in self._ordered:
@@ -1145,9 +1220,29 @@ class ValidatorPool:
                 continue
             attempts.append(validator.name)
             log.info(f"[pool] trying validator: {validator.name}")
-            result = validator.validate(prompt, timeout=timeout)
+            try:
+                from .invocation import invoke_validate
+
+                result = invoke_validate(
+                    validator,
+                    prompt,
+                    timeout,
+                    context=context,
+                    stage=context.stage if context is not None else "validation",
+                )
+            except BudgetExhausted as exc:
+                last_error = f"{exc.reason}: {exc}"
+                attempts.append(f"{validator.name}:budget_exhausted")
+                if exc.reason == "circuit_open":
+                    continue
+                break
+            except Exception as exc:
+                result = _infra_error(
+                    validator.name,
+                    f"validator raised: {type(exc).__name__}: {exc}",
+                )
             # PASS / NEEDS_FIX / FAIL halt the chain. INFRA_ERROR falls through.
-            if result.verdict.status != VerdictStatus.INFRA_ERROR:
+            if result.verdict.status not in (VerdictStatus.INFRA_ERROR, VerdictStatus.INCONCLUSIVE):
                 log.info(
                     f"[pool] {validator.name} returned {result.verdict.status.value}"
                 )
@@ -1294,22 +1389,17 @@ class ClaudeCodeValidator(Validator):
         )
 
     def generate(
-        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, *, context=None
     ) -> str:
         if not self.available():
             raise RuntimeError(f"claude binary not found: {self._binary}")
         try:
-            proc = subprocess.run(
-                [self._binary, "--print", prompt],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()),
+            proc, _elapsed = _run_with_group_kill(
+                [self._binary, "--print"], input_text=prompt, timeout=timeout,
+                cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()), context=context,
             )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"claude timed out after {timeout}s")
-        except OSError as e:
-            raise RuntimeError(f"claude failed to launch: {e}")
+        except RuntimeError as e:
+            raise RuntimeError(f"claude failed: {e}")
         if proc.returncode != 0:
             raise RuntimeError(
                 f"claude exited {proc.returncode}: {(proc.stderr or '')[:500]}"
@@ -1319,30 +1409,22 @@ class ClaudeCodeValidator(Validator):
         return proc.stdout
 
     def validate(
-        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, *, context=None
     ) -> ValidatorResult:
         if not self.available():
             return _infra_error(self.name, f"claude binary not found: {self._binary}")
 
         started = time.time()
         try:
-            proc = subprocess.run(
-                [self._binary, "--print", self._build_prompt(prompt)],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()),
+            proc, _elapsed = _run_with_group_kill(
+                [self._binary, "--print"], input_text=self._build_prompt(prompt),
+                timeout=timeout, cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()),
+                context=context,
             )
-        except subprocess.TimeoutExpired:
+        except RuntimeError as e:
             return _infra_error(
                 self.name,
-                f"claude timed out after {timeout}s",
-                duration=time.time() - started,
-            )
-        except OSError as e:
-            return _infra_error(
-                self.name,
-                f"claude failed to launch: {e}",
+                f"claude failed: {e}",
                 duration=time.time() - started,
             )
 
@@ -1405,7 +1487,7 @@ class CodexValidator(Validator):
         )
 
     def generate(
-        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, *, context=None
     ) -> str:
         if not self.available():
             raise RuntimeError(f"codex binary not found: {self._binary}")
@@ -1424,28 +1506,28 @@ class CodexValidator(Validator):
             # v0.10.5: pass --ignore-user-config, read-only sandbox, and low
             # reasoning so interactive Codex MCP startup or high defaults do
             # not poison fast validator calls.
-            proc = subprocess.run(
+            implementation_mode = bool(
+                context is not None
+                and getattr(context, "metadata", {}).get("implementation")
+            )
+            proc, _elapsed = _run_with_group_kill(
                 [
                     self._binary,
                     "exec",
                     "--ignore-user-config",
                     "--skip-git-repo-check",
                     "-s",
-                    "read-only",
+                    "workspace-write" if implementation_mode else "read-only",
                     "-c",
                     'model_reasoning_effort="low"',
-                    prompt,
                 ],
-                input="",
-                capture_output=True,
-                text=True,
+                input_text=prompt,
                 timeout=timeout,
                 cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()),
+                context=context,
             )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"codex timed out after {timeout}s")
-        except OSError as e:
-            raise RuntimeError(f"codex failed to launch: {e}")
+        except RuntimeError as e:
+            raise RuntimeError(f"codex failed: {e}")
         if proc.returncode != 0:
             raise RuntimeError(
                 f"codex exited {proc.returncode}: {(proc.stderr or '')[:500]}"
@@ -1455,7 +1537,7 @@ class CodexValidator(Validator):
         return proc.stdout
 
     def validate(
-        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, *, context=None
     ) -> ValidatorResult:
         if not self.available():
             return _infra_error(self.name, f"codex binary not found: {self._binary}")
@@ -1464,7 +1546,7 @@ class CodexValidator(Validator):
         try:
             # v0.4.3: pipe empty stdin; v0.8.3: --skip-git-repo-check
             # for codex 0.125.0+; isolate from user config/MCPs and keep reasoning low (see generate() comment above).
-            proc = subprocess.run(
+            proc, _elapsed = _run_with_group_kill(
                 [
                     self._binary,
                     "exec",
@@ -1474,24 +1556,16 @@ class CodexValidator(Validator):
                     "read-only",
                     "-c",
                     'model_reasoning_effort="low"',
-                    self._build_prompt(prompt),
                 ],
-                input="",
-                capture_output=True,
-                text=True,
+                input_text=self._build_prompt(prompt),
                 timeout=timeout,
                 cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()),
+                context=context,
             )
-        except subprocess.TimeoutExpired:
+        except RuntimeError as e:
             return _infra_error(
                 self.name,
-                f"codex timed out after {timeout}s",
-                duration=time.time() - started,
-            )
-        except OSError as e:
-            return _infra_error(
-                self.name,
-                f"codex failed to launch: {e}",
+                f"codex failed: {e}",
                 duration=time.time() - started,
             )
 
@@ -1554,23 +1628,21 @@ class AiderValidator(Validator):
         )
 
     def generate(
-        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, *, context=None
     ) -> str:
         if not self.available():
             raise RuntimeError(f"aider binary not found: {self._binary}")
         try:
-            proc = subprocess.run(
-                [self._binary, "--message", prompt, "--no-git",
-                 "--no-auto-commits", "--yes"],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()),
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"aider timed out after {timeout}s")
-        except OSError as e:
-            raise RuntimeError(f"aider failed to launch: {e}")
+            with _secure_prompt_file(prompt, context=context) as prompt_file:
+                proc, _elapsed = _run_with_group_kill(
+                    [self._binary, "--message-file", prompt_file, "--no-git",
+                     "--no-auto-commits", "--yes"],
+                    input_text=None, timeout=timeout,
+                    cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()),
+                    context=context,
+                )
+        except RuntimeError as e:
+            raise RuntimeError(f"aider failed: {e}")
         if proc.returncode != 0:
             raise RuntimeError(
                 f"aider exited {proc.returncode}: {(proc.stderr or '')[:500]}"
@@ -1580,37 +1652,31 @@ class AiderValidator(Validator):
         return proc.stdout
 
     def validate(
-        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, *, context=None
     ) -> ValidatorResult:
         if not self.available():
             return _infra_error(self.name, f"aider binary not found: {self._binary}")
 
         started = time.time()
         try:
-            proc = subprocess.run(
-                [
-                    self._binary,
-                    "--message",
-                    self._build_prompt(prompt),
-                    "--no-git",
-                    "--no-auto-commits",
-                    "--yes",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()),
-            )
-        except subprocess.TimeoutExpired:
+            with _secure_prompt_file(self._build_prompt(prompt), context=context) as prompt_file:
+                proc, _elapsed = _run_with_group_kill(
+                    [
+                        self._binary,
+                        "--message-file",
+                        prompt_file,
+                        "--no-git",
+                        "--no-auto-commits",
+                        "--yes",
+                    ],
+                    input_text=None, timeout=timeout,
+                    cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()),
+                    context=context,
+                )
+        except RuntimeError as e:
             return _infra_error(
                 self.name,
-                f"aider timed out after {timeout}s",
-                duration=time.time() - started,
-            )
-        except OSError as e:
-            return _infra_error(
-                self.name,
-                f"aider failed to launch: {e}",
+                f"aider failed: {e}",
                 duration=time.time() - started,
             )
 
@@ -1662,9 +1728,10 @@ def build_validator_pool(cfg: "LopeCfg") -> "ValidatorPool":  # noqa: F821 — L
     """Build a ValidatorPool or EnsemblePool from config.
 
     Resolution order:
-      1. Hardcoded validators (claude, opencode, gemini, codex, aider) — take priority on name collision
-      2. Generic providers from cfg.providers — subprocess or http, user-defined
-      3. Auto-detected CLIs from cli_discovery KNOWN_CLIS (ollama, goose, etc.) — use generic subprocess
+      1. Valid, unexpired learned adapter for the selected CLI
+      2. Hardcoded validators (claude, opencode, gemini, codex, aider)
+      3. Generic providers from cfg.providers — subprocess or http, user-defined
+      4. Auto-detected CLIs from cli_discovery KNOWN_CLIS
     """
     from .cli_discovery import KNOWN_CLIS
 
@@ -1714,12 +1781,28 @@ def build_validator_pool(cfg: "LopeCfg") -> "ValidatorPool":  # noqa: F821 — L
     primary = None
     for name in cfg.validators:
         v = None
-        # Hardcoded first
+        learned = (getattr(cfg, "learned_adapters", {}) or {}).get(name)
+        if learned is not None:
+            try:
+                from .healer import is_adapter_expired
+                from .generic_validators import build_provider
+
+                if not is_adapter_expired(learned):
+                    v = build_provider({
+                        "name": name,
+                        "type": "subprocess",
+                        "command": list(learned.argv_template),
+                        "stdin": learned.stdin_mode == "pipe",
+                    })
+            except Exception as e:
+                log.warning(f"Failed to consume learned adapter {name!r}: {e}")
+                v = None
+        # Hardcoded fallback
         cls = validator_map.get(name)
-        if cls is not None:
+        if v is None and cls is not None:
             v = cls()
         # User-defined generic providers second
-        elif name in generic_map:
+        elif v is None and name in generic_map:
             try:
                 from .generic_validators import build_provider
                 v = build_provider(generic_map[name])
@@ -1727,7 +1810,7 @@ def build_validator_pool(cfg: "LopeCfg") -> "ValidatorPool":  # noqa: F821 — L
                 log.warning(f"Failed to build generic provider {name!r}: {e}")
                 continue
         # Auto-provisioned from KNOWN_CLIS third
-        elif name in auto_map:
+        elif v is None and name in auto_map:
             try:
                 from .generic_validators import build_provider
                 v = build_provider(auto_map[name])
@@ -1735,14 +1818,14 @@ def build_validator_pool(cfg: "LopeCfg") -> "ValidatorPool":  # noqa: F821 — L
                 log.warning(f"Failed to auto-provision {name!r}: {e}")
                 continue
         # Makakoo OS adapter fourth (universal bridge, zero-config)
-        elif name in makakoo_adapter_names:
+        elif v is None and name in makakoo_adapter_names:
             try:
                 from .makakoo_adapter import MakakooAdapterValidator
                 v = MakakooAdapterValidator(adapter_name=name)
             except Exception as e:
                 log.warning(f"Failed to build Makakoo adapter {name!r}: {e}")
                 continue
-        else:
+        elif v is None:
             log.warning(f"Unknown validator: {name}")
             continue
         validators.append(v)

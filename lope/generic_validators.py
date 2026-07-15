@@ -45,13 +45,15 @@ Example config:
 from __future__ import annotations
 
 import json as _json
+import base64
 import os
 import subprocess
+import sys
 import time
-import urllib.request
 from typing import Any, Dict, List, Optional
 
 from .models import ValidatorResult
+from .runtime import DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
 from .validators import Validator, parse_opencode_verdict
 
 
@@ -181,7 +183,7 @@ class GenericSubprocessValidator(Validator):
             return False
         return shutil.which(self._command[0]) is not None
 
-    def _run(self, prompt: str, timeout: int) -> tuple[int, str, str, float]:
+    def _run(self, prompt: str, timeout: int, context=None) -> tuple[int, str, str, float]:
         """Execute the subprocess; return (returncode, stdout, stderr, duration).
 
         Shared between validate() and generate(). Handles argv-substitution
@@ -208,14 +210,15 @@ class GenericSubprocessValidator(Validator):
                 cmd,
                 input_text=stdin_data,
                 timeout=effective_timeout,
+                context=context,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             raise
         return proc.returncode, proc.stdout or "", proc.stderr or "", _time.time() - started
 
-    def validate(self, prompt: str, timeout: int = 480) -> ValidatorResult:
+    def validate(self, prompt: str, timeout: int = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS, *, context=None) -> ValidatorResult:
         try:
-            rc, stdout, stderr, duration = self._run(prompt, timeout)
+            rc, stdout, stderr, duration = self._run(prompt, timeout, context=context)
         except subprocess.TimeoutExpired:
             effective_timeout = _effective_timeout(self._timeout_override, timeout)
             return self._infra_error(
@@ -241,7 +244,7 @@ class GenericSubprocessValidator(Validator):
             error="",
         )
 
-    def generate(self, prompt: str, timeout: int = 480) -> str:
+    def generate(self, prompt: str, timeout: int = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS, *, context=None) -> str:
         """Raw CLI invocation — no VERDICT parsing, returns stdout text.
 
         Used by the `ask` / `review` / `vote` / `compare` / `pipe` verbs
@@ -250,7 +253,7 @@ class GenericSubprocessValidator(Validator):
         per-validator-isolate errors (see `_fanout_generate` in cli.py).
         """
         try:
-            rc, stdout, stderr, _duration = self._run(prompt, timeout)
+            rc, stdout, stderr, _duration = self._run(prompt, timeout, context=context)
         except subprocess.TimeoutExpired:
             effective_timeout = _effective_timeout(self._timeout_override, timeout)
             raise RuntimeError(
@@ -297,6 +300,9 @@ class GenericHttpValidator(Validator):
         self._prompt_wrapper: Optional[str] = config.get("prompt_wrapper")
         self._timeout_override: Optional[int] = config.get("timeout")
         self._max_tokens: Optional[int] = config.get("max_tokens")
+        self._response_limit: int = int(config.get("response_limit", 2 * 1024 * 1024))
+        if self._response_limit <= 0:
+            raise ConfigError(f"provider {self._name!r} response_limit must be positive")
 
     @property
     def name(self) -> str:
@@ -306,7 +312,7 @@ class GenericHttpValidator(Validator):
         # HTTP validators are always available (assume network works)
         return True
 
-    def validate(self, prompt: str, timeout: int = 480) -> ValidatorResult:
+    def _request(self, prompt: str, timeout: int, context=None) -> tuple[str, float]:
         started = time.time()
         if self._prompt_wrapper:
             prompt = self._prompt_wrapper.format(prompt=prompt)
@@ -314,17 +320,55 @@ class GenericHttpValidator(Validator):
         # Expand ${VAR} then substitute {prompt}
         headers = _expand_env_dict(self._headers)
         body = _substitute_prompt(_expand_env_dict(self._body), prompt, self._max_tokens)
+        if self._max_tokens is not None and isinstance(body, dict) and "max_tokens" not in body:
+            body["max_tokens"] = int(self._max_tokens)
 
         effective_timeout = _effective_timeout(self._timeout_override, timeout)
+        payload = _json.dumps(body).encode("utf-8")
+        worker_spec = {
+            "url": self._url,
+            "headers": headers,
+            "method": "POST",
+            "body_b64": base64.b64encode(payload).decode("ascii"),
+            "socket_timeout": min(float(effective_timeout), 30.0),
+            "response_limit": self._response_limit,
+        }
+        from .processes import run_subprocess_group
+        proc = run_subprocess_group(
+            [sys.executable, "-m", "lope.http_worker"],
+            input_text=_json.dumps(worker_spec, separators=(",", ":")),
+            timeout=effective_timeout,
+            stdout_limit=max(64 * 1024, self._response_limit * 2),
+            stderr_limit=256 * 1024,
+            context=context,
+        )
         try:
-            payload = _json.dumps(body).encode("utf-8")
-            req = urllib.request.Request(self._url, data=payload, headers=headers)
-            with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
+            envelope = _json.loads(proc.stdout or "{}")
+        except _json.JSONDecodeError as exc:
+            raise RuntimeError(f"http worker returned invalid JSON: {exc}")
+        if proc.returncode != 0 or envelope.get("error"):
+            raise RuntimeError(str(envelope.get("error") or proc.stderr or "HTTP worker failed")[:500])
+        status = int(envelope.get("status") or 0)
+        response_headers = {
+            str(key).lower(): str(value)
+            for key, value in (envelope.get("headers") or {}).items()
+        }
+        raw = base64.b64decode(envelope.get("body_b64") or "").decode(
+            "utf-8", errors="replace"
+        )
+        if status < 200 or status >= 300:
+            retry_after = response_headers.get("retry-after")
+            retry_detail = f" Retry-After: {retry_after};" if retry_after else ""
+            raise RuntimeError(f"HTTP {status}:{retry_detail} {raw[:300]}")
+        return raw, time.time() - started
+
+    def validate(self, prompt: str, timeout: int = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS, *, context=None) -> ValidatorResult:
+        started = time.time()
+        try:
+            raw, duration = self._request(prompt, timeout, context=context)
         except Exception as e:
             return self._infra_error(f"http error: {e}", time.time() - started)
 
-        duration = time.time() - started
         try:
             data = _json.loads(raw)
         except _json.JSONDecodeError:
@@ -341,6 +385,20 @@ class GenericHttpValidator(Validator):
             raw_response=text,
             error="",
         )
+
+    def generate(self, prompt: str, timeout: int = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS, *, context=None) -> str:
+        try:
+            raw, _duration = self._request(prompt, timeout, context=context)
+        except Exception as exc:
+            raise RuntimeError(f"{self._name} http error: {exc}")
+        try:
+            data = _json.loads(raw)
+        except _json.JSONDecodeError:
+            data = raw
+        text = _extract_response(data, self._response_path)
+        if not text.strip():
+            raise RuntimeError(f"{self._name} returned empty output")
+        return text
 
     def _infra_error(self, msg: str, duration: float) -> ValidatorResult:
         from .models import PhaseVerdict, VerdictStatus

@@ -62,3 +62,6 @@ Lope is a zero-dependency Python CLI that coordinates multiple AI CLIs as an ens
 - Move `ask`, `vote`, `compare`, and `pipe` orchestration out of `cli.py`.
 - Move team management commands into a dedicated `lope/team.py` module.
 - Unify human/JSON rendering through `lope/output.py` once structured output formats stabilize.
+# Runtime safety boundary
+
+Provider execution crosses the cancellation-safe supervisor in `lope/processes.py`. The supervisor owns a process group, enforces total wall time and output limits, observes parent death through a control pipe, and reaps descendants. `lope/jobs.py` stores sanitized leases for startup reconciliation and explicit operator cleanup. `lope/request_plan.py` profiles requests and chooses direct, bounded semantic chunks, or rejection before any provider starts.

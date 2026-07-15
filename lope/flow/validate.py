@@ -8,7 +8,7 @@ softer issues. Stdlib only.
 
 from __future__ import annotations
 
-from typing import List, Set
+from typing import Any, Dict, List, Sequence, Set
 
 from .model import MAX_RETRIES, FlowConfigError, FlowGraph, NodeKind
 
@@ -20,6 +20,8 @@ def validate_graph(graph: FlowGraph) -> List[str]:
     """
     errors: List[str] = []
     warnings: List[str] = []
+    # Force typed validation of graph-level numeric ceilings.
+    _ = graph.max_model_calls
 
     # 1. edges reference defined nodes
     for edge in graph.edges:
@@ -87,6 +89,86 @@ def validate_graph(graph: FlowGraph) -> List[str]:
     if errors:
         raise FlowConfigError("invalid flow graph:\n  - " + "\n  - ".join(errors))
     return warnings
+
+
+def forecast_graph(
+    graph: FlowGraph,
+    validators: Sequence[Any],
+    cfg: Any,
+) -> Dict[str, Any]:
+    """Conservative static call/chunk/wall forecast for dry-run and validate."""
+
+    from ..request_plan import plan_request
+    from ..runtime import mode_run_timeout
+
+    validator_count = max(1, len(validators))
+    theoretical_calls = graph.max_node_visits * validator_count
+    configured_call_limit = int(getattr(cfg, "max_calls", 96))
+    graph_call_limit = graph.max_model_calls
+    effective_call_limit = min(
+        configured_call_limit,
+        graph_call_limit if graph_call_limit is not None else configured_call_limit,
+    )
+    run_timeout = getattr(cfg, "run_timeout", None)
+    if run_timeout is None and not getattr(cfg, "allow_unbounded_run", False):
+        run_timeout = mode_run_timeout("flow")
+    per_call_timeout = float(getattr(cfg, "timeout", 960))
+    static_chunks = 0
+    static_calls = 0
+    rejected_nodes = []
+    for node in graph.nodes.values():
+        if node.kind not in {NodeKind.AGENT, NodeKind.REVIEW, NodeKind.JUDGE}:
+            continue
+        selected = list(validators)
+        if node.kind == NodeKind.AGENT or (
+            node.kind == NodeKind.JUDGE
+            and (node.attr("mode") or "ensemble").strip().lower() == "generate"
+        ):
+            selected = selected[:1]
+        prompt = node.prompt or "(dynamic flow prompt)"
+        plan = plan_request(
+            prompt,
+            mode="flow",
+            validators=selected,
+            policy=getattr(cfg, "request_policy", "auto"),
+            max_chunks=getattr(cfg, "max_chunks", 32),
+            max_calls=configured_call_limit,
+            max_input_bytes=getattr(cfg, "max_input_bytes", 16 * 1024 * 1024),
+            per_call_timeout=per_call_timeout,
+            parallel=bool(getattr(cfg, "parallel", True)),
+            allow_chunk=False,
+            source_label=f"flow node {node.id}",
+            kind="markdown",
+        )
+        static_chunks += plan.required_chunks
+        static_calls += plan.required_calls
+        if not plan.accepted:
+            rejected_nodes.append({"node": node.id, "reason": plan.reason})
+    warnings = []
+    if theoretical_calls > effective_call_limit:
+        warnings.append(
+            f"theoretical graph path ceiling {theoretical_calls} model calls exceeds "
+            f"effective max_model_calls {effective_call_limit}"
+        )
+    theoretical_wall = graph.max_node_visits * per_call_timeout
+    if run_timeout is not None and theoretical_wall > float(run_timeout):
+        warnings.append(
+            f"theoretical graph path wall ceiling {theoretical_wall:g}s exceeds "
+            f"run deadline {float(run_timeout):g}s"
+        )
+    return {
+        "schema_version": 1,
+        "validator_count": validator_count,
+        "max_node_visits": graph.max_node_visits,
+        "theoretical_model_calls": theoretical_calls,
+        "max_model_calls": effective_call_limit,
+        "static_prompt_calls": static_calls,
+        "static_prompt_chunks": static_chunks,
+        "run_timeout_seconds": run_timeout,
+        "theoretical_wall_seconds": theoretical_wall,
+        "rejected_nodes": rejected_nodes,
+        "warnings": warnings,
+    }
 
 
 def _reachable_from(graph: FlowGraph, start_id: str) -> Set[str]:

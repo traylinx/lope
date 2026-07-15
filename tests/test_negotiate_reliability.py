@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from lope.cli import _load_negotiate_context, _write_negotiation_escalation_artifacts
 from lope.ensemble import EnsemblePool
 from lope.models import EscalationRequired, PhaseVerdict, Proposal, Round, ValidatorResult, VerdictStatus
-from lope.negotiator import _build_validator_prompt, _render_refinement_suffix
+from lope.negotiator import (
+    EVIDENCE_BRIEF_MAX_BYTES,
+    EvidenceLimitExceeded,
+    Negotiator,
+    _build_validator_prompt,
+    _render_refinement_suffix,
+)
 from lope.validators import StubValidator
 
 
@@ -123,3 +131,70 @@ def test_escalation_writes_last_proposal_feedback_and_rounds(tmp_path):
     assert paths["last_proposal"] == str(out)
     assert paths["feedback"] == str(feedback)
     assert paths["rounds_dir"] == str(rounds_dir)
+
+
+_VALID_SPRINT = """# SPRINT-BOUNDED
+
+## Origin
+user request
+
+## Phases
+
+### Phase 1: Bound it
+
+**Goal:** Preserve evidence safely
+
+**Files:**
+- lope/negotiator.py
+
+**Tests:**
+- pytest
+"""
+
+
+def test_original_evidence_brief_is_preserved_in_refinement_and_review_prompts():
+    llm_prompts = []
+
+    def llm(_system, user):
+        llm_prompts.append(user)
+        return _VALID_SPRINT
+
+    class Pool:
+        def validate(self, _prompt, timeout=1):
+            return _result(
+                "reviewer",
+                VerdictStatus.NEEDS_FIX,
+                "tighten",
+                ["preserve sentinel"],
+            )
+
+    negotiator = Negotiator(llm, Pool(), max_rounds=2, timeout_seconds=1)
+    sentinel = "ORIGINAL-EVIDENCE-SENTINEL"
+    first = negotiator.propose("bounded evidence", sentinel)
+    feedback = _result(
+        "reviewer", VerdictStatus.NEEDS_FIX, "tighten", ["preserve sentinel"]
+    )
+    negotiator.refine(first, feedback)
+
+    assert sentinel in llm_prompts[0]
+    assert sentinel in llm_prompts[1]
+    review_prompt = _build_validator_prompt(
+        "bounded evidence",
+        first,
+        evidence_brief=sentinel,
+    )
+    assert "Original evidence brief" in review_prompt
+    assert sentinel in review_prompt
+
+
+def test_oversize_evidence_rejects_before_drafter_call():
+    calls = []
+
+    def llm(_system, _user):
+        calls.append(1)
+        return _VALID_SPRINT
+
+    negotiator = Negotiator(llm, object(), timeout_seconds=1)
+    with pytest.raises(EvidenceLimitExceeded, match="will not truncate evidence"):
+        negotiator.propose("bounded evidence", "x" * (EVIDENCE_BRIEF_MAX_BYTES + 1))
+    assert calls == []

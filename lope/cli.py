@@ -1,6 +1,7 @@
 """Lope CLI — autonomous sprint runner with multi-CLI validation."""
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -40,6 +41,13 @@ def _env_int_default(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
 
 
 def _negotiate_prompt_profile(
@@ -200,8 +208,25 @@ def main():
                        help="Comma-separated validator list, e.g. opencode,gemini")
         p.add_argument("--primary", default=None,
                        help="Name of the primary validator (must be in --validators)")
-        p.add_argument("--timeout", type=int, default=None,
+        p.add_argument("--timeout", type=_positive_int, default=None,
                        help="Per-validator timeout in seconds")
+        run_group = p.add_mutually_exclusive_group()
+        run_group.add_argument(
+            "--run-timeout", dest="run_timeout", type=_positive_int, default=None,
+            help="Hard whole-command deadline in seconds",
+        )
+        run_group.add_argument(
+            "--allow-unbounded-run", dest="allow_unbounded_run",
+            action="store_true", default=None,
+            help="Unsafe: remove only the wall deadline; call/chunk/byte limits remain",
+        )
+        p.add_argument("--max-calls", dest="max_calls", type=_positive_int, default=None,
+                       help="Maximum external model/provider calls for this run")
+        p.add_argument("--max-chunks", dest="max_chunks", type=_positive_int, default=None,
+                       help="Maximum planned request chunks (default: 32)")
+        p.add_argument("--request-policy", dest="request_policy", default=None,
+                       choices=["auto", "direct", "chunk"],
+                       help="Oversize request policy (default: auto)")
         p.set_defaults(parallel=None)
         parallel_group = p.add_mutually_exclusive_group()
         parallel_group.add_argument("--parallel", dest="parallel", action="store_true",
@@ -459,7 +484,7 @@ def main():
     t_add.add_argument("--timeout", type=int, default=None,
                        help="Per-call timeout override in seconds")
     t_add.add_argument("--max-tokens", type=int, default=None,
-                       help="Max tokens in response (default: 100000)")
+                       help="Optional provider response-token cap")
     t_add.add_argument("--primary", action="store_true",
                        help="Make this the primary validator (used by execute() for implementation)")
     t_add.add_argument("--disabled", action="store_true",
@@ -592,6 +617,25 @@ def main():
     gate_check.add_argument("--trust", action="store_true",
                             help="Trust this repo's gate commands (or set LOPE_TRUST_GATES=1)")
 
+    def _add_gate_budget_flags(parser_for_gate):
+        group = parser_for_gate.add_mutually_exclusive_group()
+        group.add_argument(
+            "--run-timeout",
+            dest="run_timeout",
+            type=_positive_int,
+            default=None,
+            help="Hard whole-gate-suite deadline in seconds",
+        )
+        group.add_argument(
+            "--allow-unbounded-run",
+            action="store_true",
+            default=None,
+            help="Unsafe: remove only the suite wall deadline",
+        )
+
+    _add_gate_budget_flags(gate_save)
+    _add_gate_budget_flags(gate_check)
+
     chk = sub.add_parser("check", help="Run objective evidence gates without a baseline")
     chk.add_argument("--config", default=None, help="Path to .lope/rules.json")
     chk.add_argument("--timeout", type=int, default=480, help="Default per-gate timeout")
@@ -599,9 +643,33 @@ def main():
     chk.add_argument("--remember", action="store_true", help="Persist run in Lope memory")
     chk.add_argument("--trust", action="store_true",
                      help="Trust this repo's gate commands (or set LOPE_TRUST_GATES=1)")
+    _add_gate_budget_flags(chk)
 
     # status
     sub.add_parser("status", help="Show available validators and config")
+
+    # jobs — Phase 1 exposes safe read-only ownership inspection. Reap/kill
+    # arrive with the Phase 2 supervisor and never use command-name matching.
+    jobs = sub.add_parser("jobs", help="Inspect and manage Lope-owned runs")
+    jobs_sub = jobs.add_subparsers(dest="jobs_cmd")
+    jobs_list = jobs_sub.add_parser("list", help="List active and stale Lope-owned runs")
+    jobs_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    jobs_reap = jobs_sub.add_parser(
+        "reap",
+        help="Reconcile confirmed abandoned Lope-owned runs",
+    )
+    jobs_reap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show typed actions/refusals without signalling or deleting",
+    )
+    jobs_reap.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    jobs_kill = jobs_sub.add_parser(
+        "kill",
+        help="Cancel one fingerprint-verified Lope run by run ID",
+    )
+    jobs_kill.add_argument("run_id", help="Exact run ID from `lope jobs list`")
+    jobs_kill.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
     # configure
     sub.add_parser("configure", help="Interactive validator picker")
@@ -721,6 +789,10 @@ def main():
         _cmd_status()
         return
 
+    if args.command == "jobs":
+        _cmd_jobs(args)
+        return
+
     if args.command == "configure":
         _cmd_configure()
         return
@@ -746,57 +818,69 @@ def main():
         return
 
     if args.command == "flow":
-        _cmd_flow(args)
+        with _command_runtime_scope(args):
+            _cmd_flow(args)
         return
 
     if args.command == "deliberate":
-        _cmd_deliberate(args)
+        with _command_runtime_scope(args):
+            _cmd_deliberate(args)
         return
 
     if args.command == "negotiate":
         from .runlock import acquire as _runlock
-        with _runlock("negotiate"):
-            _cmd_negotiate(args)
+        with _command_runtime_scope(args):
+            with _runlock("negotiate"):
+                _cmd_negotiate(args)
         return
 
     if args.command == "execute":
         from .runlock import acquire as _runlock
-        with _runlock("execute"):
-            _cmd_execute(args)
+        with _command_runtime_scope(args):
+            with _runlock("execute"):
+                _cmd_execute(args)
         return
 
     if args.command == "implement":
         from .runlock import acquire as _runlock
-        with _runlock("implement"):
-            _cmd_implement(args)
+        with _command_runtime_scope(args):
+            with _runlock("implement"):
+                _cmd_implement(args)
         return
 
     if args.command == "audit":
-        _cmd_audit(args)
+        with _command_runtime_scope(args):
+            _cmd_audit(args)
         return
 
     if args.command == "ask":
-        _cmd_ask(args)
+        with _command_runtime_scope(args):
+            _cmd_ask(args)
         return
 
     if args.command == "review":
-        _cmd_review(args)
+        with _command_runtime_scope(args):
+            _cmd_review(args)
         return
 
     if args.command == "vote":
-        _cmd_vote(args)
+        with _command_runtime_scope(args):
+            _cmd_vote(args)
         return
 
     if args.command == "compare":
-        _cmd_compare(args)
+        with _command_runtime_scope(args):
+            _cmd_compare(args)
         return
 
     if args.command == "pipe":
-        _cmd_pipe(args)
+        with _command_runtime_scope(args):
+            _cmd_pipe(args)
         return
 
     if args.command == "team":
-        _cmd_team(args)
+        with _command_runtime_scope(args):
+            _cmd_team(args)
         return
 
 
@@ -837,25 +921,67 @@ def _cmd_flow_run(args):
         sys.exit(2)
 
     if getattr(args, "dry_run", False):
-        from .flow.validate import validate_graph
+        from .flow.validate import forecast_graph, validate_graph
         try:
             warnings = validate_graph(graph)
         except FlowConfigError as exc:
             print(f"lope flow: {exc}", file=sys.stderr)
             sys.exit(2)
         cap = getattr(args, "max_node_visits", None) or graph.max_node_visits
+        from .config import load_layered
+
+        overrides = {}
+        if getattr(args, "validators", None):
+            overrides["validators"] = [
+                item.strip() for item in args.validators.split(",") if item.strip()
+            ]
+        for key in (
+            "primary", "timeout", "parallel", "run_timeout",
+            "allow_unbounded_run", "max_calls", "max_chunks", "request_policy",
+        ):
+            value = getattr(args, key, None)
+            if value is not None:
+                overrides[key] = value
+        dry_cfg = load_layered(cli_overrides=overrides)
+        dry_pool = build_validator_pool(dry_cfg)
+        forecast = forecast_graph(graph, dry_pool.validators(), dry_cfg)
         print(f"Flow: {graph.name}  ·  {len(graph.nodes)} nodes, {len(graph.edges)} edges")
         print(f"Start: {graph.start_node().id}  ·  "
               f"Exits: {', '.join(e.id for e in graph.exits())}")
         print(f"Runaway cap: {cap} node visits")
+        print(
+            f"Model-call ceiling: {forecast['theoretical_model_calls']} theoretical · "
+            f"{forecast['max_model_calls']} admitted"
+        )
+        print(
+            f"Static prompt forecast: {forecast['static_prompt_chunks']} chunk(s) · "
+            f"{forecast['static_prompt_calls']} call(s)"
+        )
+        print(f"Run deadline: {forecast['run_timeout_seconds'] or 'unbounded'}s")
         for w in warnings:
             print(f"  warning: {w}")
+        for warning in forecast["warnings"]:
+            print(f"  warning: {warning}")
+        for rejected in forecast["rejected_nodes"]:
+            print(f"  rejected node {rejected['node']}: {rejected['reason']}")
         print("Dry run — nothing executed.")
         return
 
     cfg, pool = _ensure_config(args)
+    from .flow.validate import forecast_graph
+
+    forecast = forecast_graph(graph, pool.validators(), cfg)
+    context = getattr(pool, "_invocation_context", None)
+    if context is not None:
+        context.budget.add_event("flow_forecast", **forecast)
     cwd = args.cwd or os.getcwd()
     print(f"\nLope flow: {graph.name} ({len(graph.nodes)} nodes)  ·  cwd={cwd}\n")
+    print(
+        f"Flow forecast: {forecast['theoretical_model_calls']} theoretical model calls · "
+        f"cap {forecast['max_model_calls']} · {forecast['static_prompt_chunks']} static chunk(s)"
+    )
+    for warning in forecast["warnings"]:
+        print(f"  warning: {warning}")
     runner = FlowRunner(
         graph, pool, cfg, cwd=cwd,
         max_node_visits=getattr(args, "max_node_visits", None),
@@ -895,7 +1021,7 @@ def _cmd_flow_run(args):
 
 
 def _cmd_flow_validate(args):
-    from .flow import load_flow_graph, validate_graph
+    from .flow import forecast_graph, load_flow_graph, validate_graph
     from .flow.model import FlowConfigError
 
     try:
@@ -906,8 +1032,20 @@ def _cmd_flow_validate(args):
         sys.exit(1)
     print(f"OK: {graph.name} — {len(graph.nodes)} nodes, {len(graph.edges)} edges, "
           f"runaway cap {graph.max_node_visits}")
+    from .config import load_layered
+
+    cfg = load_layered()
+    pool = build_validator_pool(cfg)
+    forecast = forecast_graph(graph, pool.validators(), cfg)
+    print(
+        f"Model calls: {forecast['theoretical_model_calls']} theoretical · "
+        f"cap {forecast['max_model_calls']} · chunks {forecast['static_prompt_chunks']} · "
+        f"deadline {forecast['run_timeout_seconds'] or 'unbounded'}s"
+    )
     for w in warnings:
         print(f"  warning: {w}")
+    for warning in forecast["warnings"]:
+        print(f"  warning: {warning}")
 
 
 def _cmd_flow_render(args):
@@ -958,13 +1096,14 @@ def _cmd_gate(args):
     import time as _time
     sub_cmd = getattr(args, 'gate_cmd', None) or 'check'
     started = _time.perf_counter_ns()
+    context = _ensure_gate_runtime(args)
     try:
         specs, config_path = load_gate_specs(args.config)
         from .trust import ensure_gates_trusted
         if not ensure_gates_trusted(specs, assume_yes=getattr(args, 'trust', False)):
             sys.exit(3)
         baseline = Path(args.baseline).expanduser() if args.baseline else default_baseline_path()
-        results = run_gates(specs, default_timeout=args.timeout)
+        results = run_gates(specs, default_timeout=args.timeout, context=context)
         comparisons = []
         if sub_cmd == 'save':
             save_baseline(results, baseline)
@@ -987,13 +1126,14 @@ def _cmd_check(args):
     from .gates import GateConfigError, build_run, default_baseline_path, load_gate_specs, run_gates
     import time as _time
     started = _time.perf_counter_ns()
+    context = _ensure_gate_runtime(args)
     try:
         specs, config_path = load_gate_specs(args.config)
         from .trust import ensure_gates_trusted
         if not ensure_gates_trusted(specs, assume_yes=getattr(args, 'trust', False)):
             sys.exit(3)
         baseline = default_baseline_path()
-        results = run_gates(specs, default_timeout=args.timeout)
+        results = run_gates(specs, default_timeout=args.timeout, context=context)
         run = build_run('check', specs, config_path, baseline, results, [], started)
     except GateConfigError as exc:
         print(f"lope check: {exc}", file=sys.stderr)
@@ -1047,7 +1187,7 @@ def _remember_gate_run(run, task=''):
     )
 
 
-def _make_execute_gate_runner(args, timeout):
+def _make_execute_gate_runner(args, timeout, *, context=None):
     from .gates import (
         GateConfigError, build_run, compare_results, default_baseline_path,
         load_baseline, load_gate_specs, run_gates, save_baseline,
@@ -1064,14 +1204,14 @@ def _make_execute_gate_runner(args, timeout):
         sys.exit(3)
     baseline = default_baseline_path()
     if specs:
-        initial = run_gates(specs, default_timeout=timeout)
+        initial = run_gates(specs, default_timeout=timeout, context=context)
         save_baseline(initial, baseline)
         print(f"Objective gate baseline saved: {baseline}")
     else:
         print("Objective gates enabled, but no gates configured.")
     def _runner(phase=None, attempt=1):
         started = _time.perf_counter_ns()
-        results = run_gates(specs, default_timeout=timeout)
+        results = run_gates(specs, default_timeout=timeout, context=context)
         comparisons = []
         if specs:
             try:
@@ -1094,6 +1234,7 @@ def _cmd_deliberate(args):
     """Dispatch ``lope deliberate <template> <scenario>``."""
 
     from .deliberation import (
+        DeliberationInconclusive,
         default_output_dir,
         get_template,
         run_deliberation,
@@ -1129,6 +1270,16 @@ def _cmd_deliberate(args):
 
     cfg, pool = _ensure_config(args)
     validator_names = [v.name for v in getattr(pool, "_validators", [])] or pool.names()
+    _plan_external_request(
+        args,
+        cfg,
+        pool,
+        scenario,
+        mode="deliberate",
+        allow_chunk=False,
+        source_label="scenario",
+        kind="markdown",
+    )
     if not validator_names:
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
@@ -1154,12 +1305,46 @@ def _cmd_deliberate(args):
         validator = name_to_validator.get(name)
         if validator is None:
             return f"[validator {name} unavailable]"
+        from .request_plan import PlanAction, plan_request
+
+        call_plan = plan_request(
+            prompt,
+            mode="deliberate",
+            validators=[validator],
+            policy=cfg.request_policy,
+            max_chunks=cfg.max_chunks,
+            max_calls=cfg.max_calls,
+            max_input_bytes=cfg.max_input_bytes,
+            per_call_timeout=timeout,
+            parallel=False,
+            allow_chunk=False,
+            source_label=f"deliberation turn for {name}",
+            kind="markdown",
+        )
+        invocation = getattr(pool, "_invocation_context", None)
+        if invocation is not None:
+            invocation.add_request_plan(call_plan.to_dict())
+        if call_plan.action == PlanAction.REJECT:
+            raise RuntimeError(
+                "input_limit: " + call_plan.reason
+                + (f"; {call_plan.mitigation}" if call_plan.mitigation else "")
+            )
         try:
-            return validator.generate(prompt, timeout=timeout)
+            from .invocation import invoke_generate
+
+            return invoke_generate(
+                validator,
+                prompt,
+                timeout,
+                context=invocation,
+                stage="deliberation",
+            )
         except NotImplementedError as exc:
-            return f"[validator {name} cannot generate: {exc}]"
+            raise RuntimeError(f"validator {name} cannot generate: {exc}") from exc
         except Exception as exc:  # pragma: no cover — defensive
-            return f"[validator {name} errored: {type(exc).__name__}: {exc}]"
+            raise RuntimeError(
+                f"validator {name} errored: {type(exc).__name__}: {exc}"
+            ) from exc
 
     out_dir = Path(args.out) if args.out else default_output_dir(spec)
 
@@ -1170,17 +1355,39 @@ def _cmd_deliberate(args):
         print(f"Depth: {args.depth}  ·  Anonymous: {args.anonymize}")
         print(f"Output: {out_dir}\n")
 
-    run = run_deliberation(
-        template=spec,
-        scenario=scenario,
-        validators=validator_names,
-        primary=primary_name,
-        generate=_generate,
-        depth=args.depth,
-        timeout=cfg.timeout,
-        anonymous=args.anonymize,
-        output_dir=out_dir,
-    )
+    try:
+        run = run_deliberation(
+            template=spec,
+            scenario=scenario,
+            validators=validator_names,
+            primary=primary_name,
+            generate=_generate,
+            depth=args.depth,
+            timeout=cfg.timeout,
+            anonymous=args.anonymize,
+            output_dir=out_dir,
+            parallel=cfg.parallel,
+            max_workers=min(5, max(1, len(validator_names))),
+        )
+    except DeliberationInconclusive as exc:
+        context = getattr(pool, "_invocation_context", None)
+        if context is not None:
+            context.budget.mark_partial(str(exc))
+        print(f"lope deliberate: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as exc:
+        print(f"lope deliberate: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    invocation = getattr(pool, "_invocation_context", None)
+    if invocation is not None:
+        for kind, path in (
+            ("deliberation_report", out_dir / "final" / "report.md"),
+            ("deliberation_minority", out_dir / "final" / "minority-report.md"),
+            ("deliberation_trace", out_dir / "trace.jsonl"),
+        ):
+            if path.exists():
+                invocation.budget.add_artifact(kind, str(path))
 
     # Optional brain log: drop a one-liner pointing at the run directory.
     brain_ack = _maybe_emit_brain_log(
@@ -1198,6 +1405,9 @@ def _cmd_deliberate(args):
     if args.json:
         import json as _j
         payload = run.to_dict()
+        context = getattr(pool, "_invocation_context", None)
+        if context is not None:
+            payload["runtime"] = context.budget.snapshot()
         if brain_ack:
             payload["brain"] = {"note": brain_ack}
         print(_j.dumps(payload, indent=2, sort_keys=True))
@@ -1406,6 +1616,8 @@ def _cmd_status():
         print(f"  Primary: {cfg.primary}")
         print(f"  Parallel: {cfg.parallel}")
         print(f"  Timeout: {cfg.timeout}s")
+        print(f"  Run timeout: {cfg.run_timeout or ('unbounded' if cfg.allow_unbounded_run else 'mode default')}")
+        print(f"  Max calls/chunks: {cfg.max_calls}/{cfg.max_chunks}")
 
         # v0.4.0: show learned adapters (self-healed CLI invocations)
         if cfg.learned_adapters:
@@ -1437,12 +1649,127 @@ def _cmd_status():
                 print(f"  {evt.get('event', '?'):<16} {evt.get('cli', '?'):<16} {age}m ago")
     else:
         print("\nNo config found. Run: lope configure")
+    try:
+        from .jobs import RunRegistry
+
+        jobs = RunRegistry().list_active()
+        counts: Dict[str, int] = {}
+        for job in jobs:
+            state = str(job.get("classification", "ownership_unverified"))
+            counts[state] = counts.get(state, 0) + 1
+        print("\nJobs:")
+        if not jobs:
+            print("  0 active or stale Lope-owned runs")
+        else:
+            summary = ", ".join(f"{name}={count}" for name, count in sorted(counts.items()))
+            print(f"  {len(jobs)} manifest(s): {summary}")
+            for job in jobs:
+                run_id = job.get("run_id", "?")
+                resources = job.get("resources") or {}
+                deadline = job.get("deadline_remaining_seconds")
+                deadline_text = "none" if deadline is None else f"{float(deadline):.0f}s"
+                print(
+                    f"  {run_id}  {job.get('classification', '?')}  "
+                    f"deadline={deadline_text}  "
+                    f"procs={resources.get('process_count', '?')}  "
+                    f"cpu={resources.get('cpu_percent', '?')}%  "
+                    f"rss={resources.get('rss_bytes', '?')}B"
+                )
+                if job.get("classification") in {"active", "unresponsive"}:
+                    print(f"    cancel safely: lope jobs kill {run_id}")
+                elif job.get("classification") == "abandoned":
+                    print("    reconcile safely: lope jobs reap --dry-run")
+                elif job.get("classification") == "cleanup_failed":
+                    print(f"    inspect cleanup failure: lope jobs list  # {run_id}")
+    except Exception as exc:
+        print(f"\nJobs: registry unavailable ({exc})")
     print()
     # Random gimmick (15% chance)
     gimmick = maybe_gimmick(rate=0.15)
     if gimmick:
         print(gimmick)
         print()
+
+
+def _cmd_jobs(args):
+    from .jobs import RegistryError, RunRegistry
+
+    sub_cmd = getattr(args, "jobs_cmd", None) or "list"
+    registry = RunRegistry()
+    if sub_cmd == "reap":
+        rows = registry.reap_all(dry_run=bool(getattr(args, "dry_run", False)))
+        payload = {
+            "schema_version": 1,
+            "dry_run": bool(getattr(args, "dry_run", False)),
+            "actions": rows,
+            "count": len(rows),
+        }
+        if getattr(args, "json", False):
+            from .output import print_json
+
+            print_json(payload)
+        elif not rows:
+            print("No active or stale Lope-owned jobs to reap.")
+        else:
+            print("Lope jobs reap" + (" (dry-run):" if payload["dry_run"] else ":"))
+            for row in rows:
+                print(
+                    f"  {row.get('run_id', '?')}  {row.get('classification', '?'):<20} "
+                    f"{row.get('action', '?'):<16} {row.get('reason', '')}"
+                )
+        if not payload["dry_run"] and any(
+            row.get("action") in {"refused", "cleanup_failed"} for row in rows
+        ):
+            sys.exit(1)
+        return
+    if sub_cmd == "kill":
+        try:
+            result = registry.kill_run(str(args.run_id))
+        except RegistryError as exc:
+            result = {
+                "run_id": str(args.run_id),
+                "classification": "ownership_unverified",
+                "action": "refused",
+                "reason": str(exc),
+                "calls": [],
+            }
+        if getattr(args, "json", False):
+            from .output import print_json
+
+            print_json({"schema_version": 1, "result": result})
+        else:
+            print(
+                f"{result.get('run_id', '?')}  {result.get('action', '?')}  "
+                f"{result.get('reason', '')}"
+            )
+        if result.get("action") not in {"killed", "reaped"}:
+            sys.exit(1)
+        return
+    if sub_cmd != "list":
+        print("Usage: lope jobs {list|reap|kill}", file=sys.stderr)
+        sys.exit(2)
+    rows = registry.list_active()
+    if getattr(args, "json", False):
+        from .output import print_json
+
+        print_json({"schema_version": 1, "jobs": rows, "count": len(rows)})
+        return
+    if not rows:
+        print("No active or stale Lope-owned jobs.")
+        return
+    print("Lope jobs:")
+    for row in rows:
+        run_id = row.get("run_id", "?")
+        mode = row.get("mode", "?")
+        state = row.get("classification", "ownership_unverified")
+        owner = row.get("owner") or {}
+        resources = row.get("resources") or {}
+        print(
+            f"  {run_id}  {mode:<12} {state:<20} owner={owner.get('pid', '?')} "
+            f"procs={resources.get('process_count', '?')} "
+            f"cpu={resources.get('cpu_percent', '?')}% "
+            f"rss={resources.get('rss_bytes', '?')}B"
+        )
 
 
 def _cmd_configure():
@@ -1480,7 +1807,10 @@ def _cmd_install(host: str):
     if host != "all":
         args.extend(["--host", host])
     try:
-        proc = subprocess.run(args, check=False)
+        proc = subprocess.run(args, check=False, timeout=600)
+    except subprocess.TimeoutExpired:
+        print("Install failed: installer exceeded 600s maintenance timeout", file=sys.stderr)
+        sys.exit(124)
     except OSError as exc:
         print(f"Install failed: cannot execute {install_script}: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -1502,6 +1832,133 @@ def _cmd_update(args):
     except UpdateError as exc:
         print(f"lope update: {exc}", file=sys.stderr)
         sys.exit(1)
+
+
+@contextlib.contextmanager
+def _command_runtime_scope(args):
+    """Finalize any run registry/budget lazily created by `_ensure_config`."""
+
+    failed = False
+    try:
+        yield
+    except SystemExit as exc:
+        code = int(exc.code or 0)
+        failed = code != 0
+        context = getattr(args, "_invocation_context", None)
+        deadline_incomplete = bool(
+            context is not None
+            and (
+                (
+                    context.budget.deadline is not None
+                    and context.budget.remaining_seconds() <= 0
+                )
+                or str(context.budget.snapshot().get("reason") or "").startswith(
+                    "run_budget_exhausted"
+                )
+            )
+        )
+        if failed and code not in {2, 3, 75, 124} and deadline_incomplete:
+            context.budget.mark_partial("run_budget_exhausted: command deadline reached")
+            raise SystemExit(124) from None
+        raise
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        registry = getattr(args, "_run_registry", None)
+        context = getattr(args, "_invocation_context", None)
+        if registry is not None and context is not None:
+            progress = getattr(args, "_progress_reporter", None)
+            if progress is not None:
+                progress.stop()
+            snapshot = context.budget.snapshot()
+            machine_output = bool(getattr(args, "json", False)) or getattr(
+                args, "output_format", ""
+            ) in {"json", "sarif"}
+            if not machine_output:
+                from .progress import format_runtime_summary
+
+                print(format_runtime_summary(snapshot), file=sys.stderr)
+            partial = failed or bool(snapshot.get("partial"))
+            state = "failed" if failed else ("partial" if partial else "completed")
+            reason = snapshot.get("reason") or ("command failed" if failed else "")
+            try:
+                closeout = registry.close_run(
+                    context.run_id,
+                    state=state,
+                    reason=str(reason),
+                )
+                registry.reconcile()
+                if closeout.get("action") == "cleanup_failed":
+                    context.budget.mark_partial(str(closeout.get("reason") or "cleanup failed"))
+                    print(
+                        f"lope runtime closeout warning: {closeout.get('reason')}; "
+                        f"inspect: lope jobs list",
+                        file=sys.stderr,
+                    )
+                    if not failed:
+                        raise SystemExit(1)
+            except Exception as exc:
+                print(f"lope runtime closeout warning: {exc}", file=sys.stderr)
+                if not failed:
+                    raise SystemExit(1)
+
+
+def _ensure_runtime(args, cfg, pool):
+    if args is None or getattr(args, "_invocation_context", None) is not None:
+        return
+    from .jobs import RunRegistry
+    from .runtime import InvocationContext, RunBudget
+
+    mode = getattr(args, "command", None) or "unknown"
+    budget = RunBudget(
+        mode=mode,
+        run_timeout=cfg.run_timeout,
+        allow_unbounded_run=cfg.allow_unbounded_run,
+        max_external_calls=cfg.max_calls,
+        max_input_bytes=cfg.max_input_bytes,
+        max_output_bytes=cfg.max_output_bytes,
+    )
+    registry = RunRegistry()
+    registry.reconcile()
+    registry.start_run(
+        mode,
+        run_id=budget.run_id,
+        run_timeout=None if budget.deadline is None else budget.deadline - budget.started_at,
+    )
+    context = InvocationContext(
+        budget=budget,
+        mode=mode,
+        stage="provider",
+        metadata={"registry": registry},
+    )
+    from .progress import ProgressReporter
+
+    progress = ProgressReporter(
+        budget,
+        registry=registry,
+        run_id=budget.run_id,
+    )
+    context.metadata["progress"] = progress
+    progress.start()
+    args._run_registry = registry
+    args._invocation_context = context
+    args._progress_reporter = progress
+    if pool is not None:
+        pool._invocation_context = context
+
+
+def _ensure_gate_runtime(args):
+    from .config import load_layered
+
+    overrides = {}
+    for key in ("run_timeout", "allow_unbounded_run"):
+        value = getattr(args, key, None)
+        if value is not None:
+            overrides[key] = value
+    cfg = load_layered(cli_overrides=overrides)
+    _ensure_runtime(args, cfg, None)
+    return getattr(args, "_invocation_context", None)
 
 
 def _ensure_config(args=None):
@@ -1527,6 +1984,10 @@ def _ensure_config(args=None):
             cli_overrides["timeout"] = args.timeout
         if getattr(args, "parallel", None) is not None:
             cli_overrides["parallel"] = args.parallel
+        for key in ("run_timeout", "allow_unbounded_run", "max_calls", "max_chunks", "request_policy"):
+            value = getattr(args, key, None)
+            if value is not None:
+                cli_overrides[key] = value
 
     cfg = load_layered(cli_overrides=cli_overrides)
 
@@ -1551,69 +2012,305 @@ def _ensure_config(args=None):
                 parallel=cfg.parallel,
                 providers=cfg.providers,
                 learned_adapters=cfg.learned_adapters,
+                run_timeout=cfg.run_timeout,
+                allow_unbounded_run=cfg.allow_unbounded_run,
+                max_calls=cfg.max_calls,
+                max_input_bytes=cfg.max_input_bytes,
+                max_output_bytes=cfg.max_output_bytes,
+                request_policy=cfg.request_policy,
+                max_chunks=cfg.max_chunks,
             )
 
     pool = build_validator_pool(cfg)
+    _ensure_runtime(args, cfg, pool)
+    if args is not None:
+        args._resolved_lope_cfg = cfg
     return cfg, pool
 
 
-def _http_llm_fallback(system: str, user: str, llm_url: str) -> str:
+def _pool_validator_objects(pool):
+    return list(
+        getattr(pool, "_validators", None)
+        or getattr(pool, "_ordered", None)
+        or []
+    )
+
+
+def _plan_external_request(
+    args,
+    cfg,
+    pool,
+    prompt: str,
+    *,
+    mode: str,
+    allow_chunk: bool = True,
+    source_label: str = "input",
+    kind: str = "auto",
+    overlap_lines: int = 0,
+    units=None,
+    extra_calls: Optional[int] = None,
+    policy: Optional[str] = None,
+    chunk_extra_calls: Optional[int] = None,
+):
+    """Plan and record one request; reject unsafe work before validator launch."""
+
+    from .request_plan import PlanAction, plan_request
+
+    validators = _pool_validator_objects(pool)
+    if extra_calls is None:
+        extra_calls = 1 if getattr(args, "synth", False) else 0
+    plan = plan_request(
+        prompt,
+        mode=mode,
+        validators=validators,
+        policy=policy or cfg.request_policy,
+        max_chunks=cfg.max_chunks,
+        max_calls=cfg.max_calls,
+        max_input_bytes=cfg.max_input_bytes,
+        per_call_timeout=cfg.timeout,
+        parallel=cfg.parallel,
+        allow_chunk=allow_chunk,
+        source_label=source_label,
+        kind=kind,
+        overlap_lines=overlap_lines,
+        extra_calls=extra_calls,
+        chunk_extra_calls=max(
+            extra_calls,
+            1 if mode in ("ask", "pipe", "compare") else 0,
+        ) if chunk_extra_calls is None else chunk_extra_calls,
+        units=units,
+    )
+    context = getattr(pool, "_invocation_context", None)
+    if context is not None:
+        context.add_request_plan(plan.to_dict())
+    if plan.action == PlanAction.REJECT:
+        if getattr(args, "json", False):
+            from .output import print_json
+
+            payload = context.budget.snapshot() if context is not None else {"schema_version": 1}
+            payload.update({
+                "partial": False,
+                "reason": "input_limit",
+                "request_plan": plan.to_dict(),
+                "error": plan.reason,
+            })
+            print_json(payload)
+        else:
+            print(f"Request rejected before launch: {plan.reason}", file=sys.stderr)
+            if plan.mitigation:
+                print(f"  {plan.mitigation}", file=sys.stderr)
+        raise SystemExit(2)
+
+    if not getattr(args, "json", False):
+        print(
+            "Request plan: "
+            f"{plan.action.value} · {plan.profile.utf8_bytes} bytes · "
+            f"{plan.required_chunks} chunk(s) · {plan.planned_calls} call(s) · "
+            f"concurrency {plan.maximum_concurrency} · "
+            f"nominal ceiling {plan.nominal_wall_ceiling_seconds:g}s",
+            file=sys.stderr,
+        )
+    return plan
+
+
+def _write_chunk_evidence(pool, mode: str, rows: List[Dict[str, Any]]) -> Optional[str]:
+    """Persist bounded chunk outcomes for diagnosis; never store request bodies."""
+
+    if not rows:
+        return None
+    import tempfile
+
+    from .redaction import redact_text
+
+    context = getattr(pool, "_invocation_context", None)
+    run_id = context.run_id if context is not None else "standalone"
+    root = Path(os.environ.get("LOPE_RUN_OUTPUT_DIR") or Path.cwd() / "lope-runs")
+    destination_dir = root / run_id
+    destination_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        destination_dir.chmod(0o700)
+    except OSError:
+        pass
+    destination = destination_dir / f"{mode}-chunks.json"
+    safe_rows = []
+    for row in rows:
+        answer = redact_text(str(row.get("answer") or ""))
+        raw = answer.encode("utf-8")
+        omitted = max(0, len(raw) - 64 * 1024)
+        if omitted:
+            answer = raw[:64 * 1024].decode("utf-8", errors="ignore")
+        safe_rows.append({
+            "chunk": int(row.get("chunk", 0)),
+            "chunk_label": redact_text(str(row.get("chunk_label") or "")),
+            "validator": redact_text(str(row.get("validator") or "")),
+            "answer": answer,
+            "error": redact_text(str(row.get("error") or "")) or None,
+            "omitted_answer_bytes": omitted,
+        })
+    payload = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "mode": mode,
+        "chunks": safe_rows,
+    }
+    fd, temporary = tempfile.mkstemp(
+        prefix=".chunks-", suffix=".tmp", dir=str(destination_dir)
+    )
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+    if context is not None:
+        context.budget.add_artifact(
+            f"{mode}_chunk_evidence",
+            str(destination),
+            chunks=len(safe_rows),
+        )
+    return str(destination)
+
+
+def _run_chunked_fanout(args, cfg, pool, plan, *, task: str, mode: str):
+    """Map bounded chunks, preserve partial evidence, then synthesize once."""
+
+    per_validator: Dict[str, Dict[str, Any]] = {}
+    evidence: List[Dict[str, Any]] = []
+    total = len(plan.chunks)
+    for chunk in plan.chunks:
+        prompt = (
+            f"You are processing chunk {chunk.index + 1}/{total} of a larger {mode} request.\n"
+            f"Provenance: {chunk.label}\n"
+            f"Overall task: {task[:4096]}\n"
+            "Answer only from this chunk. Preserve source labels and do not invent missing context.\n\n"
+            + chunk.content
+        )
+        print(
+            f"  → {mode} chunk {chunk.index + 1}/{total}: {chunk.label}",
+            file=sys.stderr,
+        )
+        chunk_results = _fanout_generate(pool, prompt, cfg.timeout)
+        for name, answer, error in chunk_results:
+            bucket = per_validator.setdefault(name, {"answers": [], "errors": []})
+            if answer:
+                bucket["answers"].append(
+                    f"[chunk {chunk.index + 1}/{total}: {chunk.label}]\n{answer}"
+                )
+            if error:
+                bucket["errors"].append(
+                    f"chunk {chunk.index + 1}/{total}: {error}"
+                )
+            evidence.append({
+                "chunk": chunk.index + 1,
+                "chunk_label": chunk.label,
+                "validator": name,
+                "answer": answer,
+                "error": error,
+            })
+
+    combined = []
+    for name, bucket in per_validator.items():
+        answers = "\n\n".join(bucket["answers"])
+        errors = "; ".join(bucket["errors"])
+        combined.append((name, answers, None if answers else (errors or "no chunk answer")))
+    evidence_path = _write_chunk_evidence(pool, mode, evidence)
+
+    synth = None
+    quorum_ok, _reason = _mark_fanout_quorum(pool, combined)
+    # Chunk plans for ask/pipe/compare always include exactly one bounded
+    # reduction call in their forecast, including a caller-forced one-chunk
+    # plan. Execute it unconditionally when the map stage has quorum.
+    if quorum_ok:
+        from .synthesis import build_synthesis_prompt
+
+        primary = pool.primary_validator()
+        truncations = []
+        synth_prompt = build_synthesis_prompt(
+            task,
+            combined,
+            anonymous=getattr(args, "anonymous", False),
+            truncation_log=truncations,
+        )
+        synth = _execute_bounded_synthesis(
+            args,
+            pool,
+            primary,
+            synth_prompt,
+            cfg.timeout,
+            truncations,
+        )
+    return combined, synth, evidence_path
+
+
+def _http_llm_fallback(
+    system: str,
+    user: str,
+    llm_url: str,
+    *,
+    timeout: float = 120,
+    context=None,
+) -> str:
     """Optional hosted-LLM fallback when the primary validator can't draft.
 
     Only used when the user explicitly sets LOPE_LLM_URL. Not the default
     path — the default path is to use the primary CLI validator itself.
     """
-    import json as _json
-    import urllib.error
-    import urllib.request
-
     llm_model = os.environ.get("LOPE_LLM_MODEL", "gpt-4o-mini")
     llm_api_key = os.environ.get("LOPE_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    payload = _json.dumps({
-        "model": llm_model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "max_tokens": 100000,
-        "temperature": 0.7,
-    }).encode("utf-8")
+    try:
+        max_tokens = max(1, int(os.environ.get("LOPE_LLM_MAX_TOKENS", "4096")))
+    except ValueError:
+        max_tokens = 4096
     headers = {"Content-Type": "application/json"}
     if llm_api_key:
         headers["Authorization"] = f"Bearer {llm_api_key}"
-    req = urllib.request.Request(
-        f"{llm_url}/chat/completions",
-        data=payload,
-        headers=headers,
-    )
+
+    from .generic_validators import GenericHttpValidator
+
+    validator = GenericHttpValidator({
+        "name": "http-fallback",
+        "type": "http",
+        "url": f"{llm_url.rstrip('/')}/chat/completions",
+        "headers": headers,
+        "body": {
+            "model": llm_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": "{prompt}"},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.7,
+        },
+        "response_path": "choices.0.message.content",
+        "max_tokens": max_tokens,
+        "response_limit": 2 * 1024 * 1024,
+    })
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = _json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            pass
-        hints = []
-        if e.code == 401:
-            hints.append("Set LOPE_LLM_API_KEY (or OPENAI_API_KEY).")
-        elif e.code == 400:
-            hints.append(f"Model '{llm_model}' may not exist. Set LOPE_LLM_MODEL.")
-        elif e.code == 404:
-            hints.append(f"Endpoint not found at {llm_url}. Check LOPE_LLM_URL.")
+        from .invocation import invoke_generate
+
+        return invoke_generate(
+            validator,
+            user,
+            timeout,
+            context=context,
+            stage="http_fallback",
+        )
+    except Exception as exc:
         raise RuntimeError(
-            f"LLM fallback failed — HTTP {e.code}: {e.reason}\n"
-            f"  URL:   {llm_url}/chat/completions\n"
-            f"  Model: {llm_model}\n"
-            f"  Body:  {body}\n"
-            + ("  " + "\n  ".join(hints) if hints else "")
+            f"LLM fallback failed — {exc}; URL={llm_url.rstrip('/')}/chat/completions; "
+            f"model={llm_model}"
         ) from None
-    except urllib.error.URLError as e:
-        raise RuntimeError(
-            f"LLM fallback failed — cannot reach {llm_url}: {e.reason}"
-        ) from None
-    return data["choices"][0]["message"]["content"]
 
 
 def _load_negotiate_context(args) -> str:
@@ -1765,7 +2462,16 @@ def _cmd_negotiate(args):
                         f"[drafter fallback] {drafter_chain[idx-1].name} failed{reason}; "
                         f"trying {drafter.name}..."
                     )
-                return drafter.generate(combined, timeout=timeout)
+                from .invocation import invoke_generate
+
+                invocation = getattr(pool, "_invocation_context", None)
+                return invoke_generate(
+                    drafter,
+                    combined,
+                    timeout,
+                    context=invocation,
+                    stage="negotiate_draft",
+                )
             except NotImplementedError:
                 last_err_msg = "does not support drafting"
                 errors.append(
@@ -1787,7 +2493,13 @@ def _cmd_negotiate(args):
         llm_url = os.environ.get("LOPE_LLM_URL")
         if llm_url:
             try:
-                return _http_llm_fallback(system, user, llm_url)
+                return _http_llm_fallback(
+                    system,
+                    user,
+                    llm_url,
+                    timeout=timeout,
+                    context=getattr(pool, "_invocation_context", None),
+                )
             except Exception as e:
                 errors.append(f"HTTP fallback ({llm_url}): {str(e).splitlines()[0][:120]}")
         # Complete failure — give the user actionable next steps.
@@ -1806,7 +2518,7 @@ def _cmd_negotiate(args):
     # ``context`` rather than ``goal`` so the sprint doc title stays clean.
     try:
         augmented_context = _load_negotiate_context(args)
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
         print(f"lope negotiate failed: {e}", file=sys.stderr)
         sys.exit(2)
     brain_block = _maybe_brain_context_block(args)
@@ -1815,6 +2527,17 @@ def _cmd_negotiate(args):
             augmented_context = f"{brain_block}\n{augmented_context}"
         else:
             augmented_context = brain_block
+
+    _plan_external_request(
+        args,
+        cfg,
+        pool,
+        f"## Goal\n{args.goal}\n\n## Original evidence brief\n{augmented_context}",
+        mode="negotiate",
+        allow_chunk=False,
+        source_label="negotiation evidence",
+        kind="markdown",
+    )
 
     preflight_lines = _negotiate_prompt_profile(
         goal=args.goal,
@@ -1838,7 +2561,7 @@ def _cmd_negotiate(args):
     )
     try:
         result = negotiator.converge(args.goal, augmented_context)
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
         print()
         print("lope negotiate failed:")
         for line in str(e).splitlines():
@@ -1958,8 +2681,28 @@ def _cmd_execute(args):
             print(f"\n>>> Phase {phase.index}: {phase.name}")
             print(f">>> Delegating to {primary.name} ({cfg.timeout}s timeout)...")
 
+            _plan_external_request(
+                args,
+                cfg,
+                pool,
+                phase_blurb,
+                mode="execute",
+                allow_chunk=False,
+                source_label=f"phase {phase.index} implementation",
+                kind="markdown",
+            )
+
             try:
-                output = primary.generate(phase_blurb, timeout=cfg.timeout)
+                from .invocation import invoke_generate
+
+                output = invoke_generate(
+                    primary,
+                    phase_blurb,
+                    cfg.timeout,
+                    context=getattr(pool, "_invocation_context", None),
+                    stage="implementation",
+                    metadata={"implementation": True},
+                )
             except NotImplementedError:
                 return ImplementationResult(
                     ok=False,
@@ -1983,7 +2726,14 @@ def _cmd_execute(args):
                         print(f">>> self-heal succeeded, retrying phase "
                               f"{phase.index} with learned adapter")
                         try:
-                            output = primary.generate(phase_blurb, timeout=cfg.timeout)
+                            output = invoke_generate(
+                                primary,
+                                phase_blurb,
+                                cfg.timeout,
+                                context=getattr(pool, "_invocation_context", None),
+                                stage="implementation",
+                                metadata={"implementation": True},
+                            )
                         except Exception as e2:
                             return ImplementationResult(
                                 ok=False,
@@ -2018,13 +2768,22 @@ def _cmd_execute(args):
             print(f">>> {primary.name} returned {len(output or '')} chars")
             return ImplementationResult(ok=True, summary=summary)
 
-    gate_runner = _make_execute_gate_runner(args, cfg.timeout) if getattr(args, "gates", False) else None
+    gate_runner = _make_execute_gate_runner(
+        args,
+        cfg.timeout,
+        context=getattr(pool, "_invocation_context", None),
+    ) if getattr(args, "gates", False) else None
     executor = PhaseExecutor(
         validator_pool=pool,
         implementation_fn=implementation_fn,
         max_rounds_per_phase=3,
         timeout_seconds=cfg.timeout,
         gate_runner=gate_runner,
+        request_policy=cfg.request_policy,
+        max_chunks=cfg.max_chunks,
+        max_calls=cfg.max_calls,
+        max_input_bytes=cfg.max_input_bytes,
+        parallel=cfg.parallel,
     )
     report = executor.run(doc)
 
@@ -2086,8 +2845,18 @@ def _cmd_implement(args):
         print(render_dry_run(doc, roster))
         return
 
-    gate_runner = _make_execute_gate_runner(args, cfg.timeout) if getattr(args, "gates", False) else None
-    report = run_implement(doc, cfg, roster, gate_runner=gate_runner)
+    gate_runner = _make_execute_gate_runner(
+        args,
+        cfg.timeout,
+        context=getattr(args, "_invocation_context", None),
+    ) if getattr(args, "gates", False) else None
+    report = run_implement(
+        doc,
+        cfg,
+        roster,
+        gate_runner=gate_runner,
+        invocation_context=getattr(args, "_invocation_context", None),
+    )
 
     auditor = Auditor()
     print(f"\n{auditor.scorecard(report)}")
@@ -2120,10 +2889,23 @@ def _try_self_heal_from_generate(primary, err_msg: str, pool, timeout: int):
               f"(pool has only {primary.name})")
         return None
 
-    healer = SelfHealer()
-    if not healer.should_attempt(primary.name, reviewer_available=True):
+    healer = getattr(pool, "_self_healer", None)
+    if healer is None:
+        healer = SelfHealer()
+        pool._self_healer = healer
+    runtime_context = getattr(pool, "_invocation_context", None)
+    remaining = (
+        runtime_context.budget.remaining_seconds()
+        if runtime_context is not None else None
+    )
+    if not healer.should_attempt(
+        primary.name,
+        reviewer_available=True,
+        remaining_seconds=remaining,
+    ):
         print(">>> self-heal skipped: set LOPE_SELF_HEAL=1 to enable "
-              "automatic adapter repair on flag breaks")
+              "automatic adapter repair on flag breaks, ensure one reviewer, "
+              "and leave enough run budget for help + review + smoke")
         return None
 
     # Reconstruct the failing argv as best we can — the exception message
@@ -2142,6 +2924,7 @@ def _try_self_heal_from_generate(primary, err_msg: str, pool, timeout: int):
         old_argv=old_argv,
         stderr=err_msg,
         reviewer=reviewers[0],
+        context=runtime_context,
     )
 
 
@@ -2213,69 +2996,114 @@ def _cmd_audit(args):
 # VERDICT block parsing, no phase retries, no majority vote. The user gets
 # N perspectives; synthesis is their job (or a future `--synth` flag).
 
-def _fanout_generate(pool, prompt, timeout):
+def _fanout_generate(
+    pool,
+    prompt,
+    timeout,
+    context=None,
+    *,
+    prompts_by_validator=None,
+):
     """Parallel .generate() across every available validator in pool.
 
     Returns a list of (validator_name, answer_text, error_message) tuples,
     ordered by thread completion (fastest first). Never raises — errors
     are surfaced per-validator so one slow/broken CLI doesn't blank the run.
     """
-    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    import queue
+    import threading
     import time
+    from .runtime import BudgetExhausted
+
+    if context is None:
+        context = getattr(pool, "_invocation_context", None)
 
     validators = (
         getattr(pool, "_validators", None)
         or getattr(pool, "_ordered", None)
         or []
     )
-    available = [v for v in validators if v.available()]
+    available = [
+        validator
+        for validator in validators
+        if not callable(getattr(validator, "available", None)) or validator.available()
+    ]
+    if prompts_by_validator is not None:
+        available = [v for v in available if v.name in prompts_by_validator]
     if not available:
         return []
     out = []
-    ex = ThreadPoolExecutor(max_workers=min(len(available), 5))
-    try:
-        futures = {ex.submit(v.generate, prompt, timeout): v for v in available}
-        pending = set(futures)
-        # Give adapters a tiny cleanup grace after their own timeout. Built-in
-        # and generic subprocess validators kill their child process at
-        # `timeout`; they still need a moment to raise/format the error so the
-        # user sees `pi timed out after 10s` instead of a less-specific fanout
-        # deadline message.
-        cleanup_grace = 0.0
-        if timeout is not None:
-            cleanup_grace = min(2.0, max(0.25, float(timeout) * 0.10))
-        deadline = time.monotonic() + timeout + cleanup_grace if timeout is not None else None
+    parallel = bool(getattr(pool, "_parallel", True))
+    if context is not None:
+        # The command budget is the fan-out ceiling.  A per-call timeout is not
+        # a wave timeout: sequential pools legitimately need N call windows,
+        # and a typed transient retry is a separate accounted call.  Each
+        # invocation still enforces its own hard timeout underneath this loop.
+        deadline = time.monotonic() + context.budget.remaining_seconds()
+    elif timeout is not None:
+        multiplier = 1 if parallel else max(1, len(available))
+        deadline = time.monotonic() + float(timeout) * multiplier
+    else:
+        deadline = None
+    completed = queue.Queue()
+    active = {}
+    pending = list(available)
 
-        while pending:
-            wait_timeout = None
-            if deadline is not None:
-                wait_timeout = max(0.0, deadline - time.monotonic())
-                if wait_timeout <= 0:
-                    break
+    def worker(validator):
+        try:
+            from .invocation import invoke_generate
 
-            done, pending = wait(
-                pending,
-                timeout=wait_timeout,
-                return_when=FIRST_COMPLETED,
+            selected_prompt = (
+                prompts_by_validator.get(validator.name, prompt)
+                if prompts_by_validator else prompt
             )
-            if not done:
-                break
-            for fut in done:
-                v = futures[fut]
-                try:
-                    text = fut.result()
-                    out.append((v.name, text or "", None))
-                except Exception as e:
-                    out.append((v.name, "", str(e)))
+            answer = invoke_generate(
+                validator,
+                selected_prompt,
+                timeout,
+                context=context,
+                stage=context.stage if context is not None else "fanout",
+            )
+            completed.put((validator, answer, None))
+        except BudgetExhausted as exc:
+            completed.put((validator, "", f"{exc.reason}: {exc}"))
+        except Exception as exc:
+            completed.put((validator, "", str(exc)))
 
-        # Defensive guardrail: validators should enforce their own subprocess
-        # timeouts, but a buggy adapter must not keep the fan-out silent.
-        for fut in pending:
-            v = futures[fut]
-            fut.cancel()
-            out.append((v.name, "", f"{v.name} fanout timed out after {timeout}s"))
-    finally:
-        ex.shutdown(wait=False, cancel_futures=True)
+    max_workers = min(len(available), 5) if parallel else 1
+    while pending or active:
+        while pending and len(active) < max_workers:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            validator = pending.pop(0)
+            thread = threading.Thread(target=worker, args=(validator,), daemon=True)
+            active[validator.name] = (validator, thread)
+            thread.start()
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        if remaining is not None and remaining <= 0:
+            break
+        try:
+            validator, answer, error = completed.get(timeout=remaining)
+        except queue.Empty:
+            break
+        active.pop(validator.name, None)
+        out.append((validator.name, answer, error))
+
+    for validator in pending:
+        out.append((validator.name, "", "run_budget_exhausted: validator was never scheduled"))
+    for validator, _thread in active.values():
+        out.append((validator.name, "", f"{validator.name} fanout timed out after {timeout}s"))
+    if context is not None and active:
+        cleanup_deadline = time.monotonic() + min(
+            5.0,
+            context.budget.remaining_seconds(include_cleanup=True),
+        )
+        for _validator, thread in active.values():
+            thread.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
+    if context is not None and context.budget.remaining_seconds() <= 0:
+        context.budget.mark_partial(
+            "run_budget_exhausted: fan-out reached the command deadline"
+        )
     return out
 
 
@@ -2298,46 +3126,72 @@ def _render_fanout(label, results, machine_json=False):
     print()
 
 
-def _build_report_via_divided_files(
-    args, target_path, validator_names, pool, cfg, brain_context_block
-):
-    """Walk a file tree (or single file) and produce one merged consensus report.
+def _fanout_quorum(results, *, expected_names=None):
+    """Return (ok, reason) for majority substantive raw answers."""
 
-    Each chunk goes through :func:`run_consensus_review` independently;
-    the chunk-level reports are then collapsed into a single report by
-    concatenating raw findings, dedup-merging globally, and rescoring
-    against the same validator roster.
-    """
-    from .divide import split_files
-    from .review import ReviewReport, run_consensus_review
+    from .output_validity import classify_output
+
+    grouped: Dict[str, List[Tuple[str, Optional[str]]]] = {}
+    for name, answer, error in results:
+        grouped.setdefault(str(name), []).append((answer, error))
+    expected = len(set(expected_names or grouped))
+    required = expected // 2 + 1
+    usable = 0
+    for rows in grouped.values():
+        if any(
+            not error
+            and bool((answer or "").strip())
+            and classify_output(answer).substantive
+            for answer, error in rows
+        ):
+            usable += 1
+    ok = usable >= required
+    return ok, (
+        "" if ok else f"inconclusive: substantive-result quorum {usable}/{required} "
+        f"not met from {expected} validators"
+    )
+
+
+def _mark_fanout_quorum(pool, results):
+    try:
+        expected_names = pool.names()
+    except Exception:
+        expected_names = None
+    ok, reason = _fanout_quorum(results, expected_names=expected_names)
+    if not ok:
+        context = getattr(pool, "_invocation_context", None)
+        if context is not None:
+            context.budget.mark_partial(reason)
+    return ok, reason
+
+
+def _build_report_via_semantic_chunks(
+    args,
+    *,
+    chunks,
+    target_label,
+    fallback_source,
+    validator_names,
+    pool,
+    cfg,
+    brain_context_block,
+):
+    """Review bounded chunks, then deterministically merge structured findings."""
+
     from .findings import merge_findings, score_consensus
+    from .review import ReviewReport, run_consensus_review
 
     similarity = getattr(args, "similarity", 0.85)
     min_consensus = getattr(args, "min_consensus", 0.0)
-
-    chunks, skipped = split_files(target_path)
-    if skipped and not args.json:
-        print(f"Skipped {len(skipped)} non-reviewable file(s):")
-        for entry in skipped[:10]:
-            print(f"  - {entry.path}: {entry.reason}")
-        if len(skipped) > 10:
-            print(f"  ... and {len(skipped) - 10} more")
-        print()
-
-    if not chunks:
-        print("No reviewable files found.", file=sys.stderr)
-        sys.exit(1)
-
-    chunk_reports = []
     aggregated_findings = []
     aggregated_errors = []
     raw_results_combined = []
     parse_methods_combined: Dict[str, str] = {}
+    evidence = []
 
     for chunk in chunks:
-        # Progress goes to stderr so machine-readable formats (json,
-        # sarif, markdown-pr) keep stdout clean for downstream parsers.
         print(f"  → reviewing {chunk.label}", file=sys.stderr)
+        source = getattr(chunk, "path", None) or fallback_source
         chunk_report = run_consensus_review(
             target=chunk.label,
             content=chunk.content,
@@ -2346,24 +3200,38 @@ def _build_report_via_divided_files(
             pool=pool,
             timeout=cfg.timeout,
             similarity=similarity,
-            min_consensus=0.0,  # filter at the global level once we merge
+            min_consensus=0.0,
             brain_context_block=brain_context_block,
-            source_label=chunk.path,
+            source_label=source,
         )
-        chunk_reports.append(chunk_report)
+        anchor = getattr(chunk, "anchor_line", None)
+        if anchor is not None:
+            for finding in chunk_report.findings:
+                if finding.line is None:
+                    finding.line = anchor
         aggregated_findings.extend(chunk_report.findings)
         aggregated_errors.extend(chunk_report.errors)
         raw_results_combined.extend(chunk_report.raw_results)
+        for row in chunk_report.raw_results:
+            evidence.append({
+                "chunk": getattr(chunk, "index", 0) + 1,
+                "chunk_label": chunk.label,
+                "validator": row.get("validator"),
+                "answer": row.get("answer"),
+                "error": row.get("error"),
+            })
         for name, method in chunk_report.parse_methods.items():
             parse_methods_combined.setdefault(name, method)
 
     merged = merge_findings(aggregated_findings, similarity_threshold=similarity)
     scored = score_consensus(merged, validator_names)
     if min_consensus > 0:
-        scored = [s for s in scored if s.consensus_score >= min_consensus]
-
+        scored = [item for item in scored if item.consensus_score >= min_consensus]
+    evidence_path = _write_chunk_evidence(pool, "review", evidence)
+    if evidence_path and not getattr(args, "json", False):
+        print(f"Chunk evidence: {evidence_path}", file=sys.stderr)
     return ReviewReport(
-        target=f"{target_path} ({len(chunks)} chunk(s))",
+        target=f"{target_label} ({len(chunks)} chunk(s))",
         focus=args.focus or "(default)",
         validators=list(validator_names),
         raw_results=raw_results_combined,
@@ -2378,16 +3246,67 @@ def _build_report_via_divided_files(
     )
 
 
+def _build_report_via_divided_files(
+    args, target_path, validator_names, pool, cfg, brain_context_block
+):
+    """Walk a file tree (or single file) and produce one merged consensus report.
+
+    Each chunk goes through :func:`run_consensus_review` independently;
+    the chunk-level reports are then collapsed into a single report by
+    concatenating raw findings, dedup-merging globally, and rescoring
+    against the same validator roster.
+    """
+    from .divide import pack_file_chunks, split_files
+    from .request_plan import SemanticUnit
+
+    chunks, skipped = split_files(target_path)
+    if skipped and not args.json:
+        print(f"Skipped {len(skipped)} non-reviewable file(s):")
+        for entry in skipped[:10]:
+            print(f"  - {entry.path}: {entry.reason}")
+        if len(skipped) > 10:
+            print(f"  ... and {len(skipped) - 10} more")
+        print()
+
+    if not chunks:
+        print("No reviewable files found.", file=sys.stderr)
+        sys.exit(1)
+
+    packed = pack_file_chunks(chunks)
+    units = [
+        SemanticUnit(item.label, item.content, kind="file")
+        for item in packed
+    ]
+    plan = _plan_external_request(
+        args,
+        cfg,
+        pool,
+        "".join(item.content for item in packed),
+        mode="review",
+        allow_chunk=True,
+        source_label=str(target_path),
+        kind="auto",
+        units=units,
+        policy="chunk",
+    )
+    return _build_report_via_semantic_chunks(
+        args,
+        chunks=plan.chunks,
+        target_label=str(target_path),
+        fallback_source="(packed files)",
+        validator_names=validator_names,
+        pool=pool,
+        cfg=cfg,
+        brain_context_block=brain_context_block,
+    )
+
+
 def _build_report_via_divided_hunks(
     args, target_path, content, validator_names, pool, cfg, brain_context_block
 ):
     """Parse a unified diff into hunks and review each one independently."""
-    from .divide import split_diff_hunks
-    from .review import ReviewReport, run_consensus_review
-    from .findings import merge_findings, score_consensus
-
-    similarity = getattr(args, "similarity", 0.85)
-    min_consensus = getattr(args, "min_consensus", 0.0)
+    from .divide import pack_hunk_chunks, split_diff_hunks
+    from .request_plan import SemanticUnit
 
     hunks = split_diff_hunks(content)
     if not hunks:
@@ -2397,57 +3316,32 @@ def _build_report_via_divided_hunks(
         )
         sys.exit(2)
 
-    aggregated_findings = []
-    aggregated_errors = []
-    raw_results_combined = []
-    parse_methods_combined: Dict[str, str] = {}
-
-    for hunk in hunks:
-        # Progress goes to stderr so machine-readable formats (json,
-        # sarif, markdown-pr) keep stdout clean for downstream parsers.
-        print(f"  → reviewing {hunk.label}", file=sys.stderr)
-        chunk_report = run_consensus_review(
-            target=hunk.label,
-            content=hunk.content,
-            focus=args.focus,
-            validators=validator_names,
-            pool=pool,
-            timeout=cfg.timeout,
-            similarity=similarity,
-            min_consensus=0.0,
-            brain_context_block=brain_context_block,
-            source_label=hunk.path,
-        )
-        # Re-anchor any findings without explicit line numbers to the
-        # hunk's new-line range so SARIF / merge views point at the
-        # new file rather than the in-hunk offset.
-        for finding in chunk_report.findings:
-            if finding.line is None:
-                finding.line = hunk.new_start
-        aggregated_findings.extend(chunk_report.findings)
-        aggregated_errors.extend(chunk_report.errors)
-        raw_results_combined.extend(chunk_report.raw_results)
-        for name, method in chunk_report.parse_methods.items():
-            parse_methods_combined.setdefault(name, method)
-
-    merged = merge_findings(aggregated_findings, similarity_threshold=similarity)
-    scored = score_consensus(merged, validator_names)
-    if min_consensus > 0:
-        scored = [s for s in scored if s.consensus_score >= min_consensus]
-
-    return ReviewReport(
-        target=f"{target_path} ({len(hunks)} hunk(s))",
-        focus=args.focus or "(default)",
-        validators=list(validator_names),
-        raw_results=raw_results_combined,
-        parse_methods=parse_methods_combined,
-        findings=aggregated_findings,
-        merged=merged,
-        scored=scored,
-        errors=aggregated_errors,
-        raw_count=len(aggregated_findings),
-        merged_count=len(merged),
-        fallback=len(aggregated_findings) == 0,
+    packed = pack_hunk_chunks(hunks)
+    units = [
+        SemanticUnit(item.label, item.content, kind="diff")
+        for item in packed
+    ]
+    plan = _plan_external_request(
+        args,
+        cfg,
+        pool,
+        "".join(item.content for item in packed),
+        mode="review",
+        allow_chunk=True,
+        source_label=str(target_path),
+        kind="diff",
+        units=units,
+        policy="chunk",
+    )
+    return _build_report_via_semantic_chunks(
+        args,
+        chunks=plan.chunks,
+        target_label=str(target_path),
+        fallback_source="(packed diff hunks)",
+        validator_names=validator_names,
+        pool=pool,
+        cfg=cfg,
+        brain_context_block=brain_context_block,
     )
 
 
@@ -2495,19 +3389,26 @@ def _build_report_via_roles(
         or []
     )
     name_to_validator = {v.name: v for v in pool_validators}
-    raw: List[Tuple[str, str, Optional[str]]] = []
+    role_prompts = {}
+    missing: List[Tuple[str, str, Optional[str]]] = []
     for v_name in validator_names:
         validator = name_to_validator.get(v_name)
         role = role_assignments.get(v_name)
         if validator is None or role is None:
-            raw.append((v_name, "", "validator unavailable"))
+            missing.append((v_name, "", "validator unavailable"))
             continue
-        prompt = build_role_prompt(role, base_prompt)
-        try:
-            text = validator.generate(prompt, timeout=cfg.timeout)
-            raw.append((v_name, text or "", None))
-        except Exception as exc:
-            raw.append((v_name, "", str(exc)))
+        role_prompts[v_name] = build_role_prompt(role, base_prompt)
+    raw = _fanout_generate(
+        pool,
+        base_prompt,
+        cfg.timeout,
+        context=(
+            getattr(pool, "_invocation_context", None).child(stage="role_review")
+            if getattr(pool, "_invocation_context", None) is not None else None
+        ),
+        prompts_by_validator=role_prompts,
+    )
+    raw.extend(missing)
 
     raw_results = [
         {
@@ -2692,6 +3593,71 @@ def _maybe_emit_brain_log(args, *, journal_text: str) -> Optional[str]:
     return f"Brain journal: {path}"
 
 
+def _execute_bounded_synthesis(
+    args,
+    pool,
+    primary,
+    prompt: str,
+    timeout: int,
+    truncations,
+):
+    from .request_plan import PlanAction, plan_request
+    from .synthesis import SynthesisResult, run_synthesis
+
+    cfg = getattr(args, "_resolved_lope_cfg", None)
+    context = getattr(pool, "_invocation_context", None)
+    plan = plan_request(
+        prompt,
+        mode="synthesis",
+        validators=[primary] if primary is not None else [],
+        policy=getattr(cfg, "request_policy", "auto"),
+        max_chunks=getattr(cfg, "max_chunks", 32),
+        max_calls=getattr(cfg, "max_calls", 96),
+        max_input_bytes=getattr(cfg, "max_input_bytes", 16 * 1024 * 1024),
+        per_call_timeout=timeout,
+        parallel=False,
+        allow_chunk=False,
+        source_label="bounded synthesis input",
+        kind="markdown",
+    )
+    if context is not None:
+        context.add_request_plan(plan.to_dict())
+    if plan.action == PlanAction.REJECT:
+        if context is not None:
+            context.budget.mark_partial("budget_exhausted_optional: " + plan.reason)
+        return SynthesisResult(
+            ok=False,
+            primary=getattr(primary, "name", "") if primary is not None else "",
+            error="input_limit: " + plan.reason,
+            truncations=list(truncations or []),
+        )
+    if context is not None and not context.budget.can_fund(
+        timeout,
+        calls=1,
+        input_bytes=len(prompt.encode("utf-8")),
+    ):
+        reason = "budget_exhausted_optional: synthesis skipped; full call cannot fit"
+        context.budget.mark_partial(reason)
+        context.budget.add_event(
+            "optional_stage_skipped",
+            stage="synthesis",
+            reason=reason,
+        )
+        return SynthesisResult(
+            ok=False,
+            primary=getattr(primary, "name", "") if primary is not None else "",
+            error=reason,
+            truncations=list(truncations or []),
+        )
+    return run_synthesis(
+        primary,
+        prompt,
+        timeout,
+        truncations=truncations,
+        context=context.child(stage="synthesis") if context is not None else None,
+    )
+
+
 def _maybe_synthesize(args, pool, results, *, task, structured_findings=None, timeout=None):
     """Run a synthesis pass when ``--synth`` is set; otherwise return None.
 
@@ -2702,7 +3668,7 @@ def _maybe_synthesize(args, pool, results, *, task, structured_findings=None, ti
     """
     if not getattr(args, "synth", False):
         return None
-    from .synthesis import build_synthesis_prompt, run_synthesis
+    from .synthesis import build_synthesis_prompt
 
     primary = None
     if pool is not None:
@@ -2711,16 +3677,25 @@ def _maybe_synthesize(args, pool, results, *, task, structured_findings=None, ti
         except Exception:
             primary = None
 
+    truncations = []
     prompt = build_synthesis_prompt(
         task=task,
         responses=results,
         structured_findings=structured_findings,
         anonymous=getattr(args, "anonymous", False),
+        truncation_log=truncations,
     )
-    return run_synthesis(primary, prompt, timeout or 240)
+    return _execute_bounded_synthesis(
+        args,
+        pool,
+        primary,
+        prompt,
+        timeout or 240,
+        truncations,
+    )
 
 
-def _render_fanout_with_synth(label, results, synth, machine_json=False):
+def _render_fanout_with_synth(label, results, synth, machine_json=False, context=None):
     """Combined renderer that prints fan-out + synthesis or JSON-bundles them.
 
     ``synth`` is the optional :class:`SynthesisResult` from
@@ -2732,15 +3707,15 @@ def _render_fanout_with_synth(label, results, synth, machine_json=False):
     from .synthesis import format_synthesis
 
     if machine_json:
-        payload = {
-            "responses": fanout_payload(label, results),
-        }
+        payload = context.budget.snapshot() if context is not None else {"schema_version": 1}
+        payload["responses"] = fanout_payload(label, results)
         if synth is not None:
             payload["synthesis"] = {
                 "ok": synth.ok,
                 "primary": synth.primary,
                 "text": format_synthesis(synth, machine_json=True) if synth.ok else "",
                 "error": synth.error if not synth.ok else "",
+                "truncations": list(synth.truncations),
             }
         print_json(payload)
         return
@@ -2759,6 +3734,16 @@ def _cmd_ask(args):
     if args.context:
         prompt = f"{args.context}\n\n{prompt}"
     prompt = _maybe_apply_brain_context(args, prompt)
+    plan = _plan_external_request(
+        args,
+        cfg,
+        pool,
+        prompt,
+        mode="ask",
+        allow_chunk=True,
+        source_label="ask input",
+        kind="markdown",
+    )
 
     preview = prompt[:100].replace("\n", " ")
     if not args.json:
@@ -2766,14 +3751,38 @@ def _cmd_ask(args):
         print(f"Validators: {', '.join(validator_names)}")
         print(f"Timeout: {cfg.timeout}s per validator\n")
 
-    results = _fanout_generate(pool, prompt, cfg.timeout)
+    if plan.action.value == "chunk":
+        results, synth, evidence_path = _run_chunked_fanout(
+            args,
+            cfg,
+            pool,
+            plan,
+            task=args.question,
+            mode="ask",
+        )
+        if evidence_path and not args.json:
+            print(f"Chunk evidence: {evidence_path}", file=sys.stderr)
+    else:
+        results = _fanout_generate(pool, prompt, cfg.timeout)
+        synth = None
     if not results:
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
-    synth = _maybe_synthesize(args, pool, results, task=prompt, timeout=cfg.timeout)
-    _render_fanout_with_synth("answer", results, synth, machine_json=args.json)
+    quorum_ok, quorum_reason = _mark_fanout_quorum(pool, results)
+    if plan.action.value != "chunk":
+        synth = _maybe_synthesize(
+            args, pool, results, task=prompt, timeout=cfg.timeout
+        ) if quorum_ok else None
+    _render_fanout_with_synth(
+        "answer", results, synth, machine_json=args.json,
+        context=getattr(pool, "_invocation_context", None),
+    )
     _print_brain_log_ack(args, machine_json=args.json,
                          journal_text=f"[[Lope]] ask: {args.question[:120]} [[Makakoo OS]]")
+    if not quorum_ok:
+        if not args.json:
+            print(quorum_reason, file=sys.stderr)
+        sys.exit(1)
 
 
 def _cmd_review(args):
@@ -2837,6 +3846,17 @@ def _cmd_review(args):
 
     cfg, pool = _ensure_config(args)
     validator_names = [v.name for v in getattr(pool, "_validators", [])] or pool.names()
+    plan = _plan_external_request(
+        args,
+        cfg,
+        pool,
+        prompt,
+        mode="review",
+        allow_chunk=True,
+        source_label=str(file_path),
+        kind="auto",
+        overlap_lines=2,
+    )
 
     if not args.json:
         print(f"\nLope review: {file_path}  ({len(content)} chars)")
@@ -2844,13 +3864,80 @@ def _cmd_review(args):
         print(f"Focus: {focus[:80]}{'...' if len(focus) > 80 else ''}")
         print(f"Timeout: {cfg.timeout}s per validator\n")
 
-    results = _fanout_generate(pool, prompt, cfg.timeout)
+    if plan.action.value == "chunk":
+        report = _build_report_via_semantic_chunks(
+            args,
+            chunks=plan.chunks,
+            target_label=str(file_path),
+            fallback_source=str(file_path),
+            validator_names=validator_names,
+            pool=pool,
+            cfg=cfg,
+            brain_context_block=None,
+        )
+        results = [
+            (row.get("validator") or "", row.get("answer") or "", row.get("error"))
+            for row in report.raw_results
+        ]
+        quorum_ok, quorum_reason = _mark_fanout_quorum(pool, results)
+        synth = _maybe_synthesize(
+            args,
+            pool,
+            results,
+            task=f"Review of {file_path} — focus: {focus}",
+            structured_findings=report.scored,
+            timeout=cfg.timeout,
+        ) if quorum_ok else None
+        from .review import render_report
+        from .synthesis import format_synthesis
+
+        if args.json:
+            payload = getattr(pool, "_invocation_context").budget.snapshot()
+            payload["review"] = report.to_dict()
+            if synth is not None:
+                payload["synthesis"] = {
+                    "ok": synth.ok,
+                    "primary": synth.primary,
+                    "text": format_synthesis(synth, machine_json=True) if synth.ok else "",
+                    "error": synth.error,
+                    "truncations": list(synth.truncations),
+                }
+            from .output import print_json
+
+            print_json(payload)
+        else:
+            print(render_report(report, output_format="text"), end="")
+            if synth is not None:
+                print(format_synthesis(synth, machine_json=False))
+        _print_brain_log_ack(
+            args,
+            machine_json=args.json,
+            journal_text=(
+                f"[[Lope]] bounded review of `{file_path}` — focus: {focus[:80]}. "
+                "[[Makakoo OS]]"
+            ),
+        )
+        if not quorum_ok:
+            if not args.json:
+                print(quorum_reason, file=sys.stderr)
+            sys.exit(1)
+        return
+    else:
+        results = _fanout_generate(pool, prompt, cfg.timeout)
+        synth = None
     if not results:
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
-    synth_task = f"Review of {file_path} — focus: {focus}"
-    synth = _maybe_synthesize(args, pool, results, task=synth_task, timeout=cfg.timeout)
-    _render_fanout_with_synth("review", results, synth, machine_json=args.json)
+    quorum_ok, quorum_reason = _mark_fanout_quorum(pool, results)
+    if plan.action.value != "chunk":
+        synth_task = f"Review of {file_path} — focus: {focus}"
+        synth = _maybe_synthesize(
+            args, pool, results, task=synth_task, timeout=cfg.timeout
+        ) if quorum_ok else None
+    _render_fanout_with_synth(
+        "review", results, synth, machine_json=args.json,
+        context=getattr(pool, "_invocation_context", None),
+    )
     _print_brain_log_ack(
         args,
         machine_json=args.json,
@@ -2859,6 +3946,10 @@ def _cmd_review(args):
             "[[Makakoo OS]]"
         ),
     )
+    if not quorum_ok:
+        if not args.json:
+            print(quorum_reason, file=sys.stderr)
+        sys.exit(1)
 
 
 def _cmd_review_consensus(args, file_path, content, output_format):
@@ -2911,6 +4002,20 @@ def _cmd_review_consensus(args, file_path, content, output_format):
 
     brain_context_block = _maybe_brain_context_block(args)
 
+    request_plan = None
+    if divide_mode is None:
+        request_plan = _plan_external_request(
+            args,
+            cfg,
+            pool,
+            content,
+            mode="review",
+            allow_chunk=not bool(roles_spec),
+            source_label=str(file_path),
+            kind="auto",
+            overlap_lines=2,
+        )
+
     if divide_mode == "files":
         report = _build_report_via_divided_files(
             args, file_path, validator_names, pool, cfg, brain_context_block
@@ -2922,6 +4027,17 @@ def _cmd_review_consensus(args, file_path, content, output_format):
     elif roles_spec:
         report = _build_report_via_roles(
             args, file_path, content, validator_names, pool, cfg, brain_context_block, roles_spec
+        )
+    elif request_plan is not None and request_plan.action.value == "chunk":
+        report = _build_report_via_semantic_chunks(
+            args,
+            chunks=request_plan.chunks,
+            target_label=str(file_path),
+            fallback_source=str(file_path),
+            validator_names=validator_names,
+            pool=pool,
+            cfg=cfg,
+            brain_context_block=brain_context_block,
         )
     else:
         report = run_consensus_review(
@@ -2939,12 +4055,17 @@ def _cmd_review_consensus(args, file_path, content, output_format):
     if not report.raw_results and not report.errors:
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
+    consensus_tuples = [
+        (row.get("validator") or "", row.get("answer") or "", row.get("error"))
+        for row in report.raw_results
+    ]
+    quorum_ok, quorum_reason = _mark_fanout_quorum(pool, consensus_tuples)
 
     # --remember: persist consensus findings to the local SQLite memory.
     # Honors LOPE_MEMORY=off (visible no-op) and LOPE_MEMORY_DB override.
     memory_message = None
     memory_summary = None
-    if getattr(args, "remember", False):
+    if getattr(args, "remember", False) and quorum_ok:
         from .memory import open_memory
 
         store = open_memory()
@@ -2978,8 +4099,8 @@ def _cmd_review_consensus(args, file_path, content, output_format):
     # to the primary, then either append the synthesis block in human modes
     # or attach it under ``synthesis`` in JSON / SARIF properties.
     synth = None
-    if getattr(args, "synth", False):
-        from .synthesis import build_synthesis_prompt, run_synthesis
+    if getattr(args, "synth", False) and quorum_ok:
+        from .synthesis import build_synthesis_prompt
 
         # In structured mode the synthesizer should see merged findings
         # rather than the full transcripts, unless the caller explicitly
@@ -3002,13 +4123,22 @@ def _cmd_review_consensus(args, file_path, content, output_format):
             f"{report.merged_count} merged findings from "
             f"{len(report.validators)} validators."
         )
+        truncations = []
         synth_prompt = build_synthesis_prompt(
             task=synth_task,
             responses=responses_for_synth,
             structured_findings=report.scored,
             anonymous=getattr(args, "anonymous", False),
+            truncation_log=truncations,
         )
-        synth = run_synthesis(primary, synth_prompt, cfg.timeout)
+        synth = _execute_bounded_synthesis(
+            args,
+            pool,
+            primary,
+            synth_prompt,
+            cfg.timeout,
+            truncations,
+        )
 
     rendered = render_report(
         report,
@@ -3026,6 +4156,17 @@ def _cmd_review_consensus(args, file_path, content, output_format):
     # SARIF stays spec-compliant: synthesis goes to stderr and so does the
     # ``--remember`` ack so the JSON payload stays a clean SARIF run.
     if fmt == "sarif":
+        import json as _j
+
+        try:
+            sarif_payload = _j.loads(rendered)
+            runtime_payload = getattr(pool, "_invocation_context").budget.snapshot()
+            runs = sarif_payload.get("runs") or []
+            if runs:
+                runs[0].setdefault("properties", {})["lope_runtime"] = runtime_payload
+            rendered = _j.dumps(sarif_payload, indent=2, sort_keys=True)
+        except (AttributeError, _j.JSONDecodeError, TypeError):
+            pass
         print(rendered, end="" if rendered.endswith("\n") else "\n")
         if synth is not None:
             from .synthesis import format_synthesis as _fmt_synth
@@ -3034,6 +4175,9 @@ def _cmd_review_consensus(args, file_path, content, output_format):
             print(memory_message, file=sys.stderr)
         if brain_ack:
             print(brain_ack, file=sys.stderr)
+        if not quorum_ok:
+            print(quorum_reason, file=sys.stderr)
+            sys.exit(1)
         return
 
     if fmt == "json":
@@ -3042,6 +4186,21 @@ def _cmd_review_consensus(args, file_path, content, output_format):
             payload = _j.loads(rendered)
         except _j.JSONDecodeError:
             payload = {"raw": rendered}
+        context = getattr(pool, "_invocation_context", None)
+        if context is not None:
+            runtime_payload = context.budget.snapshot()
+            for key in (
+                "schema_version",
+                "run_id",
+                "plan",
+                "timing",
+                "limits",
+                "partial",
+                "reason",
+                "artifacts",
+                "calls",
+            ):
+                payload[key] = runtime_payload[key]
         if synth is not None:
             from .synthesis import format_synthesis as _fmt_synth
             payload["synthesis"] = {
@@ -3049,6 +4208,7 @@ def _cmd_review_consensus(args, file_path, content, output_format):
                 "primary": synth.primary,
                 "text": _fmt_synth(synth, machine_json=True) if synth.ok else "",
                 "error": synth.error if not synth.ok else "",
+                "truncations": list(synth.truncations),
             }
         if memory_summary is not None:
             payload["memory"] = memory_summary
@@ -3056,7 +4216,13 @@ def _cmd_review_consensus(args, file_path, content, output_format):
             payload["memory"] = {"disabled": True, "note": memory_message}
         if brain_ack:
             payload["brain"] = {"note": brain_ack}
+        if not quorum_ok:
+            payload["schema_version"] = 1
+            payload["partial"] = True
+            payload["reason"] = quorum_reason
         print(_j.dumps(payload, indent=2, sort_keys=True))
+        if not quorum_ok:
+            sys.exit(1)
         return
 
     # Human / markdown / markdown-pr — append synthesis + memory footer.
@@ -3068,6 +4234,9 @@ def _cmd_review_consensus(args, file_path, content, output_format):
         print(memory_message)
     if brain_ack:
         print(brain_ack)
+    if not quorum_ok:
+        print(quorum_reason, file=sys.stderr)
+        sys.exit(1)
 
 
 # ─── vote ─────────────────────────────────────────────────────────────
@@ -3097,6 +4266,32 @@ def _parse_vote(raw_answer, options):
     return None
 
 
+def _choice_quorum(pool, picks):
+    """Majority of selected validators must produce a parseable choice."""
+
+    try:
+        expected_names = set(pool.names())
+    except Exception:
+        expected_names = {str(item[0]) for item in picks}
+    valid = {
+        str(name)
+        for name, chosen, _raw, error in picks
+        if chosen is not None and not error
+    }
+    required = len(expected_names) // 2 + 1
+    ok = len(valid) >= required
+    reason = (
+        "" if ok else
+        f"inconclusive: parseable-choice quorum {len(valid)}/{required} "
+        f"not met from {len(expected_names)} validators"
+    )
+    if not ok:
+        context = getattr(pool, "_invocation_context", None)
+        if context is not None:
+            context.budget.mark_partial(reason)
+    return ok, reason
+
+
 def _cmd_vote(args):
     """Each validator picks one of --options; tally and print winner."""
     options = [o.strip() for o in args.options.split(",") if o.strip()]
@@ -3117,6 +4312,16 @@ def _cmd_vote(args):
         + "\n".join(f"  - {o}" for o in options)
         + "\n\nReply with ONLY the option label. No explanation. No prose. "
         "Just one of: " + ", ".join(options)
+    )
+    _plan_external_request(
+        args,
+        cfg,
+        pool,
+        prompt,
+        mode="vote",
+        allow_chunk=False,
+        source_label="vote question and options",
+        kind="markdown",
     )
 
     if not args.json:
@@ -3147,6 +4352,8 @@ def _cmd_vote(args):
             tally[chosen] += 1
         picks.append((name, chosen, answer, None))
 
+    quorum_ok, quorum_reason = _choice_quorum(pool, picks)
+
     synth = _maybe_synthesize(
         args,
         pool,
@@ -3157,7 +4364,7 @@ def _cmd_vote(args):
             f"Tally: " + ", ".join(f"{o}={tally[o]}" for o in options)
         ),
         timeout=cfg.timeout,
-    )
+    ) if quorum_ok else None
 
     if args.json:
         import json as _j
@@ -3180,8 +4387,17 @@ def _cmd_vote(args):
                 "primary": synth.primary,
                 "text": _fmt_synth(synth, machine_json=True) if synth.ok else "",
                 "error": synth.error if not synth.ok else "",
+                "truncations": list(synth.truncations),
             }
+        context = getattr(pool, "_invocation_context", None)
+        if context is not None:
+            payload["runtime"] = context.budget.snapshot()
+        if not quorum_ok:
+            payload["partial"] = True
+            payload["reason"] = quorum_reason
         print(_j.dumps(payload, indent=2))
+        if not quorum_ok:
+            sys.exit(1)
         return
 
     # Human: per-voter first, then tally summary, then winner.
@@ -3212,6 +4428,9 @@ def _cmd_vote(args):
         from .synthesis import format_synthesis as _fmt_synth
         print()
         print(_fmt_synth(synth, machine_json=False))
+    if not quorum_ok:
+        print(quorum_reason, file=sys.stderr)
+        sys.exit(1)
 
 
 def _vote_winner(tally):
@@ -3258,6 +4477,20 @@ def _cmd_compare(args):
 
     cfg, pool = _ensure_config(args)
     validator_names = [v.name for v in getattr(pool, "_validators", [])] or pool.names()
+    plan = _plan_external_request(
+        args,
+        cfg,
+        pool,
+        prompt,
+        mode="compare",
+        allow_chunk=True,
+        source_label=f"A={file_a}; B={file_b}",
+        kind="markdown",
+        extra_calls=1 if getattr(args, "synth", False) else 0,
+        chunk_extra_calls=(
+            len(validator_names) + 1 + (1 if getattr(args, "synth", False) else 0)
+        ),
+    )
 
     if not args.json:
         print("\nLope compare:")
@@ -3267,6 +4500,33 @@ def _cmd_compare(args):
         print(f"  Validators: {', '.join(validator_names)}")
         print(f"  Timeout: {cfg.timeout}s per validator\n")
 
+    if plan.action.value == "chunk":
+        _mapped, summary_result, evidence_path = _run_chunked_fanout(
+            args,
+            cfg,
+            pool,
+            plan,
+            task=(
+                f"Build aligned, provenance-preserving summaries of File A and File B "
+                f"against criteria: {criteria}. Do not pick a winner yet."
+            ),
+            mode="compare",
+        )
+        if evidence_path and not args.json:
+            print(f"Chunk evidence: {evidence_path}", file=sys.stderr)
+        if summary_result is None or not summary_result.ok:
+            reason = summary_result.error if summary_result is not None else "no bounded summary"
+            print(f"lope compare: shaped summary failed: {reason}", file=sys.stderr)
+            sys.exit(1)
+        summary_raw = summary_result.text.encode("utf-8")
+        summary = summary_raw[:64 * 1024].decode("utf-8", errors="ignore")
+        prompt = (
+            f"Compare File A and File B against explicit criteria: {criteria}.\n\n"
+            "The following aligned summary was built from bounded source chunks; "
+            "chunk provenance labels are part of the evidence.\n\n"
+            f"{summary}\n\n"
+            "Reply with ONLY the letter A or B. No explanation."
+        )
     results = _fanout_generate(pool, prompt, cfg.timeout)
     if not results:
         print("No validators available. Run: lope status", file=sys.stderr)
@@ -3287,6 +4547,8 @@ def _cmd_compare(args):
             tally[chosen] += 1
         picks.append((name, chosen, answer, None))
 
+    quorum_ok, quorum_reason = _choice_quorum(pool, picks)
+
     synth = _maybe_synthesize(
         args,
         pool,
@@ -3296,7 +4558,7 @@ def _cmd_compare(args):
             f"Tally: A={tally['A']}  B={tally['B']}"
         ),
         timeout=cfg.timeout,
-    )
+    ) if quorum_ok else None
 
     if args.json:
         import json as _j
@@ -3318,8 +4580,17 @@ def _cmd_compare(args):
                 "primary": synth.primary,
                 "text": _fmt_synth(synth, machine_json=True) if synth.ok else "",
                 "error": synth.error if not synth.ok else "",
+                "truncations": list(synth.truncations),
             }
+        context = getattr(pool, "_invocation_context", None)
+        if context is not None:
+            payload["runtime"] = context.budget.snapshot()
+        if not quorum_ok:
+            payload["partial"] = True
+            payload["reason"] = quorum_reason
         print(_j.dumps(payload, indent=2))
+        if not quorum_ok:
+            sys.exit(1)
         return
 
     for name, chosen, raw, error in picks:
@@ -3348,6 +4619,9 @@ def _cmd_compare(args):
         from .synthesis import format_synthesis as _fmt_synth
         print()
         print(_fmt_synth(synth, machine_json=False))
+    if not quorum_ok:
+        print(quorum_reason, file=sys.stderr)
+        sys.exit(1)
 
 
 # ─── pipe ─────────────────────────────────────────────────────────────
@@ -3372,6 +4646,16 @@ def _cmd_pipe(args):
 
     cfg, pool = _ensure_config(args)
     validator_names = [v.name for v in getattr(pool, "_validators", [])] or pool.names()
+    plan = _plan_external_request(
+        args,
+        cfg,
+        pool,
+        prompt,
+        mode="pipe",
+        allow_chunk=True,
+        source_label="stdin",
+        kind="auto",
+    )
 
     if not args.json:
         preview = prompt.strip()[:80].replace("\n", " ")
@@ -3379,12 +4663,32 @@ def _cmd_pipe(args):
         print(f"Validators: {', '.join(validator_names)}")
         print(f"Timeout: {cfg.timeout}s per validator\n")
 
-    results = _fanout_generate(pool, prompt, cfg.timeout)
+    if plan.action.value == "chunk":
+        results, synth, evidence_path = _run_chunked_fanout(
+            args,
+            cfg,
+            pool,
+            plan,
+            task="Synthesize the answer to the complete piped input.",
+            mode="pipe",
+        )
+        if evidence_path and not args.json:
+            print(f"Chunk evidence: {evidence_path}", file=sys.stderr)
+    else:
+        results = _fanout_generate(pool, prompt, cfg.timeout)
+        synth = None
     if not results:
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
-    synth = _maybe_synthesize(args, pool, results, task=prompt, timeout=cfg.timeout)
-    _render_fanout_with_synth("answer", results, synth, machine_json=args.json)
+    quorum_ok, quorum_reason = _mark_fanout_quorum(pool, results)
+    if plan.action.value != "chunk":
+        synth = _maybe_synthesize(
+            args, pool, results, task=prompt, timeout=cfg.timeout
+        ) if quorum_ok else None
+    _render_fanout_with_synth(
+        "answer", results, synth, machine_json=args.json,
+        context=getattr(pool, "_invocation_context", None),
+    )
     _print_brain_log_ack(
         args,
         machine_json=args.json,
@@ -3396,6 +4700,10 @@ def _cmd_pipe(args):
 
     # Partial-failure semantics
     any_error = any(e for _, _, e in results)
+    if not quorum_ok:
+        if not args.json:
+            print(quorum_reason, file=sys.stderr)
+        sys.exit(1)
     if any_error and args.require_all:
         sys.exit(1)
 
@@ -3428,9 +4736,13 @@ def _cmd_team(args):
     elif sub_cmd == "remove":
         _team_remove(args, cfg, cfg_path)
     elif sub_cmd == "test":
-        _team_test(args, cfg)
+        pool = build_validator_pool(cfg)
+        _ensure_runtime(args, cfg, pool)
+        _team_test(args, cfg, pool)
     elif sub_cmd == "health":
-        _team_health(args, cfg)
+        pool = build_validator_pool(cfg)
+        _ensure_runtime(args, cfg, pool)
+        _team_health(args, cfg, pool)
     else:
         _team_list(cfg)
 
@@ -3816,7 +5128,7 @@ def _team_build_http_entry(name: str, args):
         serialized = json.dumps(body)
         if "{max_tokens}" not in serialized:
             body = json.loads(serialized)
-            body["{max_tokens}"] = _max_tokens
+            body["max_tokens"] = _max_tokens
 
     entry: Dict[str, Any] = {
         "name": name,
@@ -3882,10 +5194,8 @@ def _team_remove(args, cfg, cfg_path):
         print("     No validators remaining — add one with `lope team add`.")
 
 
-def _team_test(args, cfg):
+def _team_test(args, cfg, pool=None):
     """Send one prompt to a named validator via generate(); print the raw response."""
-    from .generic_validators import build_provider, ConfigError
-
     name = args.name.strip()
     if not name:
         print("ERROR: name required", file=sys.stderr)
@@ -3893,35 +5203,35 @@ def _team_test(args, cfg):
 
     # Lookup order mirrors build_validator_pool: custom providers first, then
     # hardcoded + auto via the pool builder (which knows how to instantiate them).
-    entry = next((p for p in cfg.providers if p.get("name") == name), None)
-    if entry is not None:
-        try:
-            validator = build_provider(entry)
-        except ConfigError as e:
-            print(f"ERROR: cannot build {name!r}: {e}", file=sys.stderr)
-            sys.exit(1)
-    else:
-        try:
-            pool = build_validator_pool(cfg)
-        except Exception as e:
-            print(f"ERROR: could not build validator pool: {e}", file=sys.stderr)
-            sys.exit(1)
-        validator = next(
-            (v for v in pool.validators() if getattr(v, "name", None) == name),
-            None,
+    try:
+        resolved_pool = pool or build_validator_pool(cfg)
+    except Exception as exc:
+        print(f"ERROR: could not build validator pool: {exc}", file=sys.stderr)
+        sys.exit(1)
+    validator = next(
+        (v for v in resolved_pool.validators() if getattr(v, "name", None) == name),
+        None,
+    )
+    if validator is None:
+        print(
+            f"ERROR: {name!r} is not on the team.\n"
+            f"       Active: {', '.join(cfg.validators) or '(none)'}.\n"
+            f"       Run `lope team list` to see the full roster.",
+            file=sys.stderr,
         )
-        if validator is None:
-            print(
-                f"ERROR: {name!r} is not on the team.\n"
-                f"       Active: {', '.join(cfg.validators) or '(none)'}.\n"
-                f"       Run `lope team list` to see the full roster.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+        sys.exit(1)
 
     print(f"[test] {name} ← {args.prompt!r}")
     try:
-        out = validator.generate(args.prompt, timeout=args.timeout)
+        from .invocation import invoke_generate
+
+        out = invoke_generate(
+            validator,
+            args.prompt,
+            args.timeout,
+            context=getattr(resolved_pool, "_invocation_context", None),
+            stage="team_test",
+        )
     except AttributeError:
         print(
             f"ERROR: {name!r} does not support generate() (validate-only validator). "
@@ -3943,21 +5253,26 @@ def _team_test(args, cfg):
     print(f"[OK] {name} responded ({len(text)} chars).")
 
 
-def _team_health(args, cfg):
+def _team_health(args, cfg, pool=None):
     """Preflight health check on every active validator.
 
     Tests binary availability, basic response within timeout, and output
     quality. Exits 0 if all pass, non-zero if any fail.
     """
-    import time
-    from .validators import build_validator_pool
-
-
     timeout = getattr(args, "timeout", 30)
     prompt = getattr(args, "prompt", None) or "Say OK only."
 
-    pool = build_validator_pool(cfg)
+    pool = pool or build_validator_pool(cfg)
     all_validators = pool.validators()
+    raw = _fanout_generate(pool, prompt, timeout)
+    by_name = {name: (answer, error) for name, answer, error in raw}
+    context = getattr(pool, "_invocation_context", None)
+    durations = {}
+    if context is not None:
+        for record in context.budget.records():
+            durations[record.validator] = durations.get(record.validator, 0.0) + record.duration_seconds
+
+    from .request_plan import plan_request
 
     results = []
     for v in all_validators:
@@ -3969,57 +5284,46 @@ def _team_health(args, cfg):
                 "reason": "binary not found",
                 "elapsed": 0.0,
                 "chars": 0,
+                "probe": "tiny",
             })
             continue
-
-        started = time.time()
-        try:
-            out = v.generate(prompt, timeout=timeout)
-        except AttributeError:
-            results.append({
-                "name": vname,
-                "status": "SKIP",
-                "reason": "no generate() support (validate-only)",
-                "elapsed": time.time() - started,
-                "chars": 0,
-            })
-            continue
-        except RuntimeError as e:
-            msg = str(e)
-            if "timed out" in msg.lower():
-                reason = f"timeout after {timeout}s"
-            elif "binary not found" in msg.lower():
-                reason = "binary not found"
-            else:
-                reason = f"error: {msg[:120]}"
+        answer, error = by_name.get(vname, ("", "not scheduled"))
+        elapsed = durations.get(vname, 0.0)
+        text = (answer or "").strip()
+        chars = len(text)
+        admission = plan_request(
+            prompt,
+            mode="team_health",
+            validators=[v],
+            policy="auto",
+            per_call_timeout=timeout,
+            allow_chunk=True,
+        ).to_dict()
+        if error:
+            lowered = error.lower()
+            reason = (
+                f"timeout after {timeout}s"
+                if "timed out" in lowered or "timeout" in lowered
+                else f"error: {error[:120]}"
+            )
             results.append({
                 "name": vname,
                 "status": "FAIL",
                 "reason": reason,
-                "elapsed": time.time() - started,
+                "elapsed": elapsed,
                 "chars": 0,
+                "probe": "tiny",
+                "admission": admission,
             })
-            continue
-        except Exception as e:
-            results.append({
-                "name": vname,
-                "status": "FAIL",
-                "reason": f"error: {e}",
-                "elapsed": time.time() - started,
-                "chars": 0,
-            })
-            continue
-
-        elapsed = time.time() - started
-        text = (out or "").strip()
-        chars = len(text)
-        if not text:
+        elif not text:
             results.append({
                 "name": vname,
                 "status": "FAIL",
                 "reason": "returned empty output",
                 "elapsed": elapsed,
                 "chars": 0,
+                "probe": "tiny",
+                "admission": admission,
             })
         else:
             results.append({
@@ -4028,11 +5332,25 @@ def _team_health(args, cfg):
                 "reason": f"{elapsed:.1f}s, {chars} chars",
                 "elapsed": elapsed,
                 "chars": chars,
+                "probe": "tiny",
+                "admission": admission,
             })
 
     if args.json:
         import json
-        print(json.dumps(results, indent=2))
+        payload = {
+            "schema_version": 1,
+            "probe": "tiny_prompt_health",
+            "results": results,
+            "summary": {
+                "passed": sum(item["status"] == "PASS" for item in results),
+                "failed": sum(item["status"] == "FAIL" for item in results),
+                "skipped": sum(item["status"] == "SKIP" for item in results),
+            },
+        }
+        if context is not None:
+            payload["runtime"] = context.budget.snapshot()
+        print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         for r in results:
             status = r["status"]
@@ -4041,16 +5359,21 @@ def _team_health(args, cfg):
 
     failed = [r for r in results if r["status"] == "FAIL"]
     passed = [r for r in results if r["status"] == "PASS"]
-    print(f"\n{len(passed)} passed, {len(failed)} failed, "
-          f"{len(results) - len(passed) - len(failed)} skipped")
+    if not args.json:
+        print(f"\n{len(passed)} passed, {len(failed)} failed, "
+              f"{len(results) - len(passed) - len(failed)} skipped")
 
-    if failed:
+    if failed and not args.json:
         print("\nActionable fixes:")
         for f in failed:
             if "not found" in f["reason"]:
                 print(f"  - {f['name']}: install the CLI binary or add a custom provider")
             elif "timeout" in f["reason"]:
-                print(f"  - {f['name']}: increase timeout or use leaner model/config")
+                print(
+                    f"  - {f['name']}: tiny prompt timed out. Verify provider health first; "
+                    "for real workloads inspect request plan and prefer stdin/file transport "
+                    "or bounded chunking before increasing --timeout."
+                )
             else:
                 print(f"  - {f['name']}: {f['reason']}")
         sys.exit(1)

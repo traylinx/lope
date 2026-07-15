@@ -233,7 +233,10 @@ def run_consensus_review(
             }
         )
 
-    findings, parse_results, errors = parse_responses(raw, source_file=target)
+    findings, parse_results, errors = parse_responses(
+        raw,
+        source_file=source_label or target,
+    )
 
     merged = merge_findings(findings, similarity_threshold=similarity)
     scored = score_consensus(merged, list(validators))

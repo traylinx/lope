@@ -18,6 +18,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .runtime import (
+    DEFAULT_MAX_CHUNKS,
+    DEFAULT_MAX_EXTERNAL_CALLS,
+    DEFAULT_MAX_INPUT_BYTES,
+    DEFAULT_MAX_OUTPUT_BYTES,
+    DEFAULT_MODEL_CALL_TIMEOUT_SECONDS,
+)
+
 VERSION = 1
 
 
@@ -44,6 +52,13 @@ class LopeCfg:
     parallel: bool
     providers: List[Dict[str, Any]] = field(default_factory=list)
     learned_adapters: Dict[str, LearnedAdapter] = field(default_factory=dict)
+    run_timeout: Optional[int] = None
+    allow_unbounded_run: bool = False
+    max_calls: int = DEFAULT_MAX_EXTERNAL_CALLS
+    max_input_bytes: int = DEFAULT_MAX_INPUT_BYTES
+    max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES
+    request_policy: str = "auto"
+    max_chunks: int = DEFAULT_MAX_CHUNKS
 
 
 def default_path() -> str:
@@ -75,7 +90,7 @@ def _hydrate_cfg(data: Dict[str, Any]) -> Optional[LopeCfg]:
     primary = data.get("primary")
     if not isinstance(primary, str):
         return None
-    timeout = data.get("timeout", 480)
+    timeout = data.get("timeout", DEFAULT_MODEL_CALL_TIMEOUT_SECONDS)
     if not isinstance(timeout, int):
         return None
     parallel = data.get("parallel", True)
@@ -84,6 +99,23 @@ def _hydrate_cfg(data: Dict[str, Any]) -> Optional[LopeCfg]:
     providers = data.get("providers", [])
     if not isinstance(providers, list):
         providers = []
+    run_timeout = data.get("run_timeout")
+    if run_timeout is not None and (not isinstance(run_timeout, int) or run_timeout <= 0):
+        return None
+    allow_unbounded_run = data.get("allow_unbounded_run", False)
+    if not isinstance(allow_unbounded_run, bool):
+        return None
+    max_calls = data.get("max_calls", DEFAULT_MAX_EXTERNAL_CALLS)
+    max_input_bytes = data.get("max_input_bytes", DEFAULT_MAX_INPUT_BYTES)
+    max_output_bytes = data.get("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
+    max_chunks = data.get("max_chunks", DEFAULT_MAX_CHUNKS)
+    if not all(isinstance(v, int) and v > 0 for v in (
+        max_calls, max_input_bytes, max_output_bytes, max_chunks,
+    )):
+        return None
+    request_policy = data.get("request_policy", "auto")
+    if request_policy not in ("auto", "direct", "chunk"):
+        return None
 
     learned_raw = data.get("learned_adapters", {})
     learned: Dict[str, LearnedAdapter] = {}
@@ -110,6 +142,13 @@ def _hydrate_cfg(data: Dict[str, Any]) -> Optional[LopeCfg]:
         parallel=parallel,
         providers=providers,
         learned_adapters=learned,
+        run_timeout=run_timeout,
+        allow_unbounded_run=allow_unbounded_run,
+        max_calls=max_calls,
+        max_input_bytes=max_input_bytes,
+        max_output_bytes=max_output_bytes,
+        request_policy=request_policy,
+        max_chunks=max_chunks,
     )
 
 
@@ -185,7 +224,7 @@ def load_layered(
       cli_overrides: Argparse-derived dict with keys validators/primary/timeout/parallel.
 
     Layers, from lowest to highest precedence:
-      1. Built-in defaults (empty validators, 480s timeout, parallel=True)
+      1. Built-in defaults (empty validators, 960s timeout, parallel=True)
       2. User global config  (~/.lope/config.json)
       3. Per-project config  (./.lope/config.json in cwd, if present)
       4. Environment variables (LOPE_VALIDATORS, LOPE_PRIMARY, etc.)
@@ -205,10 +244,17 @@ def load_layered(
     merged: Dict[str, Any] = {
         "validators": [],
         "primary": "",
-        "timeout": 960,
+        "timeout": DEFAULT_MODEL_CALL_TIMEOUT_SECONDS,
         "parallel": True,
         "providers": [],
         "learned_adapters": {},
+        "run_timeout": None,
+        "allow_unbounded_run": False,
+        "max_calls": DEFAULT_MAX_EXTERNAL_CALLS,
+        "max_input_bytes": DEFAULT_MAX_INPUT_BYTES,
+        "max_output_bytes": DEFAULT_MAX_OUTPUT_BYTES,
+        "request_policy": "auto",
+        "max_chunks": DEFAULT_MAX_CHUNKS,
     }
 
     # Layer 2: user global
@@ -220,6 +266,13 @@ def load_layered(
         merged["parallel"] = global_cfg.parallel
         merged["providers"] = list(global_cfg.providers)
         merged["learned_adapters"] = dict(global_cfg.learned_adapters)
+        merged["run_timeout"] = global_cfg.run_timeout
+        merged["allow_unbounded_run"] = global_cfg.allow_unbounded_run
+        merged["max_calls"] = global_cfg.max_calls
+        merged["max_input_bytes"] = global_cfg.max_input_bytes
+        merged["max_output_bytes"] = global_cfg.max_output_bytes
+        merged["request_policy"] = global_cfg.request_policy
+        merged["max_chunks"] = global_cfg.max_chunks
 
     # Layer 3: per-project (./.lope/config.json in cwd)
     # Read raw JSON once — avoids a double _safe_read and lets us apply a
@@ -241,6 +294,15 @@ def load_layered(
                 merged["parallel"] = proj_raw["parallel"]
             if isinstance(proj_raw.get("providers"), list) and proj_raw["providers"]:
                 merged["providers"] = list(proj_raw["providers"])
+            if isinstance(proj_raw.get("run_timeout"), int) and proj_raw["run_timeout"] > 0:
+                merged["run_timeout"] = proj_raw["run_timeout"]
+            if isinstance(proj_raw.get("allow_unbounded_run"), bool):
+                merged["allow_unbounded_run"] = proj_raw["allow_unbounded_run"]
+            for key in ("max_calls", "max_input_bytes", "max_output_bytes", "max_chunks"):
+                if isinstance(proj_raw.get(key), int) and proj_raw[key] > 0:
+                    merged[key] = proj_raw[key]
+            if proj_raw.get("request_policy") in ("auto", "direct", "chunk"):
+                merged["request_policy"] = proj_raw["request_policy"]
             # learned_adapters intentionally NOT inherited from project config —
             # those are always user-global.
 
@@ -263,14 +325,43 @@ def load_layered(
     raw_sequential = env.get("LOPE_SEQUENTIAL", "")
     if raw_sequential.lower() in ("1", "true", "yes", "on"):
         merged["parallel"] = False
+    env_ints = {
+        "LOPE_RUN_TIMEOUT": "run_timeout",
+        "LOPE_MAX_CALLS": "max_calls",
+        "LOPE_MAX_INPUT_BYTES": "max_input_bytes",
+        "LOPE_MAX_OUTPUT_BYTES": "max_output_bytes",
+        "LOPE_MAX_CHUNKS": "max_chunks",
+    }
+    for env_name, key in env_ints.items():
+        raw = env.get(env_name)
+        if raw:
+            try:
+                value = int(raw)
+            except ValueError:
+                continue
+            if value > 0:
+                merged[key] = value
+    if env.get("LOPE_ALLOW_UNBOUNDED_RUN", "").lower() in ("1", "true", "yes", "on"):
+        merged["allow_unbounded_run"] = True
+        merged["run_timeout"] = None
+    if env.get("LOPE_REQUEST_POLICY") in ("auto", "direct", "chunk"):
+        merged["request_policy"] = env["LOPE_REQUEST_POLICY"]
 
     # Layer 5: CLI overrides (from argparse in cli.py)
     if cli_overrides:
         for key, value in cli_overrides.items():
             if value is None:
                 continue
-            if key in ("validators", "primary", "timeout", "parallel"):
+            if key in (
+                "validators", "primary", "timeout", "parallel", "run_timeout",
+                "allow_unbounded_run", "max_calls", "max_input_bytes",
+                "max_output_bytes", "request_policy", "max_chunks",
+            ):
                 merged[key] = value
+        if cli_overrides.get("allow_unbounded_run") is True:
+            merged["run_timeout"] = None
+        elif cli_overrides.get("run_timeout") is not None:
+            merged["allow_unbounded_run"] = False
 
     return LopeCfg(
         validators=merged["validators"],
@@ -279,6 +370,13 @@ def load_layered(
         parallel=merged["parallel"],
         providers=merged["providers"],
         learned_adapters=merged["learned_adapters"],
+        run_timeout=merged["run_timeout"],
+        allow_unbounded_run=merged["allow_unbounded_run"],
+        max_calls=merged["max_calls"],
+        max_input_bytes=merged["max_input_bytes"],
+        max_output_bytes=merged["max_output_bytes"],
+        request_policy=merged["request_policy"],
+        max_chunks=merged["max_chunks"],
     )
 
 
@@ -319,6 +417,20 @@ def save(cfg: LopeCfg, path: str) -> None:
             name: _adapter_to_dict(adapter)
             for name, adapter in cfg.learned_adapters.items()
         }
+    if cfg.run_timeout is not None:
+        data["run_timeout"] = cfg.run_timeout
+    if cfg.allow_unbounded_run:
+        data["allow_unbounded_run"] = True
+    if cfg.max_calls != DEFAULT_MAX_EXTERNAL_CALLS:
+        data["max_calls"] = cfg.max_calls
+    if cfg.max_input_bytes != DEFAULT_MAX_INPUT_BYTES:
+        data["max_input_bytes"] = cfg.max_input_bytes
+    if cfg.max_output_bytes != DEFAULT_MAX_OUTPUT_BYTES:
+        data["max_output_bytes"] = cfg.max_output_bytes
+    if cfg.request_policy != "auto":
+        data["request_policy"] = cfg.request_policy
+    if cfg.max_chunks != DEFAULT_MAX_CHUNKS:
+        data["max_chunks"] = cfg.max_chunks
 
     lock_path = path.with_suffix(path.suffix + ".lock")
     # The lock file is small, persistent, and safe to keep around —

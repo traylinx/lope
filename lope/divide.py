@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 from .redaction import redact_text
+from .request_plan import SemanticUnit, pack_units
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +162,39 @@ class HunkChunk:
             "old_start": self.old_start,
             "old_lines": self.old_lines,
             "content_chars": len(self.content),
+        }
+
+
+@dataclass
+class PackedReviewChunk:
+    """One bounded request containing adjacent files or diff hunks."""
+
+    content: str
+    labels: Tuple[str, ...]
+    paths: Tuple[str, ...]
+    index: int
+    total: int
+    anchor_line: Optional[int] = None
+
+    @property
+    def label(self) -> str:
+        preview = ", ".join(self.labels[:3])
+        if len(self.labels) > 3:
+            preview += f", +{len(self.labels) - 3} more"
+        return f"packed chunk {self.index + 1}/{self.total}: {preview}"
+
+    @property
+    def path(self) -> str:
+        return self.paths[0] if len(self.paths) == 1 else "(packed sources)"
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "index": self.index,
+            "total": self.total,
+            "labels": list(self.labels),
+            "paths": list(self.paths),
+            "content_bytes": len(self.content.encode("utf-8")),
+            "anchor_line": self.anchor_line,
         }
 
 
@@ -304,55 +338,132 @@ def _safe_relpath(path: Path, root: Path) -> str:
 
 
 def _chunk_text(path: str, text: str, *, max_chars: int) -> List[FileChunk]:
-    """Split ``text`` into FileChunks of ≤ ``max_chars`` characters.
+    """Split text semantically with a hard UTF-8 byte ceiling.
 
-    We split on line boundaries whenever possible so a single chunk
-    never bisects a function declaration. Each chunk records its
-    1-based source line range so consensus findings can point back to
-    the original file even after the split.
+    ``max_chars`` remains the public keyword for compatibility, but the value
+    now acts as the stricter byte ceiling. This fixes the historical single
+    overlong-line escape and is conservative for non-ASCII text.
     """
 
     if max_chars <= 0:
         max_chars = DEFAULT_MAX_CHARS
 
-    lines = text.splitlines(keepends=True)
-    if not lines:
-        # Empty file — emit a single empty chunk so callers see the file
-        # but have nothing to review (the validator will say "empty").
-        return [FileChunk(path=path, content="", start_line=1, end_line=1, chunk_total=1)]
+    from .request_plan import semantic_units
 
-    chunks_acc: List[List[str]] = []
-    current: List[str] = []
-    current_size = 0
-
-    for line in lines:
-        if current and current_size + len(line) > max_chars:
-            chunks_acc.append(current)
-            current = []
-            current_size = 0
-        current.append(line)
-        current_size += len(line)
-    if current:
-        chunks_acc.append(current)
-
+    kind = "python" if path.lower().endswith(".py") else "auto"
+    planned = pack_units(
+        semantic_units(text, source_label=path, kind=kind),
+        max_bytes=max_chars,
+        overlap_lines=0,
+    )
     out: List[FileChunk] = []
-    line_cursor = 1
-    total = len(chunks_acc)
-    for index, lines_in_chunk in enumerate(chunks_acc):
-        content = "".join(lines_in_chunk)
-        end_line = line_cursor + len(lines_in_chunk) - 1
+    total = len(planned)
+    for index, chunk in enumerate(planned):
         out.append(
             FileChunk(
                 path=path,
-                content=content,
-                start_line=line_cursor,
-                end_line=end_line,
+                content=chunk.content,
+                start_line=chunk.start_line,
+                end_line=chunk.end_line,
                 chunk_index=index,
                 chunk_total=total,
             )
         )
-        line_cursor = end_line + 1
     return out
+
+
+def _pack_review_units(
+    units: Sequence[SemanticUnit],
+    *,
+    paths_by_label: Dict[str, str],
+    anchors_by_label: Optional[Dict[str, int]] = None,
+    max_bytes: int,
+) -> List[PackedReviewChunk]:
+    def source_label(label: str) -> str:
+        if label in paths_by_label:
+            return label
+        # ``pack_units`` appends `` part N`` when one source unit itself
+        # exceeds the ceiling. Resolve that exploded label back to the
+        # original provenance key instead of indexing a map that cannot
+        # contain synthetic part labels.
+        for candidate in sorted(paths_by_label, key=len, reverse=True):
+            if label.startswith(candidate + " part "):
+                return candidate
+        return label
+
+    planned = pack_units(units, max_bytes=max_bytes, overlap_lines=0)
+    total = len(planned)
+    out: List[PackedReviewChunk] = []
+    for index, chunk in enumerate(planned):
+        base_labels = tuple(source_label(label) for label in chunk.labels)
+        paths = tuple(
+            dict.fromkeys(paths_by_label.get(label, label) for label in base_labels)
+        )
+        anchor = None
+        if anchors_by_label and len(chunk.labels) == 1:
+            anchor = anchors_by_label.get(base_labels[0])
+        out.append(PackedReviewChunk(
+            content=chunk.content,
+            labels=chunk.labels,
+            paths=paths,
+            index=index,
+            total=total,
+            anchor_line=anchor,
+        ))
+    return out
+
+
+def pack_file_chunks(
+    chunks: Sequence[FileChunk],
+    *,
+    max_bytes: int = 64 * 1024,
+) -> List[PackedReviewChunk]:
+    """Pack adjacent small file slices into bounded review requests."""
+
+    units: List[SemanticUnit] = []
+    paths: Dict[str, str] = {}
+    for chunk in chunks:
+        label = chunk.label
+        header = f"\n===== FILE: {label} =====\n"
+        units.append(SemanticUnit(
+            label=label,
+            content=header + chunk.content,
+            start_line=chunk.start_line,
+            end_line=chunk.end_line,
+            kind="file",
+        ))
+        paths[label] = chunk.path
+    return _pack_review_units(units, paths_by_label=paths, max_bytes=max_bytes)
+
+
+def pack_hunk_chunks(
+    hunks: Sequence[HunkChunk],
+    *,
+    max_bytes: int = 64 * 1024,
+) -> List[PackedReviewChunk]:
+    """Pack adjacent diff hunks while preserving path and new-line provenance."""
+
+    units: List[SemanticUnit] = []
+    paths: Dict[str, str] = {}
+    anchors: Dict[str, int] = {}
+    for hunk in hunks:
+        label = hunk.label
+        header = f"\n===== DIFF HUNK: {label} =====\n"
+        units.append(SemanticUnit(
+            label=label,
+            content=header + hunk.content,
+            start_line=hunk.new_start,
+            end_line=hunk.new_end,
+            kind="diff",
+        ))
+        paths[label] = hunk.path
+        anchors[label] = hunk.new_start
+    return _pack_review_units(
+        units,
+        paths_by_label=paths,
+        anchors_by_label=anchors,
+        max_bytes=max_bytes,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +773,7 @@ __all__ = [
     "DEFAULT_MAX_FILE_BYTES",
     "FileChunk",
     "HunkChunk",
+    "PackedReviewChunk",
     "ROLE_LENSES",
     "RoleLens",
     "SkippedFile",
@@ -670,6 +782,8 @@ __all__ = [
     "get_role",
     "list_roles",
     "parse_roles",
+    "pack_file_chunks",
+    "pack_hunk_chunks",
     "split_diff_hunks",
     "split_files",
 ]

@@ -6,11 +6,15 @@ fan-in, and — critically — that a non-converging loop HALTS with an escalati
 instead of running forever).
 """
 
+import json
+from pathlib import Path
+
 import pytest
 
 from lope.flow import (
     FlowConfigError,
     FlowRunner,
+    forecast_graph,
     flow_report_to_execution_report,
     get_template,
     load_flow_graph,
@@ -169,6 +173,43 @@ def test_blackboard_render():
     assert bb.render("Goal: $task") == "Goal: build X"
     assert bb.render("Use {n1.out}") == "Use result"
     assert bb.render("keep {unknown} intact") == "keep {unknown} intact"
+
+
+def test_blackboard_does_not_recursively_expand_substituted_placeholders():
+    bb = Blackboard({"task": "use {n1.out}", "n1.out": "SECRET-EXPANSION"})
+    assert bb.render("$task") == "use {n1.out}"
+
+
+def test_blackboard_large_output_is_bounded_with_file_reference(tmp_path):
+    from lope.flow.model import NodeResult
+
+    bb = Blackboard(
+        artifact_dir=tmp_path / "artifacts",
+        inline_limit=1024,
+        total_inline_limit=4096,
+    )
+    bb.put_result(NodeResult("n1", "succeeded", raw="x" * 10_000))
+    rendered = bb.render("next: {n1.out}")
+    assert len(rendered.encode("utf-8")) <= 1030
+    assert "full output:" in rendered
+    reference = json.loads(bb.get("n1.out_ref"))
+    path = Path(reference["path"])
+    assert path.exists()
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.read_text(encoding="utf-8") == "x" * 10_000
+
+
+def test_blackboard_total_inline_data_never_exceeds_configured_limit():
+    bb = Blackboard(inline_limit=1024, total_inline_limit=2048)
+    bb.set("a", "a" * 1500)
+    bb.set("b", "b" * 1500)
+    snapshot = bb.snapshot()
+    total = sum(
+        len(value.encode("utf-8"))
+        for key, value in snapshot.items()
+        if key != "_references"
+    )
+    assert total <= 2048
 
 
 # ─── Stylesheet cascade ──────────────────────────────────────────
@@ -378,6 +419,42 @@ def test_validate_warns_on_excessive_retry():
     )
     warnings = validate_graph(parse_dot(dot))
     assert any("retry" in w and "clamp" in w.lower() for w in warnings)
+
+
+def test_flow_forecast_counts_ensemble_calls_not_only_node_visits():
+    graph = parse_dot(
+        'digraph g {'
+        ' graph [max_node_visits="50"]'
+        ' S[type="start"] R[type="review",prompt="review"] E[type="exit"]'
+        ' S->R R->E [condition="outcome=succeeded"]'
+        '}'
+    )
+    cfg = _Cfg(parallel=True, timeout=10)
+    cfg.max_calls = 200
+    cfg.max_chunks = 32
+    cfg.max_input_bytes = 16 * 1024 * 1024
+    cfg.request_policy = "auto"
+    cfg.run_timeout = 1000
+    cfg.allow_unbounded_run = False
+    validators = [_FakeV("a"), _FakeV("b"), _FakeV("c")]
+    forecast = forecast_graph(graph, validators, cfg)
+    assert forecast["theoretical_model_calls"] == 150
+    assert forecast["static_prompt_calls"] == 3
+
+
+def test_flow_report_records_actual_model_calls():
+    graph = parse_dot(
+        'digraph g {'
+        ' graph [max_node_visits="10"]'
+        ' S[type="start"] R[type="review",prompt="review"] E[type="exit"]'
+        ' S->R R->E [condition="outcome=succeeded"]'
+        '}'
+    )
+    report = FlowRunner(graph, _pool(), _Cfg(), print_fn=QUIET).run()
+    assert report.ok
+    assert report.model_calls == 2
+    review = next(item for item in report.node_results if item.node_id == "R")
+    assert review.model_calls == 2
 
 
 def _agent_graph(prompt: str) -> str:

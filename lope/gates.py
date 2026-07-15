@@ -207,23 +207,60 @@ def default_baseline_path(cwd: Optional[Path] = None) -> Path:
     return Path(cwd or os.getcwd()).resolve() / DEFAULT_BASELINE
 
 
-def run_gates(specs: Sequence[GateSpec], cwd: Optional[Path] = None, default_timeout: int = 480) -> List[GateResult]:
+def _skipped_gate(spec: GateSpec, reason: str) -> GateResult:
+    return GateResult(
+        name=spec.name,
+        ok=False,
+        required=spec.required,
+        type=spec.type,
+        value=None,
+        exit_code=124,
+        error=reason,
+    )
+
+
+def run_gates(specs: Sequence[GateSpec], cwd: Optional[Path] = None, default_timeout: int = 480, context=None) -> List[GateResult]:
     root = Path(cwd or os.getcwd()).resolve()
-    return [run_gate(spec, root, default_timeout=default_timeout) for spec in specs]
+    results: List[GateResult] = []
+    for spec in specs:
+        if context is not None and context.budget.remaining_seconds() <= 0:
+            results.append(_skipped_gate(
+                spec,
+                "run_budget_exhausted: gate skipped after command deadline",
+            ))
+            continue
+        results.append(
+            run_gate(spec, root, default_timeout=default_timeout, context=context)
+        )
+    return results
 
 
-def run_gate(spec: GateSpec, cwd: Path, default_timeout: int = 480) -> GateResult:
+def run_gate(spec: GateSpec, cwd: Path, default_timeout: int = 480, context=None) -> GateResult:
     start = time.perf_counter_ns()
-    timeout = spec.timeout or default_timeout
+    configured_timeout = float(spec.timeout or default_timeout)
+    timeout = configured_timeout
+    clamped_to_budget = False
+    if context is not None:
+        progress = context.metadata.get("progress")
+        if progress is not None:
+            progress.set_stage(f"gate:{spec.name}")
+        remaining = context.budget.remaining_seconds()
+        if remaining <= 0:
+            return _skipped_gate(
+                spec,
+                "run_budget_exhausted: gate skipped after command deadline",
+            )
+        timeout = min(timeout, remaining)
+        clamped_to_budget = timeout < configured_timeout
     try:
-        proc = subprocess.run(
-            spec.cmd,
-            shell=True,
+        from .processes import run_subprocess_group
+
+        shell_cmd = [os.environ.get("COMSPEC", "cmd.exe"), "/c", spec.cmd] if os.name == "nt" else ["/bin/sh", "-c", spec.cmd]
+        proc = run_subprocess_group(
+            shell_cmd,
             cwd=str(cwd),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             timeout=timeout,
+            context=context,
         )
         duration_ms = int((time.perf_counter_ns() - start) / 1_000_000)
         stdout = _tail(proc.stdout or '')
@@ -273,7 +310,11 @@ def run_gate(spec: GateSpec, cwd: Path, default_timeout: int = 480) -> GateResul
             stdout_tail=_tail(exc.stdout or ''),
             stderr_tail=_tail(exc.stderr or ''),
             duration_ms=duration_ms,
-            error='timeout after %ss' % timeout,
+            error=(
+                'run_budget_exhausted: gate deadline reached after %ss' % timeout
+                if clamped_to_budget else
+                'timeout after %ss' % timeout
+            ),
         )
     except OSError as exc:
         duration_ms = int((time.perf_counter_ns() - start) / 1_000_000)

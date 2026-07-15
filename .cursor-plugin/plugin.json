@@ -2,7 +2,7 @@
   "name": "lope",
   "displayName": "Lope",
   "description": "Multi-CLI validator ensemble for AI work. Sprint modes, single-shot review/ask/vote/compare/pipe, flow graphs, gates, memory, deliberation, team management, and self-update. Works for engineering, business, and research.",
-  "version": "0.13.1",
+  "version": "0.14.0",
   "author": {
     "name": "Sebastian Schkudlara",
     "email": "sebastian@traylinx.com"

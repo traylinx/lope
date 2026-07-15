@@ -27,7 +27,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .models import PhaseVerdict, ValidatorResult, VerdictStatus
+from .runtime import DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
 from .validators import Validator
+from .processes import run_subprocess_group
 
 log = logging.getLogger("lope.makakoo_adapter")
 
@@ -85,12 +87,12 @@ class MakakooAdapterValidator(Validator):
         # binary exists — resolution happens at call time.
         return True
 
-    def validate(self, prompt: str, timeout: int = 480) -> ValidatorResult:
+    def validate(self, prompt: str, timeout: int = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS, *, context=None) -> ValidatorResult:
         started = time.time()
         if not self._bin:
             return self._infra_error("makakoo binary not on PATH", time.time() - started)
         try:
-            proc = subprocess.run(
+            proc = run_subprocess_group(
                 [
                     self._bin,
                     "adapter",
@@ -99,11 +101,9 @@ class MakakooAdapterValidator(Validator):
                     "--timeout",
                     str(timeout),
                 ],
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=timeout + 30,  # generous: host may spin up sandboxes
-                shell=False,
+                input_text=prompt,
+                timeout=timeout,
+                context=context,
             )
         except subprocess.TimeoutExpired:
             duration = time.time() - started
@@ -126,7 +126,7 @@ class MakakooAdapterValidator(Validator):
 
         return _hydrate_result(proc.stdout, self._adapter_name, duration)
 
-    def generate(self, prompt: str, timeout: int = 480) -> str:
+    def generate(self, prompt: str, timeout: int = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS, *, context=None) -> str:
         """Plain-text generation for v0.7 single-shot fan-out.
 
         Reuses the same ``makakoo adapter call`` infrastructure as
@@ -146,7 +146,7 @@ class MakakooAdapterValidator(Validator):
                 "MakakooAdapterValidator.generate requires the makakoo "
                 "binary on PATH; install Makakoo OS or set MAKAKOO_BIN"
             )
-        result = self.validate(prompt, timeout=timeout)
+        result = self.validate(prompt, timeout=timeout, context=context)
         if result.error and not result.raw_response:
             raise NotImplementedError(
                 f"MakakooAdapter '{self._adapter_name}' did not return "

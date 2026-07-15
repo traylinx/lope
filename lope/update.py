@@ -22,6 +22,7 @@ SUPPORTED_INSTALL_HOSTS = {
     "qwen",
     "pi",
 }
+UPDATE_OPERATION_TIMEOUT_SECONDS = 600
 
 
 class UpdateError(RuntimeError):
@@ -55,7 +56,13 @@ def _capture(cmd: Sequence[str], *, cwd: Optional[Path] = None) -> str:
             text=True,
             capture_output=True,
             check=False,
+            timeout=UPDATE_OPERATION_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise UpdateError(
+            f"`{_quote_command(cmd)}` exceeded the {UPDATE_OPERATION_TIMEOUT_SECONDS}s "
+            "maintenance timeout"
+        ) from exc
     except OSError as exc:
         raise UpdateError(f"cannot execute {cmd[0]}: {exc}") from exc
     if proc.returncode != 0:
@@ -66,7 +73,15 @@ def _capture(cmd: Sequence[str], *, cwd: Optional[Path] = None) -> str:
 
 def _run(cmd: Sequence[str], *, cwd: Optional[Path] = None) -> None:
     try:
-        proc = subprocess.run(list(cmd), cwd=str(cwd) if cwd else None, check=False)
+        proc = subprocess.run(
+            list(cmd), cwd=str(cwd) if cwd else None, check=False,
+            timeout=UPDATE_OPERATION_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise UpdateError(
+            f"`{_quote_command(cmd)}` exceeded the {UPDATE_OPERATION_TIMEOUT_SECONDS}s "
+            "maintenance timeout"
+        ) from exc
     except OSError as exc:
         raise UpdateError(f"cannot execute {cmd[0]}: {exc}") from exc
     if proc.returncode != 0:

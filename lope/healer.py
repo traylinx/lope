@@ -47,6 +47,10 @@ SMOKE_PROMPT = "Reply with the single word OK and nothing else."
 SMOKE_EXPECTED = "OK"
 SMOKE_TIMEOUT_SECONDS = 60
 HELP_TIMEOUT_SECONDS = 10
+REVIEW_TIMEOUT_SECONDS = 120
+SELF_HEAL_BUDGET_SECONDS = (
+    HELP_TIMEOUT_SECONDS + REVIEW_TIMEOUT_SECONDS + SMOKE_TIMEOUT_SECONDS
+)
 
 
 # Learned adapters expire after 90 days, at which point lope re-verifies
@@ -65,7 +69,13 @@ class SelfHealer:
     def __init__(self) -> None:
         self._healed_this_session: set[str] = set()
 
-    def should_attempt(self, cli_name: str, reviewer_available: bool) -> bool:
+    def should_attempt(
+        self,
+        cli_name: str,
+        reviewer_available: bool,
+        *,
+        remaining_seconds: Optional[float] = None,
+    ) -> bool:
         """Gate: can we safely attempt a heal for this CLI right now?
 
         Returns False if:
@@ -83,6 +93,11 @@ class SelfHealer:
             return False
         if not reviewer_available:
             return False
+        if (
+            remaining_seconds is not None
+            and remaining_seconds < SELF_HEAL_BUDGET_SECONDS
+        ):
+            return False
         return True
 
     def mark_attempted(self, cli_name: str) -> None:
@@ -95,6 +110,8 @@ class SelfHealer:
         old_argv: List[str],
         stderr: str,
         reviewer: Any,  # any object with .generate(prompt, timeout) -> str
+        *,
+        context=None,
     ) -> Optional[LearnedAdapter]:
         """Run the full heal sequence.
 
@@ -116,7 +133,11 @@ class SelfHealer:
         )
 
         # Step 1: capture --help output
-        help_text = self._capture_help(cli_binary)
+        help_text = self._capture_help(
+            cli_binary,
+            context=context,
+            cli_name=cli_name,
+        )
         if not help_text:
             log.warning(
                 "self-heal: could not capture `%s --help` output; aborting",
@@ -130,7 +151,12 @@ class SelfHealer:
 
         # Step 2: ask reviewer for a proposed invocation
         proposal = self._ask_reviewer(
-            cli_name, old_argv, stderr, help_text, reviewer
+            cli_name,
+            old_argv,
+            stderr,
+            help_text,
+            reviewer,
+            context=context,
         )
         if proposal is None:
             log.warning(
@@ -144,7 +170,12 @@ class SelfHealer:
             return None
 
         # Step 3: smoke test the proposed invocation
-        ok, smoke_output = self._smoke_test(cli_binary, proposal)
+        ok, smoke_output = self._smoke_test(
+            cli_binary,
+            proposal,
+            context=context,
+            cli_name=cli_name,
+        )
         if not ok:
             log.warning(
                 "self-heal: smoke test failed for %s, new argv %s",
@@ -185,16 +216,23 @@ class SelfHealer:
         )
         return proposal
 
-    def _capture_help(self, cli_binary: str) -> Optional[str]:
+    def _capture_help(
+        self,
+        cli_binary: str,
+        *,
+        context=None,
+        cli_name: str = "self-heal-help",
+    ) -> Optional[str]:
         """Run `<cli_binary> --help` with a timeout, return stdout or None."""
         try:
-            proc = subprocess.run(
+            proc = _run_accounted_subprocess(
                 [cli_binary, "--help"],
-                capture_output=True,
-                text=True,
                 timeout=HELP_TIMEOUT_SECONDS,
+                context=context,
+                stage="self_heal_help",
+                validator=cli_name,
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except (subprocess.TimeoutExpired, OSError, RuntimeError):
             return None
         # Many CLIs print help to stdout, some to stderr. Prefer stdout,
         # fall back to stderr if stdout is empty.
@@ -208,11 +246,22 @@ class SelfHealer:
         stderr: str,
         help_text: str,
         reviewer: Any,
+        *,
+        context=None,
     ) -> Optional[LearnedAdapter]:
         """Build a heal prompt and ask the reviewer for a corrected invocation."""
         prompt = _build_heal_prompt(cli_name, old_argv, stderr, help_text)
         try:
-            response = reviewer.generate(prompt, timeout=120)
+            from .invocation import invoke_generate
+
+            response = invoke_generate(
+                reviewer,
+                prompt,
+                REVIEW_TIMEOUT_SECONDS,
+                context=context,
+                stage="self_heal_reviewer",
+                metadata={"self_heal_target": cli_name},
+            )
         except Exception as e:
             log.warning("self-heal: reviewer.generate raised %s", e)
             return None
@@ -222,6 +271,9 @@ class SelfHealer:
         self,
         cli_binary: str,
         proposal: LearnedAdapter,
+        *,
+        context=None,
+        cli_name: str = "self-heal-smoke",
     ) -> tuple[bool, str]:
         """Run the proposed invocation against SMOKE_PROMPT, return (ok, output)."""
         argv = [_fill_template(t, SMOKE_PROMPT, cli_binary) for t in proposal.argv_template]
@@ -229,14 +281,16 @@ class SelfHealer:
         if proposal.stdin_mode == "pipe":
             stdin_data = SMOKE_PROMPT
         try:
-            proc = subprocess.run(
+            proc = _run_accounted_subprocess(
                 argv,
-                input=stdin_data,
-                capture_output=True,
-                text=True,
+                input_text=stdin_data,
                 timeout=SMOKE_TIMEOUT_SECONDS,
+                context=context,
+                stage="self_heal_smoke",
+                validator=cli_name,
+                accounting_text=SMOKE_PROMPT,
             )
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, RuntimeError) as e:
             return False, f"smoke-test failed to launch: {e}"
         if proc.returncode != 0:
             return False, f"smoke-test exit {proc.returncode}: {(proc.stderr or '')[:300]}"
@@ -261,6 +315,109 @@ class SelfHealer:
             )
         cfg.learned_adapters[cli_name] = adapter
         save(cfg, path)
+
+
+def _run_accounted_subprocess(
+    command: List[str],
+    *,
+    timeout: float,
+    context=None,
+    stage: str,
+    validator: str,
+    input_text: Optional[str] = None,
+    accounting_text: str = "",
+):
+    """Run one self-heal helper stage through the shared lease boundary.
+
+    Help capture and smoke verification are external work too.  When a command
+    runtime context exists they must reserve a call, fit their complete stage
+    timeout, publish the same durable ownership metadata as provider calls, and
+    finish with a typed outcome.  Context-free library callers keep the legacy
+    behavior.
+    """
+
+    from .processes import (
+        InputLimitExceeded,
+        OutputLimitExceeded,
+        run_subprocess_group,
+    )
+
+    if context is None:
+        return run_subprocess_group(
+            command,
+            input_text=input_text,
+            timeout=timeout,
+        )
+
+    from .runtime import BudgetExhausted, OutcomeClass
+
+    root = context.child(stage=stage, validator=validator)
+    input_bytes = len((accounting_text or input_text or "").encode("utf-8"))
+    if not root.budget.can_fund(timeout, calls=1, input_bytes=input_bytes):
+        raise BudgetExhausted(
+            OutcomeClass.RUN_BUDGET_EXHAUSTED.value,
+            f"remaining run budget cannot fund complete {float(timeout):g}s {stage} stage",
+        )
+    lease = root.budget.reserve_call(
+        stage=stage,
+        validator=validator,
+        prompt=accounting_text or input_text or "",
+        requested_timeout=timeout,
+        output_limit_bytes=3 * 1024 * 1024,
+        transport="subprocess",
+    )
+    root.register_lease(lease, transport="subprocess")
+    call_context = root.child(metadata={"call_id": lease.record.call_id})
+    try:
+        proc = run_subprocess_group(
+            command,
+            input_text=input_text,
+            timeout=lease.effective_timeout,
+            context=call_context,
+        )
+    except subprocess.TimeoutExpired as exc:
+        lease.finish(
+            OutcomeClass.PROVIDER_TIMEOUT,
+            cleanup_result="clean",
+            reason=str(exc)[:300],
+        )
+        root.finish_lease(lease)
+        raise
+    except OutputLimitExceeded as exc:
+        lease.finish(
+            OutcomeClass.OUTPUT_LIMIT,
+            output_bytes=len((exc.stdout + exc.stderr).encode("utf-8")),
+            cleanup_result="clean",
+            reason=str(exc)[:300],
+        )
+        root.finish_lease(lease)
+        raise
+    except InputLimitExceeded as exc:
+        lease.finish(
+            OutcomeClass.INPUT_LIMIT,
+            cleanup_result="clean",
+            reason=str(exc)[:300],
+        )
+        root.finish_lease(lease)
+        raise
+    except Exception as exc:
+        lease.finish(
+            OutcomeClass.LAUNCH_ERROR,
+            cleanup_result="unknown",
+            reason=str(exc)[:300],
+        )
+        root.finish_lease(lease)
+        raise
+
+    output_bytes = len(((proc.stdout or "") + (proc.stderr or "")).encode("utf-8"))
+    lease.finish(
+        OutcomeClass.OK if proc.returncode == 0 else OutcomeClass.NONZERO_EXIT,
+        output_bytes=output_bytes,
+        cleanup_result="clean",
+        reason="" if proc.returncode == 0 else f"exit {proc.returncode}",
+    )
+    root.finish_lease(lease)
+    return proc
 
 
 def _build_heal_prompt(

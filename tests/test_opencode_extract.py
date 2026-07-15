@@ -102,6 +102,24 @@ def test_extract_text_from_opencode_export_fallback(monkeypatch):
     )
 
 
+def test_export_fallback_does_not_launch_without_remaining_stage_budget(monkeypatch):
+    stream = '{"type":"step_start","sessionID":"ses_expired"}\n'
+    launches = []
+
+    monkeypatch.setattr(
+        "lope.validators._run_with_group_kill",
+        lambda *_args, **_kwargs: launches.append(True),
+    )
+
+    assert _extract_text_from_opencode_export(
+        "opencode",
+        stream,
+        timeout=0,
+        cwd="/tmp",
+    ) == ""
+    assert launches == []
+
+
 def test_diagnose_recognizes_rejected_tool_call():
     """Most common production failure: model tried `read` on a path
     outside the sandbox, opencode auto-rejected, session ended via

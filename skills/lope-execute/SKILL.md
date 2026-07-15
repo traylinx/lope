@@ -56,3 +56,7 @@ Lope auto-detects the sprint's domain from the doc header:
 - **research** — Validators check methodology, sampling, validity, ethical considerations
 
 The validator review task adapts automatically. Same `/lope-execute` command for every domain.
+
+## Runtime safety (v0.14.0)
+
+Use `--run-timeout` for the whole command; `--timeout` remains a per-provider-call ceiling. Inspect the emitted request plan before large work and prefer compact evidence. Automatic shaping is bounded; use chunking only when the forecast fits `--max-calls` and `--max-chunks`. For abandoned work, run `lope jobs list` and preview `lope jobs reap --dry-run`. Never use `pkill -f`, `killall`, or process-name matching.

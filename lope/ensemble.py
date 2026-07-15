@@ -21,11 +21,16 @@ and so does `from lope import EnsemblePool` via `__init__.py`.
 
 from __future__ import annotations
 
+import queue
+import threading
+import time
 from typing import List, Optional
 
 from .models import PhaseVerdict, ValidatorResult, VerdictStatus
+from .runtime import BudgetExhausted, DEFAULT_MODEL_CALL_TIMEOUT_SECONDS, InvocationContext
+from .output_validity import classify_output
 
-DEFAULT_TIMEOUT_SECONDS = 480
+DEFAULT_TIMEOUT_SECONDS = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
 
 
 class EnsemblePool:
@@ -76,10 +81,16 @@ class EnsemblePool:
         return [v for v in self._validators if v is not primary]
 
     def validate(
-        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+        self,
+        prompt: str,
+        timeout: int = DEFAULT_TIMEOUT_SECONDS,
+        *,
+        context: Optional[InvocationContext] = None,
     ) -> ValidatorResult:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         from .validators import _infra_error
+
+        if context is None:
+            context = getattr(self, "_invocation_context", None)
 
         available = [v for v in self._validators if v.available()]
         if not available:
@@ -89,52 +100,98 @@ class EnsemblePool:
             )
 
         results: List[ValidatorResult] = []
+        deadline = time.monotonic() + float(timeout)
+        if context is not None:
+            deadline = min(deadline, time.monotonic() + context.budget.remaining_seconds())
+
+        def timeout_result(validator, reason: str) -> ValidatorResult:
+            return ValidatorResult(
+                validator_name=validator.name,
+                verdict=PhaseVerdict(
+                    status=VerdictStatus.INFRA_ERROR,
+                    rationale=reason,
+                    validator_name=validator.name,
+                ),
+                error=reason,
+            )
+
+        def invoke(validator) -> ValidatorResult:
+            effective = max(0.0, deadline - time.monotonic())
+            if effective <= 0:
+                return timeout_result(validator, "run_budget_exhausted: fan-out deadline elapsed")
+            try:
+                from .invocation import invoke_validate
+
+                result = invoke_validate(
+                    validator,
+                    prompt,
+                    min(float(timeout), effective),
+                    context=context,
+                    stage=context.stage if context is not None else "validation",
+                )
+            except BudgetExhausted as exc:
+                result = timeout_result(validator, f"{exc.reason}: {exc}")
+            except Exception as exc:
+                result = timeout_result(validator, f"validator raised: {exc}")
+            return result
+
         if not self._parallel:
             for v in available:
-                try:
-                    results.append(v.validate(prompt, timeout))
-                except Exception as e:
-                    results.append(
-                        ValidatorResult(
-                            validator_name=v.name,
-                            verdict=PhaseVerdict(
-                                status=VerdictStatus.INFRA_ERROR,
-                                rationale=f"validator raised: {e}",
-                                validator_name=v.name,
-                            ),
-                            error=str(e),
-                        )
-                    )
-            return synthesize(results, primary=self._primary)
+                if time.monotonic() >= deadline:
+                    results.append(timeout_result(v, f"{v.name} fanout timed out after {timeout}s"))
+                    continue
+                results.append(invoke(v))
+            return synthesize(results, primary=self._primary, expected_count=len(available))
 
-        with ThreadPoolExecutor(
-            max_workers=min(len(available), self._max_workers)
-        ) as executor:
-            futures = {
-                executor.submit(v.validate, prompt, timeout): v for v in available
-            }
-            for future in as_completed(futures):
-                try:
-                    results.append(future.result())
-                except Exception as e:
-                    v = futures[future]
-                    results.append(
-                        ValidatorResult(
-                            validator_name=v.name,
-                            verdict=PhaseVerdict(
-                                status=VerdictStatus.INFRA_ERROR,
-                                rationale=f"thread raised: {e}",
-                                validator_name=v.name,
-                            ),
-                            error=str(e),
-                        )
-                    )
+        # Daemon workers are intentional. A broken legacy in-process adapter
+        # cannot be killed safely, but it also must not keep Python alive after
+        # the fan-out deadline. External adapters move behind the killable
+        # supervisor boundary in Phase 2.
+        completed: "queue.Queue[tuple]" = queue.Queue()
+        pending = list(available)
+        active = {}
 
-        return synthesize(results, primary=self._primary)
+        def worker(validator) -> None:
+            completed.put((validator, invoke(validator)))
+
+        while pending or active:
+            while pending and len(active) < min(len(available), self._max_workers):
+                if time.monotonic() >= deadline:
+                    break
+                validator = pending.pop(0)
+                thread = threading.Thread(target=worker, args=(validator,), daemon=True)
+                active[validator.name] = (validator, thread)
+                thread.start()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                validator, result = completed.get(timeout=remaining)
+            except queue.Empty:
+                break
+            active.pop(validator.name, None)
+            results.append(result)
+
+        for validator in pending:
+            results.append(timeout_result(validator, "run_budget_exhausted: validator was never scheduled"))
+        for validator, _thread in active.values():
+            results.append(timeout_result(validator, f"{validator.name} fanout timed out after {timeout}s"))
+
+        if context is not None and active:
+            cleanup_deadline = time.monotonic() + min(
+                5.0,
+                context.budget.remaining_seconds(include_cleanup=True),
+            )
+            for _validator, thread in active.values():
+                thread.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
+
+        return synthesize(results, primary=self._primary, expected_count=len(available))
 
 
 def synthesize(
-    results: List[ValidatorResult], primary: Optional[str] = None
+    results: List[ValidatorResult],
+    primary: Optional[str] = None,
+    expected_count: Optional[int] = None,
 ) -> ValidatorResult:
     """Majority-vote synthesis across a list of ValidatorResults.
 
@@ -143,11 +200,46 @@ def synthesize(
     API or a cached run). The previous private name `_synthesize` remains
     as a module-level alias for one release.
     """
-    decisive = [r for r in results if r.verdict.status != VerdictStatus.INFRA_ERROR]
-    infra_errors = [r for r in results if r.verdict.status == VerdictStatus.INFRA_ERROR]
+    decisive_statuses = (VerdictStatus.PASS, VerdictStatus.NEEDS_FIX, VerdictStatus.FAIL)
+
+    def substantive(result: ValidatorResult) -> bool:
+        if result.error or result.verdict.status not in decisive_statuses:
+            return False
+        raw = (result.raw_response or "").strip()
+        rationale = (result.verdict.rationale or "").strip()
+        if not raw:
+            return bool(rationale)
+        return classify_output(raw).substantive
+
+    decisive = [r for r in results if substantive(r)]
+    infra_errors = [r for r in results if r not in decisive]
+    expected = expected_count if expected_count is not None else len(results)
+    quorum = expected // 2 + 1
+
+    if len(decisive) < quorum:
+        reasons = []
+        for result in infra_errors:
+            reason = result.error or result.verdict.rationale or "invalid or empty output"
+            reasons.append(f"{result.validator_name}: {reason[:160]}")
+        reason_text = "; ".join(reasons) or "no substantive validator output"
+        return ValidatorResult(
+            validator_name="ensemble",
+            verdict=PhaseVerdict(
+                status=VerdictStatus.INCONCLUSIVE,
+                rationale=(
+                    f"substantive-result quorum not met: {len(decisive)}/{quorum} "
+                    f"required from {expected}; {reason_text}"
+                ),
+                validator_name="ensemble",
+            ),
+            error="inconclusive: substantive-result quorum not met",
+        )
 
     if not decisive:
-        last_err = infra_errors[-1].error if infra_errors else "all validators failed"
+        last = infra_errors[-1] if infra_errors else None
+        last_err = (
+            (last.error or last.verdict.rationale) if last else "all validators failed"
+        )
         return ValidatorResult(
             validator_name="ensemble",
             verdict=PhaseVerdict(

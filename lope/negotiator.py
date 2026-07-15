@@ -42,6 +42,24 @@ from .models import (
 
 log = logging.getLogger("lope.negotiator")
 
+EVIDENCE_BRIEF_MAX_BYTES = 48 * 1024
+PROPOSAL_MAX_BYTES = 48 * 1024
+
+
+class EvidenceLimitExceeded(ValueError):
+    """Raised before launch when negotiate context cannot be represented losslessly."""
+
+
+def _require_bounded_text(label: str, text: str, limit: int) -> str:
+    value = text or ""
+    size = len(value.encode("utf-8"))
+    if size > limit:
+        raise EvidenceLimitExceeded(
+            f"{label} is {size} UTF-8 bytes; lossless negotiate limit is {limit}. "
+            "Provide a smaller evidence brief; Lope will not truncate evidence implicitly."
+        )
+    return value
+
 
 # Signature for the implementation LLM that drafts proposals.
 LLMCall = Callable[[str, str], str]
@@ -142,6 +160,7 @@ class Negotiator:
         self._domain = domain
         self._system_prompt = _negotiator_system_prompt(domain)
         self._rounds: List[Round] = []
+        self._evidence_brief = ""
 
     # ─── Public API ──────────────────────────────────────────
 
@@ -152,7 +171,10 @@ class Negotiator:
 
     def propose(self, goal: str, context: str = "") -> Proposal:
         """Produce the initial (round 1) proposal, lint-gated."""
-        user_prompt = _build_user_prompt(goal, context)
+        self._evidence_brief = _require_bounded_text(
+            "original evidence brief", context, EVIDENCE_BRIEF_MAX_BYTES
+        )
+        user_prompt = _build_user_prompt(goal, self._evidence_brief)
         text = self._llm_and_lint(
             self._system_prompt,
             user_prompt,
@@ -172,7 +194,14 @@ class Negotiator:
             return previous
         suffix = _render_refinement_suffix(feedback.verdict, previous.round_number)
         next_round = previous.round_number + 1
-        user_prompt = _build_user_prompt(previous.goal, previous.text) + suffix
+        prior = _require_bounded_text(
+            "previous proposal", previous.text, PROPOSAL_MAX_BYTES
+        )
+        user_prompt = (
+            _build_user_prompt(previous.goal, self._evidence_brief)
+            + f"\n\n## Previous proposal (round {previous.round_number})\n\n{prior}"
+            + suffix
+        )
         text = self._llm_and_lint(
             self._system_prompt,
             user_prompt,
@@ -228,13 +257,19 @@ class Negotiator:
     ) -> Union[SprintDoc, EscalationRequired]:
         """Orchestrate propose → refine loop until PASS or max_rounds.
 
-        Returns a SprintDoc on success, EscalationRequired as a value on
-        failure (never raises). Call sites should `isinstance(...)` check.
+        Returns a SprintDoc on success and EscalationRequired for review
+        failure. Invalid or over-limit evidence raises ValueError before any
+        model launch so CLI callers can return the unsafe-admission exit code.
         """
         proposal = self.propose(goal, context)
         for round_idx in range(1, self._max_rounds + 1):
             feedback = self._pool.validate(
-                _build_validator_prompt(goal, proposal, domain=self._domain),
+                _build_validator_prompt(
+                    goal,
+                    proposal,
+                    domain=self._domain,
+                    evidence_brief=self._evidence_brief,
+                ),
                 timeout=self._timeout,
             )
             self._rounds.append(
@@ -257,7 +292,7 @@ class Negotiator:
                     reason="validator returned FAIL — architectural pushback",
                     last_verdict=feedback.verdict,
                 )
-            if status == VerdictStatus.INFRA_ERROR:
+            if status in (VerdictStatus.INFRA_ERROR, VerdictStatus.INCONCLUSIVE):
                 return EscalationRequired(
                     phase_index=0,
                     phase_name=f"negotiation-round-{round_idx}",
@@ -309,7 +344,12 @@ def _build_user_prompt(goal: str, context: str) -> str:
     return "\n".join(parts)
 
 
-def _build_validator_prompt(goal: str, proposal: Proposal, domain: str = "engineering") -> str:
+def _build_validator_prompt(
+    goal: str,
+    proposal: Proposal,
+    domain: str = "engineering",
+    evidence_brief: str = "",
+) -> str:
     """Prompt the validator to critique the current proposal."""
     from .caveman import get_directive as _caveman
     caveman = _caveman()
@@ -328,6 +368,10 @@ not chase file paths and do not invent file:line citations.
 ## Goal
 
 {goal}
+
+## Original evidence brief (preserved across every round)
+
+{evidence_brief or "(none provided)"}
 
 ## Proposal (round {proposal.round_number})
 

@@ -29,7 +29,6 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -193,12 +192,11 @@ def query_brain(
     detection.require()
     assert detection.bin is not None  # for type-checkers
 
-    proc = subprocess.run(
+    from .processes import run_subprocess_group
+
+    proc = run_subprocess_group(
         [detection.bin, "search", str(query)],
-        capture_output=True,
-        text=True,
         timeout=timeout,
-        check=False,
     )
     if proc.returncode != 0:
         message = (proc.stderr or "").strip().splitlines()

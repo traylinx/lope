@@ -407,7 +407,7 @@ def curl_to_provider_entry(
         if "{max_tokens}" not in serialized:
             # Insert after the first `{` as a top-level key
             body = json.loads(serialized)
-            body["{max_tokens}"] = max_tokens
+            body["max_tokens"] = max_tokens
 
     entry: Dict[str, Any] = {
         "name": name,

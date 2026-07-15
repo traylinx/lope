@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -40,8 +41,9 @@ from .model import (
 )
 from .report import FlowReport
 from .stylesheet import parse_stylesheet, split_names
+from ..runtime import DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
 
-DEFAULT_TIMEOUT_SECONDS = 480
+DEFAULT_TIMEOUT_SECONDS = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
 DEFAULT_MAX_WORKERS = 5
 
 # Appended to review / judge-ensemble prompts so validators emit the canonical
@@ -77,6 +79,36 @@ def _resolve_timeout(node: FlowNode, ctx: FlowContext) -> int:
     return node.timeout or int(getattr(ctx.cfg, "timeout", DEFAULT_TIMEOUT_SECONDS))
 
 
+def _admit_node_prompt(
+    node: FlowNode,
+    ctx: FlowContext,
+    prompt: str,
+    validators,
+) -> Optional[str]:
+    from ..request_plan import PlanAction, plan_request
+
+    plan = plan_request(
+        prompt,
+        mode="flow",
+        validators=list(validators),
+        policy=getattr(ctx.cfg, "request_policy", "auto"),
+        max_chunks=getattr(ctx.cfg, "max_chunks", 32),
+        max_calls=getattr(ctx.cfg, "max_calls", 96),
+        max_input_bytes=getattr(ctx.cfg, "max_input_bytes", 16 * 1024 * 1024),
+        per_call_timeout=_resolve_timeout(node, ctx),
+        parallel=bool(getattr(ctx.cfg, "parallel", True)),
+        allow_chunk=False,
+        source_label=f"flow node {node.id}",
+        kind="markdown",
+    )
+    invocation = getattr(ctx.pool, "_invocation_context", None)
+    if invocation is not None:
+        invocation.add_request_plan(plan.to_dict())
+    if plan.action == PlanAction.REJECT:
+        return plan.reason + (f"; {plan.mitigation}" if plan.mitigation else "")
+    return None
+
+
 def _handle_agent(node: FlowNode, ctx: FlowContext) -> NodeResult:
     style = ctx.resolve_style(node)
     validator = ctx.validator_by_name(style.get("primary")) or ctx.pool.primary_validator()
@@ -84,8 +116,20 @@ def _handle_agent(node: FlowNode, ctx: FlowContext) -> NodeResult:
     if not prompt.strip():
         return NodeResult(node.id, "failed", error="agent node has an empty prompt")
     timeout = _resolve_timeout(node, ctx)
+    admission_error = _admit_node_prompt(node, ctx, prompt, [validator])
+    if admission_error:
+        return NodeResult(node.id, "infra_error", error=f"input_limit: {admission_error}"[:300])
     try:
-        out = validator.generate(prompt, timeout=timeout)
+        from ..invocation import invoke_generate
+
+        out = invoke_generate(
+            validator,
+            prompt,
+            timeout,
+            context=getattr(ctx.pool, "_invocation_context", None),
+            stage=f"flow:{node.id}",
+            metadata={"implementation": True},
+        )
     except NotImplementedError as exc:
         return NodeResult(
             node.id, "failed", label=validator.name,
@@ -117,7 +161,9 @@ def _build_ensemble(node: FlowNode, ctx: FlowContext):
     if primary and not any(v.name == primary for v in validators):
         primary = None
     parallel = bool(getattr(ctx.cfg, "parallel", True))
-    return EnsemblePool(validators, primary=primary, parallel=parallel)
+    ensemble = EnsemblePool(validators, primary=primary, parallel=parallel)
+    ensemble._invocation_context = getattr(ctx.pool, "_invocation_context", None)
+    return ensemble
 
 
 def _handle_review(node: FlowNode, ctx: FlowContext) -> NodeResult:
@@ -127,7 +173,21 @@ def _handle_review(node: FlowNode, ctx: FlowContext) -> NodeResult:
         "Check correctness and completeness against the plan."
     )
     timeout = _resolve_timeout(node, ctx)
-    result = ensemble.validate(user_prompt + VERDICT_INSTRUCTIONS, timeout=timeout)
+    final_prompt = user_prompt + VERDICT_INSTRUCTIONS
+    admission_error = _admit_node_prompt(
+        node, ctx, final_prompt, list(ensemble.validators())
+    )
+    if admission_error:
+        return NodeResult(node.id, "infra_error", error=f"input_limit: {admission_error}"[:300])
+    invocation = getattr(ctx.pool, "_invocation_context", None)
+    result = ensemble.validate(
+        final_prompt,
+        timeout=timeout,
+        context=(
+            invocation.child(stage=f"flow:{node.id}")
+            if invocation is not None else None
+        ),
+    )
     verdict = result.verdict
     return NodeResult(
         node.id, verdict_to_outcome(verdict.status), label="ensemble",
@@ -159,8 +219,20 @@ def _handle_judge(node: FlowNode, ctx: FlowContext) -> NodeResult:
         validator = ctx.validator_by_name(
             ctx.resolve_style(node).get("primary")
         ) or ctx.pool.primary_validator()
+        final_prompt = prompt + outcome_instructions(allowed)
+        admission_error = _admit_node_prompt(node, ctx, final_prompt, [validator])
+        if admission_error:
+            return NodeResult(node.id, "infra_error", error=f"input_limit: {admission_error}"[:300])
         try:
-            out = validator.generate(prompt + outcome_instructions(allowed), timeout=timeout)
+            from ..invocation import invoke_generate
+
+            out = invoke_generate(
+                validator,
+                final_prompt,
+                timeout,
+                context=getattr(ctx.pool, "_invocation_context", None),
+                stage=f"flow:{node.id}",
+            )
         except Exception as exc:
             return NodeResult(node.id, "infra_error", label=validator.name,
                               error=f"{type(exc).__name__}: {exc}"[:300])
@@ -173,7 +245,20 @@ def _handle_judge(node: FlowNode, ctx: FlowContext) -> NodeResult:
     # ensemble mode (default): the team votes; map the verdict to a route.
     ensemble = _build_ensemble(node, ctx)
     review_prompt = (prompt or "Assess the work so far.") + VERDICT_INSTRUCTIONS
-    result = ensemble.validate(review_prompt, timeout=timeout)
+    admission_error = _admit_node_prompt(
+        node, ctx, review_prompt, list(ensemble.validators())
+    )
+    if admission_error:
+        return NodeResult(node.id, "infra_error", error=f"input_limit: {admission_error}"[:300])
+    invocation = getattr(ctx.pool, "_invocation_context", None)
+    result = ensemble.validate(
+        review_prompt,
+        timeout=timeout,
+        context=(
+            invocation.child(stage=f"flow:{node.id}")
+            if invocation is not None else None
+        ),
+    )
     base = verdict_to_outcome(result.verdict.status)
     mapped = outcome_map.get(base, base)
     return NodeResult(
@@ -203,7 +288,12 @@ def _handle_script(node: FlowNode, ctx: FlowContext) -> NodeResult:
             spec = match[0]
         else:
             return NodeResult(node.id, "infra_error", error="script node needs cmd= or gate=")
-        res = run_gate(spec, Path(ctx.cwd), default_timeout=timeout)
+        res = run_gate(
+            spec,
+            Path(ctx.cwd),
+            default_timeout=timeout,
+            context=getattr(ctx.pool, "_invocation_context", None),
+        )
     except GateConfigError as exc:
         return NodeResult(node.id, "infra_error", error=str(exc))
     detail = (res.stdout_tail or res.error or "")[:500]
@@ -261,6 +351,17 @@ class FlowRunner:
         self.cwd = cwd or os.getcwd()
         self.print_fn = print_fn
         self._max_node_visits = max_node_visits or graph.max_node_visits
+        configured_calls = int(getattr(cfg, "max_calls", 96))
+        self._max_model_calls = min(
+            configured_calls,
+            graph.max_model_calls if graph.max_model_calls is not None else configured_calls,
+        )
+        invocation = getattr(pool, "_invocation_context", None)
+        if invocation is not None:
+            invocation.budget.max_external_calls = min(
+                invocation.budget.max_external_calls,
+                self._max_model_calls,
+            )
         if stylesheet is None:
             stylesheet = parse_stylesheet(graph.stylesheet_text)
         self.stylesheet = stylesheet
@@ -273,11 +374,23 @@ class FlowRunner:
         validate_graph(self.graph)  # raises FlowConfigError on structural problems
 
         goal = task or self.graph.graph_attrs.get("goal", "")
-        bb = Blackboard({"task": task, "goal": goal})
+        invocation = getattr(self.pool, "_invocation_context", None)
+        run_id = invocation.run_id if invocation is not None else uuid.uuid4().hex
+        output_root = Path(
+            os.environ.get("LOPE_RUN_OUTPUT_DIR") or Path(self.cwd) / "lope-runs"
+        )
+        bb = Blackboard(
+            {"task": task, "goal": goal},
+            artifact_dir=output_root / run_id / "flow-blackboard",
+        )
         if "$" not in goal:
             bb.set("goal", goal)
         ctx = FlowContext(bb, self.pool, self.cfg, self.cwd, self.stylesheet, self.print_fn)
-        report = FlowReport(graph_name=self.graph.name)
+        validator_count = max(1, len(self.pool.validators()))
+        report = FlowReport(
+            graph_name=self.graph.name,
+            model_call_forecast=self._max_node_visits * validator_count,
+        )
 
         start = self.graph.start_node()
         ready: List[FlowNode] = [start]
@@ -323,9 +436,21 @@ class FlowRunner:
             # another model call); the cap is enforced at the top of the next wave.
             for node, result in wave_results:
                 report.add(result)
+                report.model_calls += result.model_calls
                 bb.put_result(result)
                 self._print_step(node, result)
                 global_visits += max(0, result.attempts - 1)
+
+            if report.model_calls > self._max_model_calls:
+                report.escalation = self._escalation(
+                    runnable[-1] if runnable else start,
+                    len(report.node_results),
+                    f"max_model_calls ({self._max_model_calls}) exceeded: "
+                    f"actual={report.model_calls}",
+                )
+                report.ok = False
+                terminated = True
+                break
 
             # Then route in deterministic node order; the first terminal node wins.
             for node, result in wave_results:
@@ -381,6 +506,22 @@ class FlowRunner:
 
         report.total_duration_seconds = time.perf_counter() - t0
         report.blackboard_snapshot = bb.snapshot()
+        if invocation is not None:
+            references = report.blackboard_snapshot.get("_references")
+            if references:
+                try:
+                    import json
+
+                    for key, reference in json.loads(references).items():
+                        invocation.budget.add_artifact(
+                            "flow_blackboard",
+                            reference.get("path", ""),
+                            key=key,
+                            sha256=reference.get("sha256"),
+                            utf8_bytes=reference.get("utf8_bytes"),
+                        )
+                except (TypeError, ValueError):
+                    pass
         return report
 
     # ── internals ──
@@ -430,6 +571,12 @@ class FlowRunner:
         last: Optional[NodeResult] = None
         made = 0
         t0 = time.perf_counter()
+        invocation = getattr(ctx.pool, "_invocation_context", None)
+        stage = f"flow:{node.id}"
+        before_calls = (
+            sum(1 for record in invocation.budget.records() if record.stage == stage)
+            if invocation is not None else 0
+        )
         for _ in range(attempts):
             made += 1
             try:
@@ -443,6 +590,22 @@ class FlowRunner:
             last = NodeResult(node.id, "infra_error", error="handler produced no result")
         last.duration_seconds = time.perf_counter() - t0
         last.attempts = made
+        if invocation is not None:
+            after_calls = sum(
+                1 for record in invocation.budget.records() if record.stage == stage
+            )
+            last.model_calls = max(0, after_calls - before_calls)
+        elif node.kind in {NodeKind.AGENT, NodeKind.REVIEW, NodeKind.JUDGE}:
+            per_attempt = (
+                len(ctx.pool.validators())
+                if node.kind == NodeKind.REVIEW
+                or (
+                    node.kind == NodeKind.JUDGE
+                    and (node.attr("mode") or "ensemble").strip().lower() != "generate"
+                )
+                else 1
+            )
+            last.model_calls = made * per_attempt
         return last
 
     def _escalation(self, node, index, reason, verdict=None):
