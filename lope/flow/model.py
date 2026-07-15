@@ -273,6 +273,7 @@ _VERDICT_OUTCOME = {
     "NEEDS_FIX": "needs_fix",
     "FAIL": "failed",
     "INFRA_ERROR": "infra_error",
+    "INCONCLUSIVE": "infra_error",
 }
 
 

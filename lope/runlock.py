@@ -81,8 +81,10 @@ def acquire(command: str):
                     print(
                         f"\nlope {command}: another lope run is already active "
                         f"(holder: {holder}).\n"
-                        f"  Either wait for it to finish, or kill it:\n"
-                        f"    pkill -f 'python3 -m lope'\n"
+                        f"  Inspect the recorded run safely:\n"
+                        f"    lope jobs list\n"
+                        f"  Cancel it from its owning terminal; automated ownership-aware "
+                        f"reaping is unavailable in this version.\n"
                         f"  To queue instead of failing, set LOPE_RUN_LOCK_WAIT=0 "
                         f"(wait forever) or LOPE_RUN_LOCK_WAIT=300 (5 min).\n"
                         f"  To disable locking entirely: LOPE_RUN_LOCK=off\n",

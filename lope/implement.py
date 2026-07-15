@@ -216,6 +216,13 @@ def clone_cfg_for_roster(cfg: LopeCfg, roster: ImplementRoster) -> LopeCfg:
         parallel=cfg.parallel,
         providers=list(cfg.providers),
         learned_adapters=dict(cfg.learned_adapters),
+        run_timeout=cfg.run_timeout,
+        allow_unbounded_run=cfg.allow_unbounded_run,
+        max_calls=cfg.max_calls,
+        max_input_bytes=cfg.max_input_bytes,
+        max_output_bytes=cfg.max_output_bytes,
+        request_policy=cfg.request_policy,
+        max_chunks=cfg.max_chunks,
     )
 
 

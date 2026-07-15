@@ -257,7 +257,7 @@ class Negotiator:
                     reason="validator returned FAIL — architectural pushback",
                     last_verdict=feedback.verdict,
                 )
-            if status == VerdictStatus.INFRA_ERROR:
+            if status in (VerdictStatus.INFRA_ERROR, VerdictStatus.INCONCLUSIVE):
                 return EscalationRequired(
                     phase_index=0,
                     phase_name=f"negotiation-round-{round_idx}",

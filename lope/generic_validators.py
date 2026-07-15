@@ -52,6 +52,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional
 
 from .models import ValidatorResult
+from .runtime import DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
 from .validators import Validator, parse_opencode_verdict
 
 
@@ -213,7 +214,7 @@ class GenericSubprocessValidator(Validator):
             raise
         return proc.returncode, proc.stdout or "", proc.stderr or "", _time.time() - started
 
-    def validate(self, prompt: str, timeout: int = 480) -> ValidatorResult:
+    def validate(self, prompt: str, timeout: int = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS) -> ValidatorResult:
         try:
             rc, stdout, stderr, duration = self._run(prompt, timeout)
         except subprocess.TimeoutExpired:
@@ -241,7 +242,7 @@ class GenericSubprocessValidator(Validator):
             error="",
         )
 
-    def generate(self, prompt: str, timeout: int = 480) -> str:
+    def generate(self, prompt: str, timeout: int = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS) -> str:
         """Raw CLI invocation — no VERDICT parsing, returns stdout text.
 
         Used by the `ask` / `review` / `vote` / `compare` / `pipe` verbs
@@ -306,7 +307,7 @@ class GenericHttpValidator(Validator):
         # HTTP validators are always available (assume network works)
         return True
 
-    def validate(self, prompt: str, timeout: int = 480) -> ValidatorResult:
+    def validate(self, prompt: str, timeout: int = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS) -> ValidatorResult:
         started = time.time()
         if self._prompt_wrapper:
             prompt = self._prompt_wrapper.format(prompt=prompt)

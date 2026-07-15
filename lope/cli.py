@@ -1,6 +1,7 @@
 """Lope CLI — autonomous sprint runner with multi-CLI validation."""
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -40,6 +41,13 @@ def _env_int_default(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
 
 
 def _negotiate_prompt_profile(
@@ -200,8 +208,25 @@ def main():
                        help="Comma-separated validator list, e.g. opencode,gemini")
         p.add_argument("--primary", default=None,
                        help="Name of the primary validator (must be in --validators)")
-        p.add_argument("--timeout", type=int, default=None,
+        p.add_argument("--timeout", type=_positive_int, default=None,
                        help="Per-validator timeout in seconds")
+        run_group = p.add_mutually_exclusive_group()
+        run_group.add_argument(
+            "--run-timeout", dest="run_timeout", type=_positive_int, default=None,
+            help="Hard whole-command deadline in seconds",
+        )
+        run_group.add_argument(
+            "--allow-unbounded-run", dest="allow_unbounded_run",
+            action="store_true", default=None,
+            help="Unsafe: remove only the wall deadline; call/chunk/byte limits remain",
+        )
+        p.add_argument("--max-calls", dest="max_calls", type=_positive_int, default=None,
+                       help="Maximum external model/provider calls for this run")
+        p.add_argument("--max-chunks", dest="max_chunks", type=_positive_int, default=None,
+                       help="Maximum planned request chunks (default: 32)")
+        p.add_argument("--request-policy", dest="request_policy", default=None,
+                       choices=["auto", "direct", "chunk"],
+                       help="Oversize request policy (default: auto)")
         p.set_defaults(parallel=None)
         parallel_group = p.add_mutually_exclusive_group()
         parallel_group.add_argument("--parallel", dest="parallel", action="store_true",
@@ -603,6 +628,13 @@ def main():
     # status
     sub.add_parser("status", help="Show available validators and config")
 
+    # jobs — Phase 1 exposes safe read-only ownership inspection. Reap/kill
+    # arrive with the Phase 2 supervisor and never use command-name matching.
+    jobs = sub.add_parser("jobs", help="Inspect and manage Lope-owned runs")
+    jobs_sub = jobs.add_subparsers(dest="jobs_cmd")
+    jobs_list = jobs_sub.add_parser("list", help="List active and stale Lope-owned runs")
+    jobs_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
     # configure
     sub.add_parser("configure", help="Interactive validator picker")
 
@@ -721,6 +753,10 @@ def main():
         _cmd_status()
         return
 
+    if args.command == "jobs":
+        _cmd_jobs(args)
+        return
+
     if args.command == "configure":
         _cmd_configure()
         return
@@ -746,57 +782,69 @@ def main():
         return
 
     if args.command == "flow":
-        _cmd_flow(args)
+        with _command_runtime_scope(args):
+            _cmd_flow(args)
         return
 
     if args.command == "deliberate":
-        _cmd_deliberate(args)
+        with _command_runtime_scope(args):
+            _cmd_deliberate(args)
         return
 
     if args.command == "negotiate":
         from .runlock import acquire as _runlock
-        with _runlock("negotiate"):
-            _cmd_negotiate(args)
+        with _command_runtime_scope(args):
+            with _runlock("negotiate"):
+                _cmd_negotiate(args)
         return
 
     if args.command == "execute":
         from .runlock import acquire as _runlock
-        with _runlock("execute"):
-            _cmd_execute(args)
+        with _command_runtime_scope(args):
+            with _runlock("execute"):
+                _cmd_execute(args)
         return
 
     if args.command == "implement":
         from .runlock import acquire as _runlock
-        with _runlock("implement"):
-            _cmd_implement(args)
+        with _command_runtime_scope(args):
+            with _runlock("implement"):
+                _cmd_implement(args)
         return
 
     if args.command == "audit":
-        _cmd_audit(args)
+        with _command_runtime_scope(args):
+            _cmd_audit(args)
         return
 
     if args.command == "ask":
-        _cmd_ask(args)
+        with _command_runtime_scope(args):
+            _cmd_ask(args)
         return
 
     if args.command == "review":
-        _cmd_review(args)
+        with _command_runtime_scope(args):
+            _cmd_review(args)
         return
 
     if args.command == "vote":
-        _cmd_vote(args)
+        with _command_runtime_scope(args):
+            _cmd_vote(args)
         return
 
     if args.command == "compare":
-        _cmd_compare(args)
+        with _command_runtime_scope(args):
+            _cmd_compare(args)
         return
 
     if args.command == "pipe":
-        _cmd_pipe(args)
+        with _command_runtime_scope(args):
+            _cmd_pipe(args)
         return
 
     if args.command == "team":
-        _cmd_team(args)
+        with _command_runtime_scope(args):
+            _cmd_team(args)
         return
 
 
@@ -1406,6 +1454,8 @@ def _cmd_status():
         print(f"  Primary: {cfg.primary}")
         print(f"  Parallel: {cfg.parallel}")
         print(f"  Timeout: {cfg.timeout}s")
+        print(f"  Run timeout: {cfg.run_timeout or ('unbounded' if cfg.allow_unbounded_run else 'mode default')}")
+        print(f"  Max calls/chunks: {cfg.max_calls}/{cfg.max_chunks}")
 
         # v0.4.0: show learned adapters (self-healed CLI invocations)
         if cfg.learned_adapters:
@@ -1437,12 +1487,54 @@ def _cmd_status():
                 print(f"  {evt.get('event', '?'):<16} {evt.get('cli', '?'):<16} {age}m ago")
     else:
         print("\nNo config found. Run: lope configure")
+    try:
+        from .jobs import RunRegistry
+
+        jobs = RunRegistry().list_active()
+        counts: Dict[str, int] = {}
+        for job in jobs:
+            state = str(job.get("classification", "ownership_unverified"))
+            counts[state] = counts.get(state, 0) + 1
+        print("\nJobs:")
+        if not jobs:
+            print("  0 active or stale Lope-owned runs")
+        else:
+            summary = ", ".join(f"{name}={count}" for name, count in sorted(counts.items()))
+            print(f"  {len(jobs)} manifest(s): {summary}")
+            print("  Inspect safely: lope jobs list")
+    except Exception as exc:
+        print(f"\nJobs: registry unavailable ({exc})")
     print()
     # Random gimmick (15% chance)
     gimmick = maybe_gimmick(rate=0.15)
     if gimmick:
         print(gimmick)
         print()
+
+
+def _cmd_jobs(args):
+    from .jobs import RunRegistry
+
+    sub_cmd = getattr(args, "jobs_cmd", None) or "list"
+    if sub_cmd != "list":
+        print("Usage: lope jobs list [--json]", file=sys.stderr)
+        sys.exit(2)
+    rows = RunRegistry().list_active()
+    if getattr(args, "json", False):
+        from .output import print_json
+
+        print_json({"schema_version": 1, "jobs": rows, "count": len(rows)})
+        return
+    if not rows:
+        print("No active or stale Lope-owned jobs.")
+        return
+    print("Lope jobs:")
+    for row in rows:
+        run_id = row.get("run_id", "?")
+        mode = row.get("mode", "?")
+        state = row.get("classification", "ownership_unverified")
+        owner = row.get("owner") or {}
+        print(f"  {run_id}  {mode:<12} {state:<20} owner={owner.get('pid', '?')}")
 
 
 def _cmd_configure():
@@ -1504,6 +1596,72 @@ def _cmd_update(args):
         sys.exit(1)
 
 
+@contextlib.contextmanager
+def _command_runtime_scope(args):
+    """Finalize any run registry/budget lazily created by `_ensure_config`."""
+
+    failed = False
+    try:
+        yield
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        registry = getattr(args, "_run_registry", None)
+        context = getattr(args, "_invocation_context", None)
+        if registry is not None and context is not None:
+            snapshot = context.budget.snapshot()
+            partial = failed or bool(snapshot.get("partial"))
+            state = "failed" if failed else ("partial" if partial else "completed")
+            reason = snapshot.get("reason") or ("command failed" if failed else "")
+            try:
+                registry.finish_run(
+                    context.run_id,
+                    state=state,
+                    reason=str(reason),
+                    cleanup_result="clean",
+                )
+                work = registry.work_dir / context.run_id
+                try:
+                    work.rmdir()
+                except OSError:
+                    pass
+            except Exception as exc:
+                print(f"lope runtime closeout warning: {exc}", file=sys.stderr)
+
+
+def _ensure_runtime(args, cfg, pool):
+    if args is None or getattr(args, "_invocation_context", None) is not None:
+        return
+    from .jobs import RunRegistry
+    from .runtime import InvocationContext, RunBudget
+
+    mode = getattr(args, "command", None) or "unknown"
+    budget = RunBudget(
+        mode=mode,
+        run_timeout=cfg.run_timeout,
+        allow_unbounded_run=cfg.allow_unbounded_run,
+        max_external_calls=cfg.max_calls,
+        max_input_bytes=cfg.max_input_bytes,
+        max_output_bytes=cfg.max_output_bytes,
+    )
+    registry = RunRegistry()
+    registry.start_run(
+        mode,
+        run_id=budget.run_id,
+        run_timeout=None if budget.deadline is None else budget.deadline - budget.started_at,
+    )
+    context = InvocationContext(
+        budget=budget,
+        mode=mode,
+        stage="provider",
+        metadata={"registry": registry},
+    )
+    args._run_registry = registry
+    args._invocation_context = context
+    pool._invocation_context = context
+
+
 def _ensure_config(args=None):
     """Load or create config using the v0.4.0 layered precedence chain.
 
@@ -1527,6 +1685,10 @@ def _ensure_config(args=None):
             cli_overrides["timeout"] = args.timeout
         if getattr(args, "parallel", None) is not None:
             cli_overrides["parallel"] = args.parallel
+        for key in ("run_timeout", "allow_unbounded_run", "max_calls", "max_chunks", "request_policy"):
+            value = getattr(args, key, None)
+            if value is not None:
+                cli_overrides[key] = value
 
     cfg = load_layered(cli_overrides=cli_overrides)
 
@@ -1551,9 +1713,17 @@ def _ensure_config(args=None):
                 parallel=cfg.parallel,
                 providers=cfg.providers,
                 learned_adapters=cfg.learned_adapters,
+                run_timeout=cfg.run_timeout,
+                allow_unbounded_run=cfg.allow_unbounded_run,
+                max_calls=cfg.max_calls,
+                max_input_bytes=cfg.max_input_bytes,
+                max_output_bytes=cfg.max_output_bytes,
+                request_policy=cfg.request_policy,
+                max_chunks=cfg.max_chunks,
             )
 
     pool = build_validator_pool(cfg)
+    _ensure_runtime(args, cfg, pool)
     return cfg, pool
 
 
@@ -2213,15 +2383,20 @@ def _cmd_audit(args):
 # VERDICT block parsing, no phase retries, no majority vote. The user gets
 # N perspectives; synthesis is their job (or a future `--synth` flag).
 
-def _fanout_generate(pool, prompt, timeout):
+def _fanout_generate(pool, prompt, timeout, context=None):
     """Parallel .generate() across every available validator in pool.
 
     Returns a list of (validator_name, answer_text, error_message) tuples,
     ordered by thread completion (fastest first). Never raises — errors
     are surfaced per-validator so one slow/broken CLI doesn't blank the run.
     """
-    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    import queue
+    import threading
     import time
+    from .runtime import BudgetExhausted, OutcomeClass
+
+    if context is None:
+        context = getattr(pool, "_invocation_context", None)
 
     validators = (
         getattr(pool, "_validators", None)
@@ -2232,50 +2407,72 @@ def _fanout_generate(pool, prompt, timeout):
     if not available:
         return []
     out = []
-    ex = ThreadPoolExecutor(max_workers=min(len(available), 5))
-    try:
-        futures = {ex.submit(v.generate, prompt, timeout): v for v in available}
-        pending = set(futures)
-        # Give adapters a tiny cleanup grace after their own timeout. Built-in
-        # and generic subprocess validators kill their child process at
-        # `timeout`; they still need a moment to raise/format the error so the
-        # user sees `pi timed out after 10s` instead of a less-specific fanout
-        # deadline message.
-        cleanup_grace = 0.0
-        if timeout is not None:
-            cleanup_grace = min(2.0, max(0.25, float(timeout) * 0.10))
-        deadline = time.monotonic() + timeout + cleanup_grace if timeout is not None else None
+    deadline = time.monotonic() + float(timeout) if timeout is not None else None
+    if context is not None:
+        context_deadline = time.monotonic() + context.budget.remaining_seconds()
+        deadline = context_deadline if deadline is None else min(deadline, context_deadline)
+    completed = queue.Queue()
+    active = {}
+    pending = list(available)
 
-        while pending:
-            wait_timeout = None
-            if deadline is not None:
-                wait_timeout = max(0.0, deadline - time.monotonic())
-                if wait_timeout <= 0:
-                    break
+    def worker(validator):
+        lease = None
+        try:
+            effective = timeout
+            if context is not None:
+                lease = context.budget.reserve_call(
+                    stage=context.stage,
+                    validator=validator.name,
+                    prompt=prompt,
+                    requested_timeout=timeout,
+                    transport="adapter",
+                )
+                context.register_lease(lease, transport="adapter")
+                effective = lease.effective_timeout
+            answer = validator.generate(prompt, effective) or ""
+            if lease is not None:
+                lease.finish(
+                    OutcomeClass.OK,
+                    output_bytes=len(answer.encode("utf-8")),
+                    cleanup_result="clean",
+                )
+                context.finish_lease(lease)
+            completed.put((validator, answer, None))
+        except BudgetExhausted as exc:
+            completed.put((validator, "", f"{exc.reason}: {exc}"))
+        except Exception as exc:
+            if lease is not None:
+                lease.finish(
+                    OutcomeClass.LAUNCH_ERROR,
+                    cleanup_result="unknown",
+                    reason=str(exc)[:300],
+                )
+                context.finish_lease(lease)
+            completed.put((validator, "", str(exc)))
 
-            done, pending = wait(
-                pending,
-                timeout=wait_timeout,
-                return_when=FIRST_COMPLETED,
-            )
-            if not done:
+    max_workers = min(len(available), 5)
+    while pending or active:
+        while pending and len(active) < max_workers:
+            if deadline is not None and time.monotonic() >= deadline:
                 break
-            for fut in done:
-                v = futures[fut]
-                try:
-                    text = fut.result()
-                    out.append((v.name, text or "", None))
-                except Exception as e:
-                    out.append((v.name, "", str(e)))
+            validator = pending.pop(0)
+            thread = threading.Thread(target=worker, args=(validator,), daemon=True)
+            active[validator.name] = (validator, thread)
+            thread.start()
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        if remaining is not None and remaining <= 0:
+            break
+        try:
+            validator, answer, error = completed.get(timeout=remaining)
+        except queue.Empty:
+            break
+        active.pop(validator.name, None)
+        out.append((validator.name, answer, error))
 
-        # Defensive guardrail: validators should enforce their own subprocess
-        # timeouts, but a buggy adapter must not keep the fan-out silent.
-        for fut in pending:
-            v = futures[fut]
-            fut.cancel()
-            out.append((v.name, "", f"{v.name} fanout timed out after {timeout}s"))
-    finally:
-        ex.shutdown(wait=False, cancel_futures=True)
+    for validator in pending:
+        out.append((validator.name, "", "run_budget_exhausted: validator was never scheduled"))
+    for validator, _thread in active.values():
+        out.append((validator.name, "", f"{validator.name} fanout timed out after {timeout}s"))
     return out
 
 
@@ -2296,6 +2493,37 @@ def _render_fanout(label, results, machine_json=False):
         else:
             print("[empty response]")
     print()
+
+
+def _fanout_quorum(results):
+    """Return (ok, reason) for majority substantive raw answers."""
+
+    expected = len(results)
+    required = expected // 2 + 1
+    usable = 0
+    for _name, answer, error in results:
+        if error or not (answer or "").strip():
+            continue
+        lowered = answer.lower()
+        if ("tool_calls" in lowered or "<tool" in lowered or "tool_use" in lowered) and not any(
+            token in lowered for token in ("verdict", "finding", "answer", "review")
+        ):
+            continue
+        usable += 1
+    ok = usable >= required
+    return ok, (
+        "" if ok else f"inconclusive: substantive-result quorum {usable}/{required} "
+        f"not met from {expected} validators"
+    )
+
+
+def _mark_fanout_quorum(pool, results):
+    ok, reason = _fanout_quorum(results)
+    if not ok:
+        context = getattr(pool, "_invocation_context", None)
+        if context is not None:
+            context.budget.mark_partial(reason)
+    return ok, reason
 
 
 def _build_report_via_divided_files(
@@ -2720,7 +2948,7 @@ def _maybe_synthesize(args, pool, results, *, task, structured_findings=None, ti
     return run_synthesis(primary, prompt, timeout or 240)
 
 
-def _render_fanout_with_synth(label, results, synth, machine_json=False):
+def _render_fanout_with_synth(label, results, synth, machine_json=False, context=None):
     """Combined renderer that prints fan-out + synthesis or JSON-bundles them.
 
     ``synth`` is the optional :class:`SynthesisResult` from
@@ -2732,9 +2960,8 @@ def _render_fanout_with_synth(label, results, synth, machine_json=False):
     from .synthesis import format_synthesis
 
     if machine_json:
-        payload = {
-            "responses": fanout_payload(label, results),
-        }
+        payload = context.budget.snapshot() if context is not None else {"schema_version": 1}
+        payload["responses"] = fanout_payload(label, results)
         if synth is not None:
             payload["synthesis"] = {
                 "ok": synth.ok,
@@ -2770,10 +2997,18 @@ def _cmd_ask(args):
     if not results:
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
-    synth = _maybe_synthesize(args, pool, results, task=prompt, timeout=cfg.timeout)
-    _render_fanout_with_synth("answer", results, synth, machine_json=args.json)
+    quorum_ok, quorum_reason = _mark_fanout_quorum(pool, results)
+    synth = _maybe_synthesize(args, pool, results, task=prompt, timeout=cfg.timeout) if quorum_ok else None
+    _render_fanout_with_synth(
+        "answer", results, synth, machine_json=args.json,
+        context=getattr(pool, "_invocation_context", None),
+    )
     _print_brain_log_ack(args, machine_json=args.json,
                          journal_text=f"[[Lope]] ask: {args.question[:120]} [[Makakoo OS]]")
+    if not quorum_ok:
+        if not args.json:
+            print(quorum_reason, file=sys.stderr)
+        sys.exit(1)
 
 
 def _cmd_review(args):
@@ -2848,9 +3083,13 @@ def _cmd_review(args):
     if not results:
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
+    quorum_ok, quorum_reason = _mark_fanout_quorum(pool, results)
     synth_task = f"Review of {file_path} — focus: {focus}"
-    synth = _maybe_synthesize(args, pool, results, task=synth_task, timeout=cfg.timeout)
-    _render_fanout_with_synth("review", results, synth, machine_json=args.json)
+    synth = _maybe_synthesize(args, pool, results, task=synth_task, timeout=cfg.timeout) if quorum_ok else None
+    _render_fanout_with_synth(
+        "review", results, synth, machine_json=args.json,
+        context=getattr(pool, "_invocation_context", None),
+    )
     _print_brain_log_ack(
         args,
         machine_json=args.json,
@@ -2859,6 +3098,10 @@ def _cmd_review(args):
             "[[Makakoo OS]]"
         ),
     )
+    if not quorum_ok:
+        if not args.json:
+            print(quorum_reason, file=sys.stderr)
+        sys.exit(1)
 
 
 def _cmd_review_consensus(args, file_path, content, output_format):
@@ -2939,12 +3182,17 @@ def _cmd_review_consensus(args, file_path, content, output_format):
     if not report.raw_results and not report.errors:
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
+    consensus_tuples = [
+        (row.get("validator") or "", row.get("answer") or "", row.get("error"))
+        for row in report.raw_results
+    ]
+    quorum_ok, quorum_reason = _mark_fanout_quorum(pool, consensus_tuples)
 
     # --remember: persist consensus findings to the local SQLite memory.
     # Honors LOPE_MEMORY=off (visible no-op) and LOPE_MEMORY_DB override.
     memory_message = None
     memory_summary = None
-    if getattr(args, "remember", False):
+    if getattr(args, "remember", False) and quorum_ok:
         from .memory import open_memory
 
         store = open_memory()
@@ -2978,7 +3226,7 @@ def _cmd_review_consensus(args, file_path, content, output_format):
     # to the primary, then either append the synthesis block in human modes
     # or attach it under ``synthesis`` in JSON / SARIF properties.
     synth = None
-    if getattr(args, "synth", False):
+    if getattr(args, "synth", False) and quorum_ok:
         from .synthesis import build_synthesis_prompt, run_synthesis
 
         # In structured mode the synthesizer should see merged findings
@@ -3034,6 +3282,9 @@ def _cmd_review_consensus(args, file_path, content, output_format):
             print(memory_message, file=sys.stderr)
         if brain_ack:
             print(brain_ack, file=sys.stderr)
+        if not quorum_ok:
+            print(quorum_reason, file=sys.stderr)
+            sys.exit(1)
         return
 
     if fmt == "json":
@@ -3056,7 +3307,13 @@ def _cmd_review_consensus(args, file_path, content, output_format):
             payload["memory"] = {"disabled": True, "note": memory_message}
         if brain_ack:
             payload["brain"] = {"note": brain_ack}
+        if not quorum_ok:
+            payload["schema_version"] = 1
+            payload["partial"] = True
+            payload["reason"] = quorum_reason
         print(_j.dumps(payload, indent=2, sort_keys=True))
+        if not quorum_ok:
+            sys.exit(1)
         return
 
     # Human / markdown / markdown-pr — append synthesis + memory footer.
@@ -3068,6 +3325,9 @@ def _cmd_review_consensus(args, file_path, content, output_format):
         print(memory_message)
     if brain_ack:
         print(brain_ack)
+    if not quorum_ok:
+        print(quorum_reason, file=sys.stderr)
+        sys.exit(1)
 
 
 # ─── vote ─────────────────────────────────────────────────────────────
@@ -3383,8 +3643,12 @@ def _cmd_pipe(args):
     if not results:
         print("No validators available. Run: lope status", file=sys.stderr)
         sys.exit(1)
-    synth = _maybe_synthesize(args, pool, results, task=prompt, timeout=cfg.timeout)
-    _render_fanout_with_synth("answer", results, synth, machine_json=args.json)
+    quorum_ok, quorum_reason = _mark_fanout_quorum(pool, results)
+    synth = _maybe_synthesize(args, pool, results, task=prompt, timeout=cfg.timeout) if quorum_ok else None
+    _render_fanout_with_synth(
+        "answer", results, synth, machine_json=args.json,
+        context=getattr(pool, "_invocation_context", None),
+    )
     _print_brain_log_ack(
         args,
         machine_json=args.json,
@@ -3396,6 +3660,10 @@ def _cmd_pipe(args):
 
     # Partial-failure semantics
     any_error = any(e for _, _, e in results)
+    if not quorum_ok:
+        if not args.json:
+            print(quorum_reason, file=sys.stderr)
+        sys.exit(1)
     if any_error and args.require_all:
         sys.exit(1)
 

@@ -34,11 +34,16 @@ class VerdictStatus(str, Enum):
     NEEDS_FIX = "NEEDS_FIX"
     FAIL = "FAIL"
     INFRA_ERROR = "INFRA_ERROR"
+    INCONCLUSIVE = "INCONCLUSIVE"
 
     @property
     def is_terminal(self) -> bool:
         """PASS and FAIL halt the loop; NEEDS_FIX retries; INFRA_ERROR escalates."""
-        return self in (VerdictStatus.PASS, VerdictStatus.FAIL)
+        return self in (
+            VerdictStatus.PASS,
+            VerdictStatus.FAIL,
+            VerdictStatus.INCONCLUSIVE,
+        )
 
 
 @dataclass
@@ -83,7 +88,10 @@ class ValidatorResult:
     flag_error_hint: str = ""
 
     def ok(self) -> bool:
-        return not self.error and self.verdict.status != VerdictStatus.INFRA_ERROR
+        return not self.error and self.verdict.status not in (
+            VerdictStatus.INFRA_ERROR,
+            VerdictStatus.INCONCLUSIVE,
+        )
 
 
 # ─── Phases + SprintDoc ──────────────────────────────────────────
@@ -417,7 +425,7 @@ class EscalationRequired(Exception):
 
 
 _VERDICT_RE = re.compile(
-    r"^\s*VERDICT:\s*(?P<status>PASS|NEEDS_FIX|FAIL|INFRA_ERROR)\s*"
+    r"^\s*VERDICT:\s*(?P<status>PASS|NEEDS_FIX|FAIL|INFRA_ERROR|INCONCLUSIVE)\s*"
     r"(?:\(confidence=(?P<conf>[0-9.]+)\s*,\s*(?P<dur>[0-9.]+)s\))?\s*$",
     re.MULTILINE,
 )

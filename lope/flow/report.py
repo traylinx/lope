@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import List, Optional
 
@@ -111,6 +112,8 @@ def flow_report_to_execution_report(fr: FlowReport):
     for i, r in enumerate(fr.node_results, start=1):
         if r.verdict is not None:
             v = r.verdict
+            if getattr(v, "duration_seconds", 0.0) <= 0 and r.duration_seconds > 0:
+                v = dataclass_replace(v, duration_seconds=r.duration_seconds)
         else:
             v = PhaseVerdict(
                 status=_OUTCOME_STATUS.get(r.outcome, VerdictStatus.PASS),

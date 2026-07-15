@@ -428,3 +428,53 @@ def test_learned_adapters_not_inherited_from_project(tmp_path, monkeypatch):
         "Global learned adapter must be present"
     assert "opencode" not in cfg.learned_adapters, \
         "Project config learned_adapters must NOT be inherited"
+
+
+def test_runtime_limit_precedence_cli_over_env_over_project(tmp_path, monkeypatch):
+    lope_home = tmp_path / "home"
+    project = tmp_path / "project"
+    project_cfg = project / ".lope" / "config.json"
+    project_cfg.parent.mkdir(parents=True)
+    project_cfg.write_text(json.dumps({
+        "version": VERSION,
+        "validators": ["claude"],
+        "primary": "claude",
+        "timeout": 960,
+        "parallel": True,
+        "run_timeout": 1000,
+        "max_calls": 10,
+        "max_chunks": 4,
+        "request_policy": "direct",
+    }))
+    monkeypatch.setenv("LOPE_HOME", str(lope_home))
+    env = {
+        "LOPE_RUN_TIMEOUT": "2000",
+        "LOPE_MAX_CALLS": "20",
+        "LOPE_MAX_CHUNKS": "8",
+        "LOPE_REQUEST_POLICY": "chunk",
+    }
+    cfg = load_layered(
+        cwd=str(project),
+        env=env,
+        cli_overrides={
+            "run_timeout": 3000,
+            "max_calls": 30,
+            "max_chunks": 12,
+            "request_policy": "auto",
+        },
+    )
+    assert cfg.run_timeout == 3000
+    assert cfg.max_calls == 30
+    assert cfg.max_chunks == 12
+    assert cfg.request_policy == "auto"
+
+
+def test_explicit_unbounded_cli_clears_lower_run_timeout(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOPE_HOME", str(tmp_path / "home"))
+    cfg = load_layered(
+        cwd=str(tmp_path),
+        env={"LOPE_RUN_TIMEOUT": "100"},
+        cli_overrides={"allow_unbounded_run": True},
+    )
+    assert cfg.allow_unbounded_run is True
+    assert cfg.run_timeout is None

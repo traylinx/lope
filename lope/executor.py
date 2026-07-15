@@ -37,6 +37,7 @@ from .models import (
     SprintDoc,
     VerdictStatus,
 )
+from .runtime import DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
 
 log = logging.getLogger("lope.executor")
 
@@ -73,7 +74,7 @@ class PhaseExecutor:
         validator_pool,
         implementation_fn: ImplementationFn,
         max_rounds_per_phase: int = 3,
-        timeout_seconds: int = 480,
+        timeout_seconds: int = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS,
         on_start=None,
         on_phase=None,
         on_end=None,
@@ -183,7 +184,7 @@ class PhaseExecutor:
                     reason="spec stage returned FAIL",
                     last_verdict=stage1_verdict,
                 )
-            if stage1_verdict.status == VerdictStatus.INFRA_ERROR:
+            if stage1_verdict.status in (VerdictStatus.INFRA_ERROR, VerdictStatus.INCONCLUSIVE):
                 return EscalationRequired(
                     phase_index=phase.index,
                     phase_name=phase.name,
@@ -266,7 +267,7 @@ class PhaseExecutor:
                     reason="quality stage returned FAIL",
                     last_verdict=stage2_verdict,
                 )
-            if stage2_verdict.status == VerdictStatus.INFRA_ERROR:
+            if stage2_verdict.status in (VerdictStatus.INFRA_ERROR, VerdictStatus.INCONCLUSIVE):
                 return EscalationRequired(
                     phase_index=phase.index,
                     phase_name=phase.name,

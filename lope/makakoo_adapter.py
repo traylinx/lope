@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .models import PhaseVerdict, ValidatorResult, VerdictStatus
+from .runtime import DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
 from .validators import Validator
 
 log = logging.getLogger("lope.makakoo_adapter")
@@ -85,7 +86,7 @@ class MakakooAdapterValidator(Validator):
         # binary exists — resolution happens at call time.
         return True
 
-    def validate(self, prompt: str, timeout: int = 480) -> ValidatorResult:
+    def validate(self, prompt: str, timeout: int = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS) -> ValidatorResult:
         started = time.time()
         if not self._bin:
             return self._infra_error("makakoo binary not on PATH", time.time() - started)
@@ -126,7 +127,7 @@ class MakakooAdapterValidator(Validator):
 
         return _hydrate_result(proc.stdout, self._adapter_name, duration)
 
-    def generate(self, prompt: str, timeout: int = 480) -> str:
+    def generate(self, prompt: str, timeout: int = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS) -> str:
         """Plain-text generation for v0.7 single-shot fan-out.
 
         Reuses the same ``makakoo adapter call`` infrastructure as

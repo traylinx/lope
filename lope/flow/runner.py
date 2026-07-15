@@ -40,8 +40,9 @@ from .model import (
 )
 from .report import FlowReport
 from .stylesheet import parse_stylesheet, split_names
+from ..runtime import DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
 
-DEFAULT_TIMEOUT_SECONDS = 480
+DEFAULT_TIMEOUT_SECONDS = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
 DEFAULT_MAX_WORKERS = 5
 
 # Appended to review / judge-ensemble prompts so validators emit the canonical

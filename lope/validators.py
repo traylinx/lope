@@ -29,6 +29,7 @@ from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
 
 from .processes import run_subprocess_group
+from .runtime import DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
 
 from .models import (
     PhaseVerdict,
@@ -39,7 +40,9 @@ from .models import (
 log = logging.getLogger("lope.validators")
 
 
-DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("LOPE_TIMEOUT", "960"))
+DEFAULT_TIMEOUT_SECONDS = int(
+    os.environ.get("LOPE_TIMEOUT", str(DEFAULT_MODEL_CALL_TIMEOUT_SECONDS))
+)
 DEFAULT_MAX_TOKENS = int(os.environ.get("LOPE_MAX_TOKENS", "100000"))
 MIN_CONFIDENCE_FOR_PASS = 0.7
 DEFAULT_OPENCODE_BIN = os.environ.get(
@@ -1135,8 +1138,12 @@ class ValidatorPool:
         return list(self._ordered[1:])
 
     def validate(
-        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+        self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, *, context=None
     ) -> ValidatorResult:
+        from .runtime import BudgetExhausted, OutcomeClass
+
+        if context is None:
+            context = getattr(self, "_invocation_context", None)
         last_error = ""
         attempts: List[str] = []
         for validator in self._ordered:
@@ -1145,9 +1152,39 @@ class ValidatorPool:
                 continue
             attempts.append(validator.name)
             log.info(f"[pool] trying validator: {validator.name}")
-            result = validator.validate(prompt, timeout=timeout)
+            lease = None
+            effective = timeout
+            if context is not None:
+                try:
+                    lease = context.budget.reserve_call(
+                        stage=context.stage,
+                        validator=validator.name,
+                        prompt=prompt,
+                        requested_timeout=timeout,
+                        transport="adapter",
+                    )
+                    context.register_lease(lease, transport="adapter")
+                    effective = lease.effective_timeout
+                except BudgetExhausted as exc:
+                    last_error = f"{exc.reason}: {exc}"
+                    attempts.append(f"{validator.name}:budget_exhausted")
+                    break
+            result = validator.validate(prompt, timeout=effective)
+            if lease is not None:
+                outcome = (
+                    OutcomeClass.OK
+                    if result.verdict.status not in (VerdictStatus.INFRA_ERROR, VerdictStatus.INCONCLUSIVE)
+                    else OutcomeClass.PARSE_ERROR
+                )
+                lease.finish(
+                    outcome,
+                    output_bytes=len((result.raw_response or "").encode("utf-8")),
+                    cleanup_result="clean" if not result.error else "unknown",
+                    reason=result.error or result.verdict.rationale,
+                )
+                context.finish_lease(lease)
             # PASS / NEEDS_FIX / FAIL halt the chain. INFRA_ERROR falls through.
-            if result.verdict.status != VerdictStatus.INFRA_ERROR:
+            if result.verdict.status not in (VerdictStatus.INFRA_ERROR, VerdictStatus.INCONCLUSIVE):
                 log.info(
                     f"[pool] {validator.name} returned {result.verdict.status.value}"
                 )
