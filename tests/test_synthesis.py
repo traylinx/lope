@@ -17,8 +17,10 @@ Covers:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 
 from lope.findings import ConsensusFinding, ConsensusLevel
+from lope.runtime import InvocationContext, RunBudget
 from lope.synthesis import (
     REQUIRED_SECTIONS,
     SynthesisResult,
@@ -162,6 +164,37 @@ def test_prompt_anonymous_and_structured_combine_safely():
     assert "auth.py:42" in prompt
 
 
+def test_three_100k_outputs_are_bounded_with_per_source_diagnostics():
+    responses = [
+        _resp("claude", "a" * 100_000),
+        _resp("gemini", "b" * 100_000),
+        _resp("codex", "c" * 100_000),
+    ]
+    truncations = []
+    prompt = build_synthesis_prompt(
+        "large review",
+        responses,
+        truncation_log=truncations,
+    )
+    assert len(prompt.encode("utf-8")) <= 256 * 1024
+    assert len(prompt.encode("utf-8")) < 300_000
+    assert {item["source"] for item in truncations} >= {"claude", "gemini", "codex"}
+    assert all(item["omitted_bytes"] > 0 for item in truncations)
+
+
+def test_synthesis_cap_never_splits_utf8_codepoint():
+    truncations = []
+    prompt = build_synthesis_prompt(
+        "task",
+        [_resp("unicode", "é" * 100_000)],
+        source_byte_limit=65_537,
+        truncation_log=truncations,
+    )
+    prompt.encode("utf-8").decode("utf-8")
+    assert "�" not in prompt
+    assert truncations[0]["source"] == "unicode"
+
+
 # ---------------------------------------------------------------------------
 # run_synthesis
 # ---------------------------------------------------------------------------
@@ -188,6 +221,17 @@ def test_run_synthesis_returns_text_on_success():
     assert "Consensus" in result.text
     assert result.primary == "fake"
     assert result.error == ""
+
+
+def test_run_synthesis_preserves_truncation_metadata():
+    primary = _FakeValidator(text="## Consensus\n- bounded")
+    result = run_synthesis(
+        primary,
+        "prompt",
+        30,
+        truncations=[{"source": "claude", "omitted_bytes": 4, "retained_bytes": 8}],
+    )
+    assert result.truncations[0]["source"] == "claude"
 
 
 def test_run_synthesis_is_failsoft_on_exception():
@@ -226,6 +270,34 @@ def test_run_synthesis_redacts_secret_in_returned_text():
     assert result.ok is True
     assert "abcdefghijklmnop" not in result.text
     assert "Bearer <redacted>" in result.text
+
+
+def test_optional_synthesis_skips_before_launch_when_full_call_cannot_fit():
+    from lope.cli import _execute_bounded_synthesis
+
+    primary = _FakeValidator(text="should not launch")
+    budget = RunBudget(mode="ask", run_timeout=10)
+    context = InvocationContext(budget=budget, mode="ask")
+    pool = SimpleNamespace(_invocation_context=context)
+    args = SimpleNamespace(
+        _resolved_lope_cfg=SimpleNamespace(
+            request_policy="auto",
+            max_chunks=32,
+            max_calls=96,
+            max_input_bytes=16 * 1024 * 1024,
+        )
+    )
+    result = _execute_bounded_synthesis(
+        args,
+        pool,
+        primary,
+        "prompt",
+        20,
+        [],
+    )
+    assert not result.ok
+    assert result.error.startswith("budget_exhausted_optional")
+    assert budget.calls_reserved() == 0
 
 
 # ---------------------------------------------------------------------------

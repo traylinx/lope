@@ -160,3 +160,42 @@ def test_second_caller_succeeds_after_first_releases(isolated_lock, monkeypatch)
     finally:
         child.terminate()
         child.join(timeout=3)
+
+
+def test_lock_conflict_names_verified_run_id_and_safe_kill_command(
+    isolated_lock, monkeypatch, tmp_path, capsys
+):
+    from lope.jobs import RunRegistry
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("LOPE_HOME", str(home))
+    ctx = multiprocessing.get_context("fork")
+    child = ctx.Process(
+        target=_hold_lock_in_subprocess,
+        args=(str(isolated_lock), 10.0),
+    )
+    child.start()
+    registry = RunRegistry(home / "runs")
+    try:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if isolated_lock.exists() and isolated_lock.read_text().strip():
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("child never acquired the lock")
+        registry.start_run("execute", run_id="owned-run", owner_pid=child.pid)
+
+        with pytest.raises(SystemExit) as exc_info:
+            with runlock.acquire("execute"):
+                pass
+        assert exc_info.value.code == 75
+        message = capsys.readouterr().err
+        assert "owned-run" in message
+        assert "lope jobs kill owned-run" in message
+        assert "pkill" not in message
+        assert "killall" not in message
+    finally:
+        child.terminate()
+        child.join(timeout=3)
+        registry.reconcile()

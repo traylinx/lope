@@ -38,6 +38,7 @@ from .models import (
     VerdictStatus,
 )
 from .runtime import DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
+from .runtime import DEFAULT_MAX_CHUNKS, DEFAULT_MAX_EXTERNAL_CALLS, DEFAULT_MAX_INPUT_BYTES
 
 log = logging.getLogger("lope.executor")
 
@@ -79,6 +80,11 @@ class PhaseExecutor:
         on_phase=None,
         on_end=None,
         gate_runner=None,
+        request_policy: str = "auto",
+        max_chunks: int = DEFAULT_MAX_CHUNKS,
+        max_calls: int = DEFAULT_MAX_EXTERNAL_CALLS,
+        max_input_bytes: int = DEFAULT_MAX_INPUT_BYTES,
+        parallel: bool = True,
     ):
         if validator_pool is None:
             raise ValueError("PhaseExecutor needs a validator_pool")
@@ -96,6 +102,76 @@ class PhaseExecutor:
         self._on_phase = on_phase
         self._on_end = on_end
         self._gate_runner = gate_runner
+        self._request_policy = request_policy
+        self._max_chunks = max_chunks
+        self._max_calls = max_calls
+        self._max_input_bytes = max_input_bytes
+        self._parallel = parallel
+
+    def _runtime_context(self):
+        return getattr(self._pool, "_invocation_context", None)
+
+    def _validator_count(self) -> int:
+        try:
+            return max(1, len(self._pool.validators()))
+        except Exception:
+            try:
+                return max(1, len(self._pool.names()))
+            except Exception:
+                return 1
+
+    def _can_fund_attempt(self, phase: Phase, attempt: int) -> bool:
+        context = self._runtime_context()
+        if context is None:
+            return True
+        validator_calls = self._validator_count()
+        required_calls = 1 + validator_calls
+        required_seconds = 2 * float(self._timeout)
+        context.budget.add_event(
+            "phase_forecast",
+            phase=phase.index,
+            attempt=attempt,
+            calls=required_calls,
+            wall_seconds=required_seconds,
+            remaining_seconds=context.budget.remaining_seconds(),
+        )
+        log.info(
+            "[executor] phase %s forecast: %s call(s), %.0fs nominal; %.0fs remaining",
+            phase.index,
+            required_calls,
+            required_seconds,
+            context.budget.remaining_seconds(),
+        )
+        return context.budget.can_fund(required_seconds, calls=required_calls)
+
+    def _admission_error(self, prompt: str, stage: str) -> Optional[str]:
+        from .request_plan import PlanAction, plan_request
+
+        validators = list(
+            getattr(self._pool, "_validators", None)
+            or getattr(self._pool, "_ordered", None)
+            or []
+        )
+        plan = plan_request(
+            prompt,
+            mode="execute",
+            validators=validators,
+            policy=self._request_policy,
+            max_chunks=self._max_chunks,
+            max_calls=self._max_calls,
+            max_input_bytes=self._max_input_bytes,
+            per_call_timeout=self._timeout,
+            parallel=self._parallel,
+            allow_chunk=False,
+            source_label=f"execute {stage} review",
+            kind="markdown",
+        )
+        context = getattr(self._pool, "_invocation_context", None)
+        if context is not None:
+            context.add_request_plan(plan.to_dict())
+        if plan.action == PlanAction.REJECT:
+            return plan.reason + (f"; {plan.mitigation}" if plan.mitigation else "")
+        return None
 
     def run(self, sprint_doc: SprintDoc) -> ExecutionReport:
         """Walk every phase. Returns ExecutionReport (never raises)."""
@@ -147,6 +223,26 @@ class PhaseExecutor:
             )
             self._checkpoint_phase_attempt(task_id, phase, attempt)
 
+            if not self._can_fund_attempt(phase, attempt):
+                context = self._runtime_context()
+                reason = (
+                    "run_budget_exhausted: cannot fund implementation plus "
+                    "mandatory spec review"
+                )
+                if context is not None:
+                    context.budget.mark_partial(reason)
+                phase.verdict = PhaseVerdict(
+                    status=VerdictStatus.INCONCLUSIVE,
+                    rationale=reason,
+                    validator_name="run-budget",
+                )
+                return EscalationRequired(
+                    phase_index=phase.index,
+                    phase_name=phase.name,
+                    reason=reason,
+                    last_verdict=phase.verdict,
+                )
+
             impl_result = self._impl(phase=phase, fix_context=fix_context)
 
             if not impl_result.ok:
@@ -167,6 +263,19 @@ class PhaseExecutor:
                 phase, impl_result, domain=self._domain,
                 stage=None if single_stage else "spec",
             )
+            admission_error = self._admission_error(stage1_prompt, "spec")
+            if admission_error:
+                phase.verdict = PhaseVerdict(
+                    status=VerdictStatus.INFRA_ERROR,
+                    rationale=f"input_limit: {admission_error}",
+                    validator_name="request-planner",
+                )
+                return EscalationRequired(
+                    phase_index=phase.index,
+                    phase_name=phase.name,
+                    reason=f"validation request rejected: {admission_error}",
+                    last_verdict=phase.verdict,
+                )
             stage1_result = self._pool.validate(stage1_prompt, timeout=self._timeout)
             # Copy the verdict so stage tagging doesn't mutate a shared reference
             # (matters for stub validators in tests that return sticky objects).
@@ -220,11 +329,48 @@ class PhaseExecutor:
             if self._gate_runner is not None:
                 gate_run = self._gate_runner(phase=phase, attempt=attempt)
 
+            context = self._runtime_context()
+            if (
+                context is not None
+                and not _gate_failures(gate_run)
+                and not context.budget.can_fund(
+                    float(self._timeout),
+                    calls=self._validator_count(),
+                )
+            ):
+                reason = "budget_exhausted_optional: quality review skipped"
+                context.budget.mark_partial(reason)
+                context.budget.add_event(
+                    "optional_stage_skipped",
+                    stage="quality",
+                    phase=phase.index,
+                    reason=reason,
+                )
+                phase._stage_verdicts = [stage1_verdict]
+                phase.verdict = replace(
+                    stage1_verdict,
+                    rationale=(stage1_verdict.rationale + " " + reason).strip(),
+                )
+                return None
+
             # ── Stage 2: code quality ────────────────────────────
             stage2_prompt = _build_validation_prompt(
                 phase, impl_result, domain=self._domain, stage="quality",
                 gate_report=gate_run,
             )
+            admission_error = self._admission_error(stage2_prompt, "quality")
+            if admission_error:
+                phase.verdict = PhaseVerdict(
+                    status=VerdictStatus.INFRA_ERROR,
+                    rationale=f"input_limit: {admission_error}",
+                    validator_name="request-planner",
+                )
+                return EscalationRequired(
+                    phase_index=phase.index,
+                    phase_name=phase.name,
+                    reason=f"validation request rejected: {admission_error}",
+                    last_verdict=phase.verdict,
+                )
             stage2_result = self._pool.validate(stage2_prompt, timeout=self._timeout)
             stage2_verdict = replace(stage2_result.verdict, stage="quality")
             # Keep both stage verdicts visible on the phase so the auditor

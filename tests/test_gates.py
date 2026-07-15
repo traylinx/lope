@@ -1,9 +1,11 @@
+import subprocess
 import sys
 
 from lope.gates import (
-    GateSpec, compare_results, load_baseline,
+    GateResult, GateSpec, compare_results, load_baseline,
     load_gate_specs, run_gate, run_gates, save_baseline,
 )
+from lope.runtime import InvocationContext, RunBudget
 
 
 def test_missing_config_returns_empty(tmp_path, monkeypatch):
@@ -46,3 +48,71 @@ def test_baseline_compare_min_delta(tmp_path):
     assert comps[0].passed is False
     assert comps[0].delta == -10
     assert 'min_delta' in comps[0].reason
+
+
+def test_gate_timeout_clamps_to_remaining_command_budget(tmp_path, monkeypatch):
+    class Clock:
+        now = 100.0
+
+        def __call__(self):
+            return self.now
+
+    clock = Clock()
+    context = InvocationContext(
+        budget=RunBudget(mode="gate", run_timeout=10, clock=clock),
+        mode="gate",
+    )
+    seen = []
+
+    def fake_run(command, **kwargs):
+        seen.append(kwargs["timeout"])
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr("lope.processes.run_subprocess_group", fake_run)
+    result = run_gate(
+        GateSpec(name="required", cmd="slow", timeout=480),
+        tmp_path,
+        context=context,
+    )
+    assert seen == [5.0]
+    assert result.exit_code == 124
+    assert result.error.startswith("run_budget_exhausted")
+
+
+def test_gate_suite_stops_scheduling_after_deadline_and_required_fails_closed(
+    tmp_path, monkeypatch
+):
+    class Clock:
+        now = 100.0
+
+        def __call__(self):
+            return self.now
+
+    clock = Clock()
+    context = InvocationContext(
+        budget=RunBudget(
+            mode="gate",
+            run_timeout=10,
+            cleanup_reserve_seconds=0,
+            clock=clock,
+        ),
+        mode="gate",
+    )
+    calls = []
+
+    def fake_gate(spec, _root, default_timeout=480, context=None):
+        calls.append(spec.name)
+        clock.now += 11
+        return GateResult(spec.name, True, spec.required, spec.type, None, 0)
+
+    monkeypatch.setattr("lope.gates.run_gate", fake_gate)
+    specs = [
+        GateSpec(name="first", cmd="true"),
+        GateSpec(name="required-skipped", cmd="true", required=True),
+        GateSpec(name="optional-skipped", cmd="true", required=False),
+    ]
+    results = run_gates(specs, tmp_path, context=context)
+    assert calls == ["first"]
+    assert results[1].required and not results[1].ok
+    assert results[1].exit_code == 124
+    assert results[2].required is False and not results[2].ok

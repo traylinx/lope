@@ -7,11 +7,14 @@ Validators are stub callables; no real CLI ever runs.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from typing import Dict, List
 
 import pytest
 
 from lope.deliberation import (
+    DeliberationInconclusive,
     TemplateSpec,
     build_critique_prompt,
     build_position_prompt,
@@ -213,6 +216,68 @@ def test_run_deliberation_standard_full_protocol():
     assert counts["rubric"] == 3
 
 
+def test_independent_stage_calls_use_bounded_parallelism():
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def gen(_name, prompt, _timeout):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        if "VERDICT" in prompt:
+            return "VERDICT: PASS\nSEVERITY: low\n- ok"
+        if "Required section headings" in prompt:
+            return "## Context\n## Decision\n## Consequences\n## Alternatives Considered"
+        return "position"
+
+    run_deliberation(
+        template=get_template("adr"),
+        scenario="parallel council",
+        validators=["a", "b", "c"],
+        primary="a",
+        generate=gen,
+        depth="quick",
+        parallel=True,
+        max_workers=2,
+    )
+    assert peak == 2
+
+
+def test_peer_material_is_bounded_and_failed_turn_is_not_evidence():
+    critique_prompts = []
+
+    def gen(name, prompt, _timeout):
+        if "Peer positions (anonymized)" in prompt:
+            critique_prompts.append(prompt)
+            return "critique"
+        if "Required section headings" in prompt:
+            return "## Context\n## Decision\n## Consequences\n## Alternatives Considered"
+        if "VERDICT" in prompt:
+            return "VERDICT: PASS\nSEVERITY: low\n- ok"
+        if name == "broken":
+            raise RuntimeError("timeout placeholder must stay out")
+        return "x" * 100_000
+
+    run_deliberation(
+        template=get_template("adr"),
+        scenario="bounded peers",
+        validators=["a", "broken", "c"],
+        primary="a",
+        generate=gen,
+        depth="standard",
+        parallel=True,
+    )
+    assert critique_prompts
+    assert all(len(prompt.encode("utf-8")) < 80 * 1024 for prompt in critique_prompts)
+    assert any("bounded council material" in prompt for prompt in critique_prompts)
+    assert all("timeout placeholder must stay out" not in prompt for prompt in critique_prompts)
+
+
 def test_anonymized_critique_prompts_strip_validator_names():
     captured = []
 
@@ -393,6 +458,27 @@ def test_minority_report_can_be_de_anonymized():
 # ---------------------------------------------------------------------------
 # Output directory writer
 # ---------------------------------------------------------------------------
+
+
+def test_deliberation_stops_when_position_contributor_quorum_fails():
+    calls = []
+
+    def gen(name, prompt, timeout):
+        calls.append((name, prompt))
+        if name != "a":
+            raise RuntimeError("timeout")
+        return "substantive position"
+
+    with pytest.raises(DeliberationInconclusive, match="position contributor quorum 1/2"):
+        run_deliberation(
+            template=get_template("adr"),
+            scenario="decision",
+            validators=["a", "b", "c"],
+            primary="a",
+            generate=gen,
+            depth="standard",
+        )
+    assert len(calls) == 3
 
 
 def test_write_run_creates_expected_layout(tmp_path):

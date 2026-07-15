@@ -882,3 +882,6 @@ Back-compat: `from lope.validators import EnsemblePool` still resolves (re-expor
 - https://github.com/traylinx/lope — source of truth
 
 Built by Sebastian Schkudlara (Traylinx). MIT licensed. Caveman mode core rules adapted from JuliusBrussee/caveman.
+# Runtime safety and request planning
+
+See [job-lifecycle.md](job-lifecycle.md) for ownership, cancellation, and safe stale-job reconciliation. Every multi-call command accepts `--run-timeout`; `--timeout` remains a per-call ceiling. Request admission reports a deterministic plan before launch and bounds direct input, chunk count, calls, and output bytes.

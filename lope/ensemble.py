@@ -27,12 +27,7 @@ import time
 from typing import List, Optional
 
 from .models import PhaseVerdict, ValidatorResult, VerdictStatus
-from .runtime import (
-    BudgetExhausted,
-    DEFAULT_MODEL_CALL_TIMEOUT_SECONDS,
-    InvocationContext,
-    OutcomeClass,
-)
+from .runtime import BudgetExhausted, DEFAULT_MODEL_CALL_TIMEOUT_SECONDS, InvocationContext
 from .output_validity import classify_output
 
 DEFAULT_TIMEOUT_SECONDS = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
@@ -121,52 +116,23 @@ class EnsemblePool:
             )
 
         def invoke(validator) -> ValidatorResult:
-            lease = None
             effective = max(0.0, deadline - time.monotonic())
-            if context is not None:
-                try:
-                    lease = context.budget.reserve_call(
-                        stage=context.stage,
-                        validator=validator.name,
-                        prompt=prompt,
-                        requested_timeout=min(float(timeout), effective),
-                        transport="adapter",
-                    )
-                    context.register_lease(lease, transport="adapter")
-                    effective = lease.effective_timeout
-                except BudgetExhausted as exc:
-                    return timeout_result(validator, f"{exc.reason}: {exc}")
             if effective <= 0:
                 return timeout_result(validator, "run_budget_exhausted: fan-out deadline elapsed")
             try:
-                call_context = (
-                    context.child(
-                        validator=validator.name,
-                        metadata={"call_id": lease.record.call_id},
-                    )
-                    if context is not None and lease is not None else context
+                from .invocation import invoke_validate
+
+                result = invoke_validate(
+                    validator,
+                    prompt,
+                    min(float(timeout), effective),
+                    context=context,
+                    stage=context.stage if context is not None else "validation",
                 )
-                invoke_with_context = getattr(validator, "validate_with_context", None)
-                result = (
-                    invoke_with_context(prompt, effective, call_context)
-                    if callable(invoke_with_context)
-                    else validator.validate(prompt, effective)
-                )
+            except BudgetExhausted as exc:
+                result = timeout_result(validator, f"{exc.reason}: {exc}")
             except Exception as exc:
                 result = timeout_result(validator, f"validator raised: {exc}")
-            if lease is not None:
-                outcome = (
-                    OutcomeClass.OK
-                    if result.verdict.status not in (VerdictStatus.INFRA_ERROR, VerdictStatus.INCONCLUSIVE)
-                    else OutcomeClass.PARSE_ERROR
-                )
-                lease.finish(
-                    outcome,
-                    output_bytes=len((result.raw_response or "").encode("utf-8")),
-                    cleanup_result="clean" if not result.error else "unknown",
-                    reason=result.error or result.verdict.rationale,
-                )
-                context.finish_lease(lease)
             return result
 
         if not self._parallel:
@@ -210,6 +176,14 @@ class EnsemblePool:
             results.append(timeout_result(validator, "run_budget_exhausted: validator was never scheduled"))
         for validator, _thread in active.values():
             results.append(timeout_result(validator, f"{validator.name} fanout timed out after {timeout}s"))
+
+        if context is not None and active:
+            cleanup_deadline = time.monotonic() + min(
+                5.0,
+                context.budget.remaining_seconds(include_cleanup=True),
+            )
+            for _validator, thread in active.values():
+                thread.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
 
         return synthesize(results, primary=self._primary, expected_count=len(available))
 

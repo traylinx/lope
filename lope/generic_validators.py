@@ -349,11 +349,17 @@ class GenericHttpValidator(Validator):
         if proc.returncode != 0 or envelope.get("error"):
             raise RuntimeError(str(envelope.get("error") or proc.stderr or "HTTP worker failed")[:500])
         status = int(envelope.get("status") or 0)
+        response_headers = {
+            str(key).lower(): str(value)
+            for key, value in (envelope.get("headers") or {}).items()
+        }
         raw = base64.b64decode(envelope.get("body_b64") or "").decode(
             "utf-8", errors="replace"
         )
         if status < 200 or status >= 300:
-            raise RuntimeError(f"HTTP {status}: {raw[:300]}")
+            retry_after = response_headers.get("retry-after")
+            retry_detail = f" Retry-After: {retry_after};" if retry_after else ""
+            raise RuntimeError(f"HTTP {status}:{retry_detail} {raw[:300]}")
         return raw, time.time() - started
 
     def validate(self, prompt: str, timeout: int = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS, *, context=None) -> ValidatorResult:

@@ -25,7 +25,7 @@ from .model import (
 from .report import FlowReport, flow_report_to_execution_report, write_flow_run
 from .runner import FlowRunner
 from .templates import get_template, template_names
-from .validate import validate_graph
+from .validate import forecast_graph, validate_graph
 
 __all__ = [
     "load_flow_graph",
@@ -40,6 +40,7 @@ __all__ = [
     "FlowConfigError",
     "FlowSyntaxError",
     "validate_graph",
+    "forecast_graph",
     "flow_report_to_execution_report",
     "write_flow_run",
     "get_template",

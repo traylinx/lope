@@ -29,6 +29,24 @@ def test_manifest_rejects_raw_prompt_and_output(tmp_path):
         registry.register_call("run1", {"call_id": "c1", "raw_response": "secret"})
 
 
+def test_call_counters_track_planned_started_and_terminal_once(tmp_path):
+    registry = RunRegistry(tmp_path / "runs")
+    registry.start_run("ask", run_id="run1")
+    registry.set_planned_calls("run1", 3)
+    registry.register_call("run1", {
+        "call_id": "c1",
+        "validator": "stub",
+        "stage": "fanout",
+        "state": "active",
+        "owned_paths": [],
+        "cleanup_result": "pending",
+    })
+    registry.update_call("run1", "c1", state="finished")
+    registry.update_call("run1", "c1", state="finished")
+    counters = registry.load_active("run1")["call_counters"]
+    assert counters == {"planned": 3, "started": 1, "finished": 1}
+
+
 def test_pid_start_fingerprint_prevents_reuse(monkeypatch):
     identity = process_identity(os.getpid())
     assert identity_matches(identity)
@@ -86,6 +104,67 @@ def test_finish_moves_manifest_and_prunes_work_separately(tmp_path):
     assert completed.exists()
     assert not (registry.active_dir / "run1.json").exists()
     assert json.loads(completed.read_text())["state"] == "completed"
+
+
+def test_close_run_verifies_calls_and_removes_owned_work(tmp_path):
+    registry = RunRegistry(tmp_path / "runs")
+    registry.start_run("ask", run_id="run1")
+    owned = registry.run_work_dir("run1") / "result.json"
+    owned.write_text("{}")
+    registry.register_call("run1", {
+        "call_id": "call1",
+        "validator": "stub",
+        "stage": "fanout",
+        "state": "finished",
+        "owned_paths": [str(owned)],
+        "cleanup_result": "clean",
+    })
+    result = registry.close_run("run1")
+    assert result["action"] == "closed"
+    assert not (registry.active_dir / "run1.json").exists()
+    assert not (registry.work_dir / "run1").exists()
+
+
+def test_close_run_leaves_unresolved_call_visible(tmp_path):
+    registry = RunRegistry(tmp_path / "runs")
+    registry.start_run("ask", run_id="run1")
+    registry.register_call("run1", {
+        "call_id": "call1",
+        "validator": "legacy",
+        "stage": "fanout",
+        "state": "active",
+        "owned_paths": [],
+        "cleanup_result": "pending",
+    })
+    result = registry.close_run("run1")
+    assert result["action"] == "cleanup_failed"
+    manifest = registry.load_active("run1")
+    assert manifest["cleanup_result"] == "cleanup_failed"
+    assert manifest["state"] == "cleanup_failed"
+
+
+def test_supervisor_heartbeat_does_not_mask_stale_owner(tmp_path):
+    registry = RunRegistry(tmp_path / "runs")
+    registry.start_run("ask", run_id="run1")
+    registry.heartbeat("run1", source="owner")
+
+    def stale_owner(value):
+        value["owner_heartbeat_at"] = time.time() - 100
+        return value
+
+    registry.update("run1", stale_owner)
+    registry.register_call("run1", {
+        "call_id": "call1",
+        "validator": "stub",
+        "stage": "fanout",
+        "state": "active",
+        "owned_paths": [],
+        "cleanup_result": "pending",
+    })
+    registry.update_call("run1", "call1", heartbeat_source="supervisor")
+    manifest = registry.load_active("run1")
+    assert registry.classify(manifest, stale_after=10) == "unresponsive"
+    assert manifest["supervisor_heartbeat_at"] > manifest["owner_heartbeat_at"]
 
 
 def test_corrupt_manifest_fails_closed_without_process_action(tmp_path):

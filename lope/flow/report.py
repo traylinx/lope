@@ -28,6 +28,8 @@ class FlowReport:
     escalation: Optional[object] = None  # EscalationRequired on guard breach
     total_duration_seconds: float = 0.0
     blackboard_snapshot: dict = field(default_factory=dict)
+    model_calls: int = 0
+    model_call_forecast: int = 0
 
     @property
     def path(self) -> List[str]:
@@ -43,6 +45,7 @@ class FlowReport:
         lines = [f"Flow: {self.graph_name}"]
         lines.append(f"Steps: {len(self.node_results)}  ·  path: {' -> '.join(self.path)}")
         lines.append(f"Total duration: {self.total_duration_seconds:.1f}s")
+        lines.append(f"Model calls: {self.model_calls}/{self.model_call_forecast or self.model_calls}")
         lines.append("---")
         for r in self.node_results:
             tag = f"{r.node_id}: {r.outcome}"
@@ -70,6 +73,8 @@ class FlowReport:
             "ok": self.ok,
             "path": self.path,
             "total_duration_seconds": self.total_duration_seconds,
+            "model_calls": self.model_calls,
+            "model_call_forecast": self.model_call_forecast,
             "escalation": str(self.escalation) if self.escalation else "",
             "node_results": [
                 {
@@ -79,6 +84,7 @@ class FlowReport:
                     "detail": r.detail[:500],
                     "duration_seconds": r.duration_seconds,
                     "error": r.error[:300],
+                    "model_calls": r.model_calls,
                 }
                 for r in self.node_results
             ],
@@ -158,6 +164,7 @@ def write_flow_run(fr: FlowReport, out_dir: str) -> Path:
                 "detail": redact_text(r.detail[:1000]),
                 "duration_seconds": round(r.duration_seconds, 2),
                 "error": redact_text(r.error[:500]),
+                "model_calls": r.model_calls,
             }
             f.write(json.dumps(line) + "\n")
 

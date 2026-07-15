@@ -17,6 +17,8 @@ from lope.divide import (
     get_role,
     list_roles,
     parse_roles,
+    pack_file_chunks,
+    pack_hunk_chunks,
     split_diff_hunks,
     split_files,
 )
@@ -219,6 +221,59 @@ def test_hunk_chunk_to_dict_round_trips_basic_fields():
     assert payload["path"] == "auth.py"
     assert payload["new_start"] == 10
     assert payload["hunk_index"] == 0
+
+
+def test_adjacent_small_files_pack_into_one_bounded_request(tmp_path):
+    for index in range(20):
+        (tmp_path / f"f{index:02d}.py").write_text(f"VALUE = {index}\n")
+    chunks, _ = split_files(tmp_path)
+    packed = pack_file_chunks(chunks, max_bytes=4096)
+    assert len(packed) < len(chunks)
+    assert all(len(item.content.encode("utf-8")) <= 4096 for item in packed)
+    assert "===== FILE:" in packed[0].content
+
+
+def test_many_small_hunks_pack_and_preserve_provenance():
+    text = "".join(
+        f"diff --git a/f{i}.py b/f{i}.py\n--- a/f{i}.py\n+++ b/f{i}.py\n"
+        "@@ -1,1 +1,2 @@\n-old\n+new\n"
+        for i in range(38)
+    )
+    hunks = split_diff_hunks(text)
+    packed = pack_hunk_chunks(hunks, max_bytes=16 * 1024)
+    assert len(hunks) == 38
+    assert len(packed) < 10
+    assert all(len(item.content.encode("utf-8")) <= 16 * 1024 for item in packed)
+    assert "f0.py" in packed[0].content
+
+
+def test_one_over_ceiling_file_and_hunk_split_without_losing_provenance():
+    file_chunks = [FileChunk(path="big.py", content="x" * 5000)]
+    packed_files = pack_file_chunks(file_chunks, max_bytes=1024)
+    assert len(packed_files) > 1
+    assert all(item.paths == ("big.py",) for item in packed_files)
+    assert all(len(item.content.encode("utf-8")) <= 1024 for item in packed_files)
+
+    diff = (
+        "diff --git a/big.py b/big.py\n--- a/big.py\n+++ b/big.py\n"
+        "@@ -1,1 +1,2000 @@\n" + "+" + ("y" * 5000) + "\n"
+    )
+    hunks = split_diff_hunks(diff)
+    packed_hunks = pack_hunk_chunks(hunks, max_bytes=1024)
+    assert len(packed_hunks) > 1
+    assert all(item.paths == ("big.py",) for item in packed_hunks)
+    assert all(item.anchor_line == 1 for item in packed_hunks)
+    assert all(len(item.content.encode("utf-8")) <= 1024 for item in packed_hunks)
+
+
+def test_split_files_hard_caps_one_200kb_line(tmp_path):
+    path = tmp_path / "long.txt"
+    path.write_text("é" * 100_000, encoding="utf-8")
+    chunks, skipped = split_files(path, max_chars=16 * 1024)
+    assert not skipped
+    assert len(chunks) > 1
+    assert all(len(chunk.content.encode("utf-8")) <= 16 * 1024 for chunk in chunks)
+    assert all("�" not in chunk.content for chunk in chunks)
 
 
 # ---------------------------------------------------------------------------

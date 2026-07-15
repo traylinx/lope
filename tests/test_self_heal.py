@@ -343,10 +343,10 @@ def test_self_heal_attempt_success_path(tmp_path, monkeypatch):
     # Mock the help capture and smoke test to avoid spawning real subprocesses
     healer = SelfHealer()
 
-    def mock_capture_help(cli_binary):
+    def mock_capture_help(cli_binary, **_kwargs):
         return f"Usage: {cli_binary} exec [PROMPT]\n\n(mocked help output)"
 
-    def mock_smoke_test(cli_binary, proposal):
+    def mock_smoke_test(cli_binary, proposal, **_kwargs):
         return True, "OK\n"
 
     healer._capture_help = mock_capture_help
@@ -354,6 +354,12 @@ def test_self_heal_attempt_success_path(tmp_path, monkeypatch):
 
     reviewer = _MockReviewer("claude",
                               _valid_reviewer_response(["codex", "exec", "{prompt}"]))
+    from lope.runtime import InvocationContext, RunBudget
+
+    context = InvocationContext(
+        budget=RunBudget(mode="execute", run_timeout=300),
+        mode="execute",
+    )
 
     adapter = healer.attempt(
         cli_name="codex",
@@ -361,12 +367,18 @@ def test_self_heal_attempt_success_path(tmp_path, monkeypatch):
         old_argv=["codex", "exec", "--quiet", "{prompt}"],
         stderr="error: unrecognized arguments: --quiet",
         reviewer=reviewer,
+        context=context,
     )
 
     assert adapter is not None
     assert adapter.argv_template == ["codex", "exec", "{prompt}"]
     assert adapter.source_cli == "claude"
     assert adapter.timestamp > 0
+    records = context.budget.records()
+    assert len(records) == 1
+    assert records[0].stage == "self_heal_reviewer"
+    assert records[0].validator == "claude"
+    assert records[0].outcome == "ok"
 
     # Must be persisted to the temp config
     persisted = load(str(lope_home / "config.json"))
@@ -386,7 +398,7 @@ def test_self_heal_attempt_reviewer_garbage_no_persist(tmp_path, monkeypatch):
     cfg_save(initial, str(lope_home / "config.json"))
 
     healer = SelfHealer()
-    healer._capture_help = lambda cli: "Usage: codex exec [PROMPT]"
+    healer._capture_help = lambda cli, **_kwargs: "Usage: codex exec [PROMPT]"
 
     reviewer = _MockReviewer("claude", "this is not JSON at all")
 
@@ -416,8 +428,11 @@ def test_self_heal_attempt_smoke_test_fail_no_persist(tmp_path, monkeypatch):
     cfg_save(initial, str(lope_home / "config.json"))
 
     healer = SelfHealer()
-    healer._capture_help = lambda cli: "Usage: codex"
-    healer._smoke_test = lambda cli, proposal: (False, "NO response does not contain OK")
+    healer._capture_help = lambda cli, **_kwargs: "Usage: codex"
+    healer._smoke_test = lambda cli, proposal, **_kwargs: (
+        False,
+        "NO response does not contain OK",
+    )
 
     reviewer = _MockReviewer("claude",
                               _valid_reviewer_response(["codex", "exec", "{prompt}"]))
@@ -448,7 +463,7 @@ def test_self_heal_attempt_help_capture_fail_no_persist(tmp_path, monkeypatch):
     cfg_save(initial, str(lope_home / "config.json"))
 
     healer = SelfHealer()
-    healer._capture_help = lambda cli: None  # help binary missing / errors
+    healer._capture_help = lambda cli, **_kwargs: None  # help binary missing / errors
     reviewer = _MockReviewer("claude", _valid_reviewer_response(["x"]))
 
     adapter = healer.attempt(
@@ -477,7 +492,7 @@ def test_self_heal_attempt_reviewer_exception_returns_none(tmp_path, monkeypatch
     cfg_save(initial, str(lope_home / "config.json"))
 
     healer = SelfHealer()
-    healer._capture_help = lambda cli: "Usage: codex"
+    healer._capture_help = lambda cli, **_kwargs: "Usage: codex"
 
     adapter = healer.attempt(
         cli_name="codex",
@@ -488,6 +503,43 @@ def test_self_heal_attempt_reviewer_exception_returns_none(tmp_path, monkeypatch
     )
 
     assert adapter is None
+
+
+def test_self_heal_help_and_smoke_use_accounted_supervised_calls():
+    from lope.runtime import InvocationContext, RunBudget
+
+    healer = SelfHealer()
+    context = InvocationContext(
+        budget=RunBudget(mode="execute", run_timeout=100),
+        mode="execute",
+    )
+
+    help_text = healer._capture_help(
+        sys.executable,
+        context=context,
+        cli_name="python",
+    )
+    assert help_text
+
+    proposal = LearnedAdapter(
+        argv_template=[sys.executable, "-c", "print('OK')"],
+        stdin_mode="none",
+        stdout_parser="plaintext",
+    )
+    ok, output = healer._smoke_test(
+        sys.executable,
+        proposal,
+        context=context,
+        cli_name="python",
+    )
+    assert ok
+    assert "OK" in output
+    records = context.budget.records()
+    assert [record.stage for record in records] == [
+        "self_heal_help",
+        "self_heal_smoke",
+    ]
+    assert all(record.outcome == "ok" for record in records)
 
 
 def test_unexpired_learned_adapter_is_consumed_by_next_pool():

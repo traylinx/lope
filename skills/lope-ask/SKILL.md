@@ -80,3 +80,7 @@ If a validator times out or errors, its block shows `[ERROR] <message>` instead 
 ## Cost awareness
 
 `lope ask` sends the same prompt to N validators in parallel. Each call costs roughly what a single CLI call costs. If the user has 5 validators configured, expect 5× the tokens of a single call. For very long prompts or long context, pass `--validators claude,gemini` to cap the fan-out to a specific subset.
+
+## Runtime safety (v0.14.0)
+
+Use `--run-timeout` for the whole command; `--timeout` remains a per-provider-call ceiling. Inspect the emitted request plan before large work and prefer compact evidence. Automatic shaping is bounded; use chunking only when the forecast fits `--max-calls` and `--max-chunks`. For abandoned work, run `lope jobs list` and preview `lope jobs reap --dry-run`. Never use `pkill -f`, `killall`, or process-name matching.

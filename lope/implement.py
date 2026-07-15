@@ -326,11 +326,14 @@ def run_implement(
     gate_runner=None,
     max_rounds_per_phase: int = 3,
     print_fn: Callable[..., None] = print,
+    invocation_context=None,
 ) -> ExecutionReport:
     """Run the selected sprint with the chosen roster."""
 
     run_cfg = clone_cfg_for_roster(cfg, roster)
     pool = build_validator_pool(run_cfg)
+    if invocation_context is not None:
+        pool._invocation_context = invocation_context
     primary = pool.primary_validator()
 
     print_fn(
@@ -344,8 +347,41 @@ def run_implement(
         prompt = build_swarm_prompt(phase, doc, roster, fix_context=fix_context)
         print_fn(f"\n>>> Phase {phase.index}: {phase.name}")
         print_fn(f">>> Delegating to {primary.name} ({run_cfg.timeout}s timeout)...")
+        from .request_plan import PlanAction, plan_request
+
+        plan = plan_request(
+            prompt,
+            mode="implement",
+            validators=[primary],
+            policy=run_cfg.request_policy,
+            max_chunks=run_cfg.max_chunks,
+            max_calls=run_cfg.max_calls,
+            max_input_bytes=run_cfg.max_input_bytes,
+            per_call_timeout=run_cfg.timeout,
+            parallel=False,
+            allow_chunk=False,
+            source_label=f"phase {phase.index} implementation",
+            kind="markdown",
+        )
+        if invocation_context is not None:
+            invocation_context.add_request_plan(plan.to_dict())
+        if plan.action == PlanAction.REJECT:
+            return ImplementationResult(
+                ok=False,
+                summary=f"implementation request rejected: {plan.reason}",
+                error=plan.reason + (f"; {plan.mitigation}" if plan.mitigation else ""),
+            )
         try:
-            output = primary.generate(prompt, timeout=run_cfg.timeout)
+            from .invocation import invoke_generate
+
+            output = invoke_generate(
+                primary,
+                prompt,
+                run_cfg.timeout,
+                context=invocation_context,
+                stage="implementation",
+                metadata={"implementation": True},
+            )
         except NotImplementedError:
             return ImplementationResult(
                 ok=False,
@@ -369,5 +405,10 @@ def run_implement(
         max_rounds_per_phase=max_rounds_per_phase,
         timeout_seconds=run_cfg.timeout,
         gate_runner=gate_runner,
+        request_policy=run_cfg.request_policy,
+        max_chunks=run_cfg.max_chunks,
+        max_calls=run_cfg.max_calls,
+        max_input_bytes=run_cfg.max_input_bytes,
+        parallel=run_cfg.parallel,
     )
     return executor.run(doc)

@@ -262,3 +262,81 @@ def test_parent_and_supervisor_sigkill_is_repaired_by_reconcile(tmp_path):
                     os.kill(pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX verified owner/group kill")
+def test_jobs_kill_cli_terminates_verified_owner_and_owned_provider_only(tmp_path):
+    home = tmp_path / "home"
+    pid_file = tmp_path / "owned-provider.pid"
+    owner_script = tmp_path / "owned-run.py"
+    owner_script.write_text(
+        "import hashlib, os, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "from lope.jobs import RunRegistry, process_identity\n"
+        "registry = RunRegistry()\n"
+        "registry.start_run('ask', run_id='killable', run_timeout=120)\n"
+        "provider = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'], start_new_session=True)\n"
+        "registry.register_call('killable', {\n"
+        "  'call_id': 'call1', 'validator': 'fixture', 'stage': 'fanout',\n"
+        "  'state': 'active', 'child': process_identity(provider.pid),\n"
+        "  'pgid': os.getpgid(provider.pid),\n"
+        "  'ownership_marker_hash': hashlib.sha256(b'owned-fixture').hexdigest(),\n"
+        "  'owned_paths': [], 'cleanup_result': 'pending',\n"
+        "})\n"
+        "Path(sys.argv[1]).write_text(str(provider.pid))\n"
+        "while True:\n"
+        "  registry.heartbeat('killable', source='owner')\n"
+        "  time.sleep(0.2)\n",
+        encoding="utf-8",
+    )
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT)
+    env["LOPE_HOME"] = str(home)
+    owner = subprocess.Popen(
+        [sys.executable, str(owner_script), str(pid_file)],
+        cwd=str(ROOT),
+        env=env,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    unrelated = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"],
+        start_new_session=True,
+    )
+    provider_pid = 0
+    try:
+        deadline = time.monotonic() + 10
+        registry = RunRegistry(home / "runs")
+        while time.monotonic() < deadline:
+            if pid_file.exists() and (registry.active_dir / "killable.json").exists():
+                provider_pid = int(pid_file.read_text())
+                break
+            time.sleep(0.05)
+        assert provider_pid > 0
+        assert _alive(owner.pid) and _alive(provider_pid) and _alive(unrelated.pid)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "lope", "jobs", "kill", "killable", "--json"],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["result"]["action"] == "killed"
+        assert _wait_dead([owner.pid, provider_pid])
+        owner.wait(timeout=5)
+        assert _alive(unrelated.pid), "unregistered same-name process was touched"
+        assert not (registry.active_dir / "killable.json").exists()
+    finally:
+        _kill_group(owner)
+        if provider_pid and _alive(provider_pid):
+            try:
+                os.killpg(provider_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        _kill_group(unrelated)

@@ -11,9 +11,14 @@ Stdlib only. No external deps (lope ships `dependencies = []`).
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
 
@@ -243,6 +248,21 @@ class FlowGraph:
         return max(50, 8 * len(self.nodes))
 
     @property
+    def max_model_calls(self) -> Optional[int]:
+        raw = self.graph_attrs.get("max_model_calls")
+        if raw in (None, ""):
+            return None
+        try:
+            value = int(raw)
+        except ValueError:
+            raise FlowConfigError(
+                f"graph max_model_calls must be an integer, got {raw!r}"
+            ) from None
+        if value <= 0:
+            raise FlowConfigError("graph max_model_calls must be positive")
+        return value
+
+    @property
     def stylesheet_text(self) -> str:
         return self.graph_attrs.get("cli_stylesheet") or self.graph_attrs.get(
             "model_stylesheet", ""
@@ -266,6 +286,7 @@ class NodeResult:
     error: str = ""
     raw: str = ""
     attempts: int = 1  # handler executions incl. retries (charged to the global budget)
+    model_calls: int = 0
 
 
 _VERDICT_OUTCOME = {
@@ -355,38 +376,146 @@ class Blackboard:
 
     _DOLLAR_RE = re.compile(r"\$([a-zA-Z_][a-zA-Z0-9_]*)")
     _BRACE_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_.]*)\}")
+    _PLACEHOLDER_RE = re.compile(
+        r"\$([a-zA-Z_][a-zA-Z0-9_]*)|\{([a-zA-Z_][a-zA-Z0-9_.]*)\}"
+    )
+    DEFAULT_INLINE_LIMIT = 512 * 1024
+    DEFAULT_TOTAL_INLINE_LIMIT = 8 * 1024 * 1024
 
-    def __init__(self, initial: Optional[Dict[str, str]] = None):
-        self._d: Dict[str, str] = dict(initial or {})
+    def __init__(
+        self,
+        initial: Optional[Dict[str, str]] = None,
+        *,
+        inline_limit: int = DEFAULT_INLINE_LIMIT,
+        total_inline_limit: int = DEFAULT_TOTAL_INLINE_LIMIT,
+        artifact_dir: Optional[Path] = None,
+    ):
+        self.inline_limit = max(1024, int(inline_limit))
+        self.total_inline_limit = max(self.inline_limit, int(total_inline_limit))
+        self.artifact_dir = Path(artifact_dir) if artifact_dir is not None else None
+        self._d: Dict[str, str] = {}
+        self._refs: Dict[str, Dict[str, str]] = {}
+        for key, value in (initial or {}).items():
+            self.set(key, value)
+
+    @staticmethod
+    def _bounded(value: str, limit: int) -> str:
+        raw = (value or "").encode("utf-8")
+        if len(raw) <= limit:
+            return value or ""
+        marker = b"\n...[blackboard value bounded; see file reference]...\n"
+        marker = marker[:limit]
+        keep = max(0, limit - len(marker))
+        head = raw[: keep // 2]
+        tail = raw[-(keep - keep // 2):] if keep - keep // 2 else b""
+        while head:
+            try:
+                head_text = head.decode("utf-8")
+                break
+            except UnicodeDecodeError:
+                head = head[:-1]
+        else:
+            head_text = ""
+        while tail:
+            try:
+                tail_text = tail.decode("utf-8")
+                break
+            except UnicodeDecodeError:
+                tail = tail[1:]
+        else:
+            tail_text = ""
+        return head_text + marker.decode("utf-8", errors="ignore") + tail_text
+
+    def _write_reference(self, key: str, value: str) -> Optional[Dict[str, str]]:
+        if self.artifact_dir is None:
+            return None
+        self.artifact_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            self.artifact_dir.chmod(0o700)
+        except OSError:
+            pass
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", key).strip("-") or "value"
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+        destination = self.artifact_dir / f"{safe}-{digest[:12]}.txt"
+        fd, temporary = tempfile.mkstemp(
+            prefix=".blackboard-", suffix=".tmp", dir=str(self.artifact_dir)
+        )
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(value)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, destination)
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+        return {
+            "path": str(destination),
+            "sha256": digest,
+            "utf8_bytes": str(len(value.encode("utf-8"))),
+        }
+
+    def _total_bytes_without(self, key: str) -> int:
+        return sum(
+            len(value.encode("utf-8"))
+            for existing, value in self._d.items()
+            if existing != key
+        )
 
     def set(self, key: str, value: str) -> None:
-        self._d[key] = value
+        text = str(value or "")
+        remaining = max(0, self.total_inline_limit - self._total_bytes_without(key))
+        self._d[key] = self._bounded(text, min(self.inline_limit, remaining))
 
     def get(self, key: str, default: str = "") -> str:
         return self._d.get(key, default)
 
     def put_result(self, result: NodeResult) -> None:
         nid = result.node_id
-        self._d[f"{nid}.outcome"] = result.outcome
-        self._d[f"{nid}.detail"] = result.detail
-        self._d[f"{nid}.out"] = result.raw or result.detail
+        self.set(f"{nid}.outcome", result.outcome)
+        self.set(f"{nid}.detail", result.detail)
+        raw = result.raw or result.detail
+        key = f"{nid}.out"
+        reference = None
+        if len(raw.encode("utf-8")) > self.inline_limit:
+            reference = self._write_reference(key, raw)
+        self.set(key, raw)
+        if reference:
+            self._refs[key] = reference
+            self.set(f"{nid}.out_ref", json.dumps(reference, sort_keys=True))
+            inline_with_ref = self._bounded(raw, self.inline_limit) + (
+                f"\n[full output: {reference['path']} sha256={reference['sha256']}]"
+            )
+            self.set(key, inline_with_ref)
         if result.verdict is not None:
-            self._d[f"{nid}.verdict"] = getattr(result.verdict.status, "value", "")
-            self._d[f"{nid}.rationale"] = getattr(result.verdict, "rationale", "")
+            self.set(f"{nid}.verdict", getattr(result.verdict.status, "value", ""))
+            self.set(f"{nid}.rationale", getattr(result.verdict, "rationale", ""))
 
     def render(self, template: str) -> str:
         """Substitute `$task`/`$VAR` and `{node.key}` placeholders. Unknown
         placeholders are left intact (so literal braces in prompts survive)."""
         if not template:
             return template
-        s = self._DOLLAR_RE.sub(
-            lambda m: self._d.get(m.group(1), m.group(0)), template
-        )
-        s = self._BRACE_RE.sub(lambda m: self._d.get(m.group(1), m.group(0)), s)
-        return s
+        def replace(match) -> str:
+            key = match.group(1) or match.group(2)
+            return self._d.get(key, match.group(0))
+
+        # One regex pass means placeholders inside substituted values are never
+        # recursively expanded into another node's unbounded output.
+        return self._PLACEHOLDER_RE.sub(replace, template)
 
     def snapshot(self) -> Dict[str, str]:
-        return dict(self._d)
+        out = dict(self._d)
+        if self._refs:
+            out["_references"] = json.dumps(self._refs, sort_keys=True)
+        return out
 
 
 # ─── Runtime context handed to every node handler ──────────────

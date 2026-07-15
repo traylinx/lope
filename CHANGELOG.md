@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.0 — Deadline budgeting, request shaping, and orphan-safe jobs
+
+- Added monotonic `--run-timeout` budgets across retries, fallbacks, gates, synthesis, and Flow.
+- Added request profiling with bounded direct/chunk/reject planning, byte ceilings, progress telemetry, and typed partial/inconclusive results.
+- Unified provider execution behind a cancellation-safe process-group supervisor with descendant cleanup, output limits, and parent-death handling.
+- Added durable sanitized run/call ownership leases plus `lope jobs list`, `lope jobs reap`, and `lope jobs kill` with PID/start-fingerprint safety.
+- Updated runtime, architecture, operator, reference, and skill documentation. Existing `--timeout` and library call signatures remain compatible.
+
 ## 0.13.1 — Engineering minimality audit default
 
 - **Normal engineering runs now use minimality audit:** `lope execute` quality-stage review and `lope implement` prompts include the Ponytail-inspired minimality discipline by default for engineering sprints. This makes ordinary Lope runs flag over-engineering without requiring `LOPE_MINIMALITY=audit`.

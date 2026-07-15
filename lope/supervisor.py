@@ -26,8 +26,12 @@ from typing import Any, Dict, Optional, Tuple
 
 
 READ_SIZE = 64 * 1024
-TERM_GRACE_SECONDS = 1.0
-KILL_GRACE_SECONDS = 3.0
+SUPERVISOR_HEARTBEAT_SECONDS = 5.0
+# Keep cancellation bounded tightly: provider groups are already isolated and
+# receive SIGKILL after a short TERM grace. A long grace would violate the
+# caller's hard timeout and leave the parent waiting on supervisor cleanup.
+TERM_GRACE_SECONDS = 0.2
+KILL_GRACE_SECONDS = 0.5
 TRUNCATION_MARKER = b"\n...[output truncated; head and tail preserved]...\n"
 
 
@@ -406,10 +410,19 @@ def _run_provider(spec: Dict[str, Any], control_fd: int) -> Dict[str, Any]:
         proc.stdin.close()
 
     deadline = started + timeout
+    next_heartbeat = started + SUPERVISOR_HEARTBEAT_SECONDS
     streams_open = {"stdout", "stderr"}
     try:
         while True:
             now = time.monotonic()
+            if now >= next_heartbeat:
+                _registry_update(
+                    spec,
+                    state="active",
+                    heartbeat_at=time.time(),
+                    heartbeat_source="supervisor",
+                )
+                next_heartbeat = now + SUPERVISOR_HEARTBEAT_SECONDS
             if now >= deadline:
                 outcome = "provider_timeout"
                 reason = f"provider timed out after {timeout:g}s"

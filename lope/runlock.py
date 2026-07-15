@@ -44,6 +44,34 @@ def _read_holder(path: Path) -> str:
         return "unknown"
 
 
+def _holder_run_ids(holder: str) -> list:
+    try:
+        pid = int((holder or "").split()[0])
+    except (IndexError, TypeError, ValueError):
+        return []
+    try:
+        from .jobs import RunRegistry, identity_matches
+
+        return [
+            str(row["run_id"])
+            for row in RunRegistry().list_active(include_invalid=False)
+            if row.get("run_id")
+            and int((row.get("owner") or {}).get("pid") or 0) == pid
+            and identity_matches(row.get("owner"))
+        ]
+    except Exception:
+        return []
+
+
+def _safe_job_advice(holder: str) -> str:
+    run_ids = _holder_run_ids(holder)
+    if not run_ids:
+        return "    lope jobs list"
+    lines = [f"    lope jobs list  # owner run: {', '.join(run_ids)}"]
+    lines.extend(f"    lope jobs kill {run_id}" for run_id in run_ids)
+    return "\n".join(lines)
+
+
 @contextmanager
 def acquire(command: str):
     """Hold the lope run lock for the lifetime of a command.
@@ -57,7 +85,7 @@ def acquire(command: str):
 
     path = _lockfile_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
 
     wait_env = os.environ.get("LOPE_RUN_LOCK_WAIT")
     deadline: Optional[float] = None
@@ -78,13 +106,13 @@ def acquire(command: str):
                     raise
                 if wait_env is None:
                     holder = _read_holder(path)
+                    job_advice = _safe_job_advice(holder)
                     print(
                         f"\nlope {command}: another lope run is already active "
                         f"(holder: {holder}).\n"
                         f"  Inspect the recorded run safely:\n"
-                        f"    lope jobs list\n"
-                        f"  Cancel it from its owning terminal; automated ownership-aware "
-                        f"reaping is unavailable in this version.\n"
+                        f"{job_advice}\n"
+                        f"  `jobs kill` signals only the exact fingerprint-verified run ID.\n"
                         f"  To queue instead of failing, set LOPE_RUN_LOCK_WAIT=0 "
                         f"(wait forever) or LOPE_RUN_LOCK_WAIT=300 (5 min).\n"
                         f"  To disable locking entirely: LOPE_RUN_LOCK=off\n",
@@ -94,9 +122,12 @@ def acquire(command: str):
                     sys.exit(75)  # EX_TEMPFAIL
                 if deadline is not None and time.monotonic() >= deadline:
                     holder = _read_holder(path)
+                    job_advice = _safe_job_advice(holder)
                     print(
                         f"\nlope {command}: timed out waiting for run lock "
-                        f"after {wait_env}s (holder: {holder}).\n",
+                        f"after {wait_env}s (holder: {holder}).\n"
+                        f"  Inspect or cancel only by verified run ID:\n"
+                        f"{job_advice}\n",
                         file=sys.stderr,
                     )
                     os.close(fd)

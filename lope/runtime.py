@@ -55,6 +55,8 @@ class OutcomeClass(str, Enum):
     CANCELLED = "cancelled"
     INVALID_OUTPUT = "invalid_output"
     CLEANUP_FAILED = "cleanup_failed"
+    TRANSIENT_FAILURE = "transient_failure"
+    CIRCUIT_OPEN = "circuit_open"
 
 
 class BudgetExhausted(RuntimeError):
@@ -236,6 +238,12 @@ class RunBudget:
         self._output_actual = 0
         self._records: List[CallRecord] = []
         self._partial_reason = ""
+        self._request_plans: List[Dict[str, Any]] = []
+        self._artifacts: List[Dict[str, Any]] = []
+        self._events: List[Dict[str, Any]] = []
+        self._circuit_failures: Dict[str, int] = {}
+        self._circuit_open: Dict[str, str] = {}
+        self._circuit_threshold = 2
 
     def elapsed_seconds(self) -> float:
         return max(0.0, self._clock() - self.started_at)
@@ -289,6 +297,12 @@ class RunBudget:
             raise ValueError("output_limit_bytes must be positive")
         now = self._clock()
         with self._lock:
+            circuit_reason = self._circuit_open.get(validator)
+            if circuit_reason:
+                raise BudgetExhausted(
+                    OutcomeClass.CIRCUIT_OPEN.value,
+                    f"validator {validator} circuit open: {circuit_reason}",
+                )
             if self.cancellation.cancelled:
                 raise BudgetExhausted(
                     OutcomeClass.CANCELLED.value,
@@ -353,6 +367,11 @@ class RunBudget:
                 record.outcome = OutcomeClass.OUTPUT_LIMIT.value
                 if not record.reason:
                     record.reason = "actual output exceeded reserved run allowance"
+            self._record_provider_outcome_locked(
+                record.validator,
+                record.outcome,
+                record.reason,
+            )
 
     def records(self) -> List[CallRecord]:
         with self._lock:
@@ -363,16 +382,134 @@ class RunBudget:
             if not self._partial_reason:
                 self._partial_reason = reason
 
+    def add_event(self, kind: str, **fields: Any) -> None:
+        event: Dict[str, Any] = {
+            "kind": str(kind),
+            "elapsed_seconds": self.elapsed_seconds(),
+        }
+        for key, value in fields.items():
+            if value is not None:
+                event[str(key)] = value
+        with self._lock:
+            self._events.append(event)
+
+    def can_fund(
+        self,
+        seconds: float,
+        *,
+        calls: int = 0,
+        input_bytes: int = 0,
+    ) -> bool:
+        with self._lock:
+            return (
+                self.remaining_seconds() >= max(0.0, float(seconds))
+                and self._calls_reserved + max(0, int(calls)) <= self.max_external_calls
+                and self._input_reserved + max(0, int(input_bytes)) <= self.max_input_bytes
+                and not self.cancellation.cancelled
+            )
+
+    def calls_reserved(self) -> int:
+        with self._lock:
+            return self._calls_reserved
+
+    def completed_calls(self) -> int:
+        with self._lock:
+            return sum(1 for record in self._records if record.ended_at > 0)
+
+    def _record_provider_outcome_locked(
+        self,
+        validator: str,
+        outcome: str,
+        reason: str,
+    ) -> None:
+        if not validator:
+            return
+        if outcome == OutcomeClass.OK.value:
+            self._circuit_failures.pop(validator, None)
+            return
+        if outcome not in {
+            OutcomeClass.PROVIDER_TIMEOUT.value,
+            OutcomeClass.RATE_LIMITED.value,
+        }:
+            return
+        failures = self._circuit_failures.get(validator, 0) + 1
+        self._circuit_failures[validator] = failures
+        if failures >= self._circuit_threshold and validator not in self._circuit_open:
+            circuit_reason = (
+                f"{failures} consecutive {outcome} failures"
+                + (f": {reason[:160]}" if reason else "")
+            )
+            self._circuit_open[validator] = circuit_reason
+            self._events.append({
+                "kind": "circuit_opened",
+                "elapsed_seconds": self.elapsed_seconds(),
+                "validator": validator,
+                "reason": circuit_reason,
+            })
+
+    def circuit_reason(self, validator: str) -> str:
+        with self._lock:
+            return self._circuit_open.get(validator, "")
+
+    def add_request_plan(self, plan: Dict[str, Any]) -> None:
+        """Attach an additive, JSON-safe admission forecast to run telemetry."""
+
+        with self._lock:
+            self._request_plans.append(dict(plan))
+
+    def add_artifact(self, kind: str, path: str, **metadata: Any) -> None:
+        """Expose a user-facing run artifact without storing its body."""
+
+        item: Dict[str, Any] = {
+            "kind": str(kind),
+            "path": str(path),
+        }
+        for key, value in metadata.items():
+            if value is not None:
+                item[str(key)] = value
+        with self._lock:
+            if item not in self._artifacts:
+                self._artifacts.append(item)
+
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
             reason = self.cancellation.reason or self._partial_reason
             partial = bool(self._partial_reason) or any(
                 r.outcome and r.outcome != OutcomeClass.OK.value for r in self._records
             )
+            forecast_calls = max(
+                [int(plan.get("planned_calls") or 0) for plan in self._request_plans]
+                or [0]
+            )
+            forecast_wall = max(
+                [float(plan.get("nominal_wall_ceiling_seconds") or 0.0) for plan in self._request_plans]
+                or [0.0]
+            )
+            per_validator: Dict[str, Dict[str, Any]] = {}
+            for record in self._records:
+                row = per_validator.setdefault(record.validator, {
+                    "calls": 0,
+                    "completed": 0,
+                    "latency_seconds": 0.0,
+                    "prompt_bytes": 0,
+                    "output_bytes": 0,
+                    "outcomes": {},
+                })
+                row["calls"] += 1
+                row["completed"] += int(record.ended_at > 0)
+                row["latency_seconds"] += record.duration_seconds
+                row["prompt_bytes"] += record.prompt_bytes
+                row["output_bytes"] += record.output_bytes
+                if record.outcome:
+                    outcomes = row["outcomes"]
+                    outcomes[record.outcome] = outcomes.get(record.outcome, 0) + 1
             return {
                 "schema_version": SCHEMA_VERSION,
                 "run_id": self.run_id,
-                "plan": {"mode": self.mode},
+                "plan": {
+                    "mode": self.mode,
+                    "requests": list(self._request_plans),
+                },
                 "timing": {
                     "elapsed_seconds": self.elapsed_seconds(),
                     "remaining_seconds": self.remaining_seconds(),
@@ -388,6 +525,24 @@ class RunBudget:
                 },
                 "partial": partial,
                 "reason": reason or None,
+                "artifacts": list(self._artifacts),
+                "forecast": {
+                    "calls": forecast_calls,
+                    "wall_seconds": forecast_wall,
+                },
+                "actual": {
+                    "calls": self._calls_reserved,
+                    "completed_calls": sum(1 for record in self._records if record.ended_at > 0),
+                    "wall_seconds": self.elapsed_seconds(),
+                    "input_bytes": self._input_reserved,
+                    "output_bytes": self._output_actual,
+                    "per_validator": per_validator,
+                },
+                "circuits": {
+                    "failures": dict(self._circuit_failures),
+                    "open": dict(self._circuit_open),
+                },
+                "events": list(self._events),
                 "calls": [r.to_dict() for r in self._records],
             }
 
@@ -431,36 +586,52 @@ class InvocationContext:
 
     def register_lease(self, lease: CallLease, *, transport: str = "adapter") -> None:
         registry = self.metadata.get("registry")
-        if registry is None:
-            return
         record = lease.record
-        registry.register_call(self.run_id, {
-            "call_id": record.call_id,
-            "validator": record.validator,
-            "stage": record.stage,
-            "state": "active",
-            "started_at": time.time(),
-            "heartbeat_at": time.time(),
-            "deadline_at": time.time() + record.effective_timeout,
-            "transport": transport,
-            "owned_paths": [],
-            "cleanup_result": "pending",
-        })
+        if registry is not None:
+            registry.register_call(self.run_id, {
+                "call_id": record.call_id,
+                "validator": record.validator,
+                "stage": record.stage,
+                "state": "active",
+                "started_at": time.time(),
+                "heartbeat_at": time.time(),
+                "deadline_at": time.time() + record.effective_timeout,
+                "transport": transport,
+                "owned_paths": [],
+                "cleanup_result": "pending",
+            })
+        progress = self.metadata.get("progress")
+        if progress is not None:
+            progress.call_started(record.validator, record.stage)
+
+    def add_request_plan(self, plan: Dict[str, Any]) -> None:
+        self.budget.add_request_plan(plan)
+        registry = self.metadata.get("registry")
+        if registry is not None:
+            try:
+                registry.set_planned_calls(
+                    self.run_id,
+                    int(plan.get("planned_calls") or 0),
+                )
+            except Exception:
+                pass
 
     def finish_lease(self, lease: CallLease) -> None:
         registry = self.metadata.get("registry")
-        if registry is None:
-            return
         record = lease.record
-        registry.update_call(
-            self.run_id,
-            record.call_id,
-            state="finished",
-            outcome=record.outcome,
-            cleanup_result=record.cleanup_result,
-            ended_at=time.time(),
-            reason=record.reason,
-        )
+        if registry is not None:
+            registry.update_call(
+                self.run_id,
+                record.call_id,
+                state="finished",
+                outcome=record.outcome,
+                cleanup_result=record.cleanup_result,
+                ended_at=time.time(),
+                reason=record.reason,
+            )
+        progress = self.metadata.get("progress")
+        if progress is not None:
+            progress.call_finished(record.validator, record.outcome)
 
 
 def mode_run_timeout(mode: str) -> int:

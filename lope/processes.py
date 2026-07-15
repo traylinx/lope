@@ -25,7 +25,10 @@ from typing import Dict, List, Optional
 
 DEFAULT_STDOUT_LIMIT = 2 * 1024 * 1024
 DEFAULT_STDERR_LIMIT = 512 * 1024
-SUPERVISOR_CLEANUP_RESERVE = 8.0
+# Cleanup must not turn a one-second call timeout into a multi-second hang.
+# The supervisor itself performs TERM -> KILL and reaps the provider group;
+# the parent only needs a short bounded grace period before force-stopping it.
+SUPERVISOR_CLEANUP_RESERVE = 1.0
 ARGV_POLICY_LIMIT = 128 * 1024
 ARG_MAX_RESERVE = 32 * 1024
 
@@ -107,7 +110,7 @@ def _kill_supervisor(proc: subprocess.Popen) -> None:
             os.killpg(proc.pid, signal.SIGTERM)
         else:  # pragma: no cover - Windows
             proc.terminate()
-        proc.wait(timeout=2)
+        proc.wait(timeout=0.5)
         return
     except (OSError, subprocess.TimeoutExpired):
         pass
@@ -116,7 +119,7 @@ def _kill_supervisor(proc: subprocess.Popen) -> None:
             os.killpg(proc.pid, signal.SIGKILL)
         else:  # pragma: no cover
             proc.kill()
-        proc.wait(timeout=2)
+        proc.wait(timeout=0.5)
     except (OSError, subprocess.TimeoutExpired):
         pass
 

@@ -33,6 +33,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -52,6 +53,33 @@ HUMAN_QUESTION_MODES = ("never", "blocking", "always")
 DEFAULT_HUMAN_QUESTIONS = "never"
 
 MINORITY_HIGH_SEVERITY = {"high", "critical", "blocker"}
+MAX_SCENARIO_BYTES = 48 * 1024
+MAX_TURN_BYTES = 32 * 1024
+MAX_PEER_BLOCK_BYTES = 64 * 1024
+DEFAULT_STAGE_WORKERS = 5
+
+
+class DeliberationInconclusive(RuntimeError):
+    """Council stage lacked a majority of substantive contributors."""
+
+
+def _require_contributors(
+    turns: Sequence[CouncilTurn],
+    expected: int,
+    stage: str,
+) -> None:
+    required = expected // 2 + 1
+    contributors = sum(
+        1
+        for turn in turns
+        if (turn.text or "").strip() and not (turn.metadata or {}).get("error")
+    )
+    if contributors < required:
+        raise DeliberationInconclusive(
+            f"inconclusive: {stage} contributor quorum {contributors}/{required} "
+            f"not met from {expected} validators"
+        )
+_BOUNDARY_MARKER = "\n...[bounded council material; head and tail retained]...\n"
 
 
 # ---------------------------------------------------------------------------
@@ -471,7 +499,39 @@ SCENARIO_BLOCK_FOOTER = "<<< End scenario >>>"
 
 def _wrap_scenario(scenario: str) -> str:
     body = redact_text(scenario or "").strip() or "(empty scenario)"
+    if len(body.encode("utf-8")) > MAX_SCENARIO_BYTES:
+        raise ValueError(
+            f"deliberation scenario exceeds {MAX_SCENARIO_BYTES} UTF-8 bytes; "
+            "provide a smaller lossless scenario brief"
+        )
     return f"{SCENARIO_BLOCK_HEADER}\n{body}\n{SCENARIO_BLOCK_FOOTER}\n"
+
+
+def _bounded_text(text: str, limit: int) -> str:
+    raw = redact_text(text or "").encode("utf-8")
+    if len(raw) <= limit:
+        return raw.decode("utf-8")
+    marker = _BOUNDARY_MARKER.encode("utf-8")[:limit]
+    keep = max(0, limit - len(marker))
+    head = raw[: keep // 2]
+    tail = raw[-(keep - keep // 2):] if keep - keep // 2 else b""
+    while head:
+        try:
+            head_text = head.decode("utf-8")
+            break
+        except UnicodeDecodeError:
+            head = head[:-1]
+    else:
+        head_text = ""
+    while tail:
+        try:
+            tail_text = tail.decode("utf-8")
+            break
+        except UnicodeDecodeError:
+            tail = tail[1:]
+    else:
+        tail_text = ""
+    return head_text + marker.decode("utf-8", errors="ignore") + tail_text
 
 
 def _peer_block(
@@ -485,11 +545,13 @@ def _peer_block(
     for turn in turns:
         if exclude and turn.validator == exclude:
             continue
+        if not (turn.text or "").strip():
+            continue
         label = _label_for(turn.validator, label_map, anonymous=anonymous)
-        chunks.append(f"[{label}]\n{turn.text.rstrip()}\n")
+        chunks.append(f"[{label}]\n{_bounded_text(turn.text, MAX_TURN_BYTES).rstrip()}\n")
     if not chunks:
         return "(no peer outputs available)"
-    return "\n".join(chunks).rstrip()
+    return _bounded_text("\n".join(chunks).rstrip(), MAX_PEER_BLOCK_BYTES)
 
 
 def build_position_prompt(template: TemplateSpec, scenario: str) -> str:
@@ -533,10 +595,10 @@ def build_revision_prompt(
         f"{template.revision_intro}\n\n"
         f"{_wrap_scenario(scenario)}\n"
         "<<< Your prior position >>>\n"
-        f"{own_position.rstrip()}\n"
+        f"{_bounded_text(own_position, MAX_TURN_BYTES).rstrip()}\n"
         "<<< End your prior position >>>\n\n"
         "<<< Critiques you received (anonymized) >>>\n"
-        f"{peer_critiques}\n"
+        f"{_bounded_text(peer_critiques, MAX_PEER_BLOCK_BYTES)}\n"
         "<<< End critiques >>>\n\n"
         "Produce a revised version of your position. Where you agree, "
         "incorporate the critique. Where you disagree, defend your stance "
@@ -553,7 +615,7 @@ def build_synthesis_prompt(
         f"{template.synthesis_intro}\n\n"
         f"{_wrap_scenario(scenario)}\n"
         "<<< Council revised positions (anonymized) >>>\n"
-        f"{revisions_block}\n"
+        f"{_bounded_text(revisions_block, MAX_PEER_BLOCK_BYTES)}\n"
         "<<< End council revised positions >>>\n\n"
         "Required section headings (use them verbatim, in this order):\n"
         f"{template.required_section_block()}\n\n"
@@ -569,7 +631,7 @@ def build_rubric_prompt(template: TemplateSpec, synthesis_text: str) -> str:
     return (
         f"{template.rubric_intro}\n\n"
         "<<< Synthesis to score >>>\n"
-        f"{synthesis_text.rstrip()}\n"
+        f"{_bounded_text(synthesis_text, MAX_TURN_BYTES).rstrip()}\n"
         "<<< End synthesis >>>\n\n"
         "Rubric:\n"
         f"{template.rubric_block()}\n\n"
@@ -626,6 +688,38 @@ def parse_rubric_response(text: str) -> Tuple[str, str, List[str]]:
 # ---------------------------------------------------------------------------
 
 
+def _generate_stage(
+    validators: Sequence[str],
+    prompt_for,
+    generate: GenerateFn,
+    timeout: int,
+    *,
+    parallel: bool,
+    max_workers: int,
+) -> Dict[str, Tuple[str, str]]:
+    """Run independent stage calls with bounded fan-out and stable ordering."""
+
+    def invoke(name: str) -> Tuple[str, str]:
+        try:
+            text = redact_text(generate(name, prompt_for(name), timeout)).strip()
+            return _bounded_text(text, MAX_TURN_BYTES), ""
+        except Exception as exc:
+            return "", f"{type(exc).__name__}: {exc}"[:300]
+
+    if not parallel or len(validators) <= 1:
+        return {name: invoke(name) for name in validators}
+    results: Dict[str, Tuple[str, str]] = {}
+    with ThreadPoolExecutor(max_workers=min(len(validators), max(1, max_workers))) as executor:
+        futures = {executor.submit(invoke, name): name for name in validators}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                results[name] = future.result()
+            except Exception as exc:  # pragma: no cover - invoke already isolates
+                results[name] = ("", f"{type(exc).__name__}: {exc}"[:300])
+    return {name: results.get(name, ("", "not scheduled")) for name in validators}
+
+
 def run_deliberation(
     *,
     template: TemplateSpec,
@@ -637,6 +731,8 @@ def run_deliberation(
     timeout: int = 240,
     anonymous: bool = True,
     output_dir: Optional[Path] = None,
+    parallel: bool = True,
+    max_workers: int = DEFAULT_STAGE_WORKERS,
 ) -> DeliberationRun:
     """Run the full council protocol and return a :class:`DeliberationRun`.
 
@@ -664,41 +760,64 @@ def run_deliberation(
     # --- Phase 2: independent positions ---------------------------------
     position_prompt = build_position_prompt(template, scenario)
     positions: List[CouncilTurn] = []
+    position_results = _generate_stage(
+        validators,
+        lambda _name: position_prompt,
+        generate,
+        timeout,
+        parallel=parallel,
+        max_workers=max_workers,
+    )
     for name in validators:
-        text = redact_text(generate(name, position_prompt, timeout)).strip()
+        text, error = position_results[name]
         positions.append(
             CouncilTurn(
                 stage="position",
                 validator=name,
                 label=label_map[name],
                 text=text,
+                metadata={"error": error} if error else {},
             )
         )
     turns.extend(positions)
+    _require_contributors(positions, len(validators), "position")
 
     critiques: List[CouncilTurn] = []
     revisions: List[CouncilTurn] = list(positions)
 
     if depth in ("standard", "deep"):
         # --- Phase 3: anonymized critique ------------------------------
+        critique_prompts = {}
         for name in validators:
             peer_block = _peer_block(
                 positions, label_map, anonymous=anonymous, exclude=name
             )
-            prompt = build_critique_prompt(template, scenario, peer_block)
-            text = redact_text(generate(name, prompt, timeout)).strip()
+            critique_prompts[name] = build_critique_prompt(template, scenario, peer_block)
+        critique_results = _generate_stage(
+            validators,
+            lambda name: critique_prompts[name],
+            generate,
+            timeout,
+            parallel=parallel,
+            max_workers=max_workers,
+        )
+        for name in validators:
+            text, error = critique_results[name]
             critiques.append(
                 CouncilTurn(
                     stage="critique",
                     validator=name,
                     label=label_map[name],
                     text=text,
+                    metadata={"error": error} if error else {},
                 )
             )
         turns.extend(critiques)
+        _require_contributors(critiques, len(validators), "critique")
 
         # --- Phase 4: revisions ----------------------------------------
         revisions = []
+        revision_prompts = {}
         for name in validators:
             own_position = next(p.text for p in positions if p.validator == name)
             received_critiques = _peer_block(
@@ -706,27 +825,41 @@ def run_deliberation(
                 label_map,
                 anonymous=anonymous,
             )
-            prompt = build_revision_prompt(
+            revision_prompts[name] = build_revision_prompt(
                 template,
                 scenario,
                 own_position,
                 received_critiques,
             )
-            text = redact_text(generate(name, prompt, timeout)).strip()
+        revision_results = _generate_stage(
+            validators,
+            lambda name: revision_prompts[name],
+            generate,
+            timeout,
+            parallel=parallel,
+            max_workers=max_workers,
+        )
+        for name in validators:
+            text, error = revision_results[name]
             revisions.append(
                 CouncilTurn(
                     stage="revision",
                     validator=name,
                     label=label_map[name],
                     text=text,
+                    metadata={"error": error} if error else {},
                 )
             )
         turns.extend(revisions)
+        _require_contributors(revisions, len(validators), "revision")
 
     # --- Phase 5: synthesis (primary only) ------------------------------
     revisions_block = _peer_block(revisions, label_map, anonymous=anonymous)
     synthesis_prompt = build_synthesis_prompt(template, scenario, revisions_block)
-    synthesis_text = redact_text(generate(primary_name, synthesis_prompt, timeout)).strip()
+    synthesis_text = _bounded_text(
+        redact_text(generate(primary_name, synthesis_prompt, timeout)).strip(),
+        MAX_TURN_BYTES,
+    )
     turns.append(
         CouncilTurn(
             stage="synthesis",
@@ -739,8 +872,27 @@ def run_deliberation(
     # --- Phase 6: rubric review ----------------------------------------
     rubric_results: List[RubricVerdict] = []
     rubric_prompt = build_rubric_prompt(template, synthesis_text)
+    rubric_stage = _generate_stage(
+        validators,
+        lambda _name: rubric_prompt,
+        generate,
+        timeout,
+        parallel=parallel,
+        max_workers=max_workers,
+    )
+    rubric_turns = [
+        CouncilTurn(
+            stage="rubric",
+            validator=name,
+            label=label_map[name],
+            text=rubric_stage[name][0],
+            metadata={"error": rubric_stage[name][1]} if rubric_stage[name][1] else {},
+        )
+        for name in validators
+    ]
+    _require_contributors(rubric_turns, len(validators), "rubric")
     for name in validators:
-        text = redact_text(generate(name, rubric_prompt, timeout)).strip()
+        text, error = rubric_stage[name]
         status, severity, objections = parse_rubric_response(text)
         rubric_results.append(
             RubricVerdict(
@@ -758,7 +910,11 @@ def run_deliberation(
                 validator=name,
                 label=label_map[name],
                 text=text,
-                metadata={"status": status, "severity": severity},
+                metadata={
+                    "status": status,
+                    "severity": severity,
+                    **({"error": error} if error else {}),
+                },
             )
         )
 

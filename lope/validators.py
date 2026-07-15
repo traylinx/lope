@@ -388,11 +388,13 @@ class OpencodeValidator(Validator):
             )
         text = _extract_text_from_json_stream(proc.stdout)
         if not text:
-            text = _extract_text_from_opencode_export(
-                self._binary, proc.stdout,
-                timeout=max(0.001, deadline - time.monotonic()),
-                cwd=self._workdir, context=context,
-            )
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                text = _extract_text_from_opencode_export(
+                    self._binary, proc.stdout,
+                    timeout=remaining,
+                    cwd=self._workdir, context=context,
+                )
         if not text:
             diag = _diagnose_empty_opencode_stream(proc.stdout)
             raise RuntimeError(
@@ -438,11 +440,13 @@ class OpencodeValidator(Validator):
 
         text = _extract_text_from_json_stream(proc.stdout)
         if not text:
-            text = _extract_text_from_opencode_export(
-                self._binary, proc.stdout,
-                timeout=max(0.001, deadline - time.monotonic()),
-                cwd=self._workdir, context=context,
-            )
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                text = _extract_text_from_opencode_export(
+                    self._binary, proc.stdout,
+                    timeout=remaining,
+                    cwd=self._workdir, context=context,
+                )
         if not text:
             diag = _diagnose_empty_opencode_stream(proc.stdout)
             return _infra_error(
@@ -532,7 +536,7 @@ def _opencode_session_id_from_stdout(stdout: str) -> Optional[str]:
 def _extract_text_from_opencode_export(
     binary: str,
     stdout: str,
-    timeout: int,
+    timeout: float,
     cwd: str,
     context=None,
 ) -> str:
@@ -544,7 +548,7 @@ def _extract_text_from_opencode_export(
     opencode teammate stays usable across this upstream event-stream drift.
     """
     session_id = _opencode_session_id_from_stdout(stdout)
-    if not session_id:
+    if not session_id or timeout <= 0:
         return ""
     try:
         runner_kwargs = {
@@ -1204,7 +1208,7 @@ class ValidatorPool:
     def validate(
         self, prompt: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, *, context=None
     ) -> ValidatorResult:
-        from .runtime import BudgetExhausted, OutcomeClass
+        from .runtime import BudgetExhausted
 
         if context is None:
             context = getattr(self, "_invocation_context", None)
@@ -1216,49 +1220,27 @@ class ValidatorPool:
                 continue
             attempts.append(validator.name)
             log.info(f"[pool] trying validator: {validator.name}")
-            lease = None
-            effective = timeout
-            if context is not None:
-                try:
-                    lease = context.budget.reserve_call(
-                        stage=context.stage,
-                        validator=validator.name,
-                        prompt=prompt,
-                        requested_timeout=timeout,
-                        transport="adapter",
-                    )
-                    context.register_lease(lease, transport="adapter")
-                    effective = lease.effective_timeout
-                except BudgetExhausted as exc:
-                    last_error = f"{exc.reason}: {exc}"
-                    attempts.append(f"{validator.name}:budget_exhausted")
-                    break
-            call_context = (
-                context.child(
-                    validator=validator.name,
-                    metadata={"call_id": lease.record.call_id},
+            try:
+                from .invocation import invoke_validate
+
+                result = invoke_validate(
+                    validator,
+                    prompt,
+                    timeout,
+                    context=context,
+                    stage=context.stage if context is not None else "validation",
                 )
-                if context is not None and lease is not None else context
-            )
-            invoke_with_context = getattr(validator, "validate_with_context", None)
-            result = (
-                invoke_with_context(prompt, effective, call_context)
-                if callable(invoke_with_context)
-                else validator.validate(prompt, effective)
-            )
-            if lease is not None:
-                outcome = (
-                    OutcomeClass.OK
-                    if result.verdict.status not in (VerdictStatus.INFRA_ERROR, VerdictStatus.INCONCLUSIVE)
-                    else OutcomeClass.PARSE_ERROR
+            except BudgetExhausted as exc:
+                last_error = f"{exc.reason}: {exc}"
+                attempts.append(f"{validator.name}:budget_exhausted")
+                if exc.reason == "circuit_open":
+                    continue
+                break
+            except Exception as exc:
+                result = _infra_error(
+                    validator.name,
+                    f"validator raised: {type(exc).__name__}: {exc}",
                 )
-                lease.finish(
-                    outcome,
-                    output_bytes=len((result.raw_response or "").encode("utf-8")),
-                    cleanup_result="clean" if not result.error else "unknown",
-                    reason=result.error or result.verdict.rationale,
-                )
-                context.finish_lease(lease)
             # PASS / NEEDS_FIX / FAIL halt the chain. INFRA_ERROR falls through.
             if result.verdict.status not in (VerdictStatus.INFRA_ERROR, VerdictStatus.INCONCLUSIVE):
                 log.info(
@@ -1524,6 +1506,10 @@ class CodexValidator(Validator):
             # v0.10.5: pass --ignore-user-config, read-only sandbox, and low
             # reasoning so interactive Codex MCP startup or high defaults do
             # not poison fast validator calls.
+            implementation_mode = bool(
+                context is not None
+                and getattr(context, "metadata", {}).get("implementation")
+            )
             proc, _elapsed = _run_with_group_kill(
                 [
                     self._binary,
@@ -1531,7 +1517,7 @@ class CodexValidator(Validator):
                     "--ignore-user-config",
                     "--skip-git-repo-check",
                     "-s",
-                    "read-only",
+                    "workspace-write" if implementation_mode else "read-only",
                     "-c",
                     'model_reasoning_effort="low"',
                 ],

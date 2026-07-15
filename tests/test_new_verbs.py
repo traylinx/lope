@@ -17,7 +17,7 @@ import pytest
 # harness is run from an arbitrary cwd.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from lope.cli import _parse_vote, _vote_winner
+from lope.cli import _choice_quorum, _parse_vote, _vote_winner
 
 
 # ─── _parse_vote — option label extraction ─────────────────────────
@@ -87,6 +87,30 @@ class TestVoteWinner:
 
     def test_one_option_zero_votes(self):
         assert _vote_winner({"A": 0}) is None
+
+
+class TestChoiceQuorum:
+    class Pool:
+        def names(self):
+            return ["a", "b", "c"]
+
+    def test_requires_majority_of_selected_valid_choices(self):
+        ok, reason = _choice_quorum(self.Pool(), [
+            ("a", "A", "A", None),
+            ("b", None, "", "timeout"),
+            ("c", None, "tool call", None),
+        ])
+        assert not ok
+        assert "1/2" in reason
+
+    def test_two_valid_choices_meet_quorum(self):
+        ok, reason = _choice_quorum(self.Pool(), [
+            ("a", "A", "A", None),
+            ("b", "B", "B", None),
+            ("c", None, "", "timeout"),
+        ])
+        assert ok
+        assert reason == ""
 
 
 # ─── EnsemblePool re-export compat ────────────────────────────────
@@ -219,3 +243,79 @@ class TestFanoutGenerate:
         by_name = {name: (answer, error) for name, answer, error in results}
         assert by_name["fast"] == ("OK", None)
         assert by_name["slow"][1] == "slow fanout timed out after 0.05s"
+
+    def test_common_fanout_respects_sequential_pool_setting(self):
+        import threading
+
+        from lope.cli import _fanout_generate
+
+        active = 0
+        peak = 0
+        lock = threading.Lock()
+
+        class FakeValidator:
+            def __init__(self, name):
+                self.name = name
+
+            def available(self):
+                return True
+
+            def generate(self, prompt, timeout):
+                nonlocal active, peak
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                time.sleep(0.03)
+                with lock:
+                    active -= 1
+                return f"{self.name}:{prompt}"
+
+        class FakePool:
+            _parallel = False
+            _validators = [FakeValidator("a"), FakeValidator("b")]
+
+        results = _fanout_generate(
+            FakePool(),
+            "base",
+            timeout=1,
+            prompts_by_validator={"a": "role-a", "b": "role-b"},
+        )
+        assert peak == 1
+        assert {name: answer for name, answer, _error in results} == {
+            "a": "a:role-a",
+            "b": "b:role-b",
+        }
+
+    def test_sequential_context_uses_run_deadline_not_one_call_window(self):
+        from lope.cli import _fanout_generate
+        from lope.runtime import InvocationContext, RunBudget
+
+        class FakeValidator:
+            def __init__(self, name):
+                self.name = name
+
+            def available(self):
+                return True
+
+            def generate(self, _prompt, _timeout):
+                time.sleep(0.55)
+                return self.name
+
+        class FakePool:
+            _parallel = False
+            _validators = [FakeValidator("a"), FakeValidator("b")]
+
+        context = InvocationContext(
+            budget=RunBudget(mode="ask", run_timeout=10),
+            mode="ask",
+        )
+        results = _fanout_generate(
+            FakePool(),
+            "prompt",
+            timeout=1,
+            context=context,
+        )
+        assert [(name, answer) for name, answer, error in results if not error] == [
+            ("a", "a"),
+            ("b", "b"),
+        ]
