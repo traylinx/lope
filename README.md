@@ -929,3 +929,6 @@ Main areas: new validators, better prompts, sprint doc format, CI/CD integration
 MIT. See [LICENSE](LICENSE).
 
 Built by [Sebastian Schkudlara](https://github.com/traylinx). Caveman mode adapted from [JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman).
+# Timeouts, large requests, and abandoned jobs
+
+For multi-round commands, set a whole-command ceiling with `--run-timeout`; `--timeout` only limits one provider call. Lope prints a request plan and uses bounded chunking or rejects unsafe argv/input sizes instead of silently expanding work. Inspect and safely reconcile owned jobs with `lope jobs list` and `lope jobs reap --dry-run`. Never use `pkill -f` or process-name matching.
