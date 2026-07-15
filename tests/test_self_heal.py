@@ -488,3 +488,24 @@ def test_self_heal_attempt_reviewer_exception_returns_none(tmp_path, monkeypatch
     )
 
     assert adapter is None
+
+
+def test_unexpired_learned_adapter_is_consumed_by_next_pool():
+    import time
+    from lope.validators import build_validator_pool
+
+    cfg = LopeCfg(
+        validators=["codex"], primary="codex", timeout=60, parallel=False,
+        learned_adapters={
+            "codex": LearnedAdapter(
+                argv_template=["echo", "{prompt}"],
+                stdin_mode="none",
+                stdout_parser="plaintext",
+                timestamp=time.time(),
+                source_cli="claude",
+                confidence=0.9,
+            )
+        },
+    )
+    pool = build_validator_pool(cfg)
+    assert pool.primary_validator().__class__.__name__ == "GenericSubprocessValidator"

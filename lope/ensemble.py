@@ -33,6 +33,7 @@ from .runtime import (
     InvocationContext,
     OutcomeClass,
 )
+from .output_validity import classify_output
 
 DEFAULT_TIMEOUT_SECONDS = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
 
@@ -138,7 +139,19 @@ class EnsemblePool:
             if effective <= 0:
                 return timeout_result(validator, "run_budget_exhausted: fan-out deadline elapsed")
             try:
-                result = validator.validate(prompt, effective)
+                call_context = (
+                    context.child(
+                        validator=validator.name,
+                        metadata={"call_id": lease.record.call_id},
+                    )
+                    if context is not None and lease is not None else context
+                )
+                invoke_with_context = getattr(validator, "validate_with_context", None)
+                result = (
+                    invoke_with_context(prompt, effective, call_context)
+                    if callable(invoke_with_context)
+                    else validator.validate(prompt, effective)
+                )
             except Exception as exc:
                 result = timeout_result(validator, f"validator raised: {exc}")
             if lease is not None:
@@ -222,12 +235,7 @@ def synthesize(
         rationale = (result.verdict.rationale or "").strip()
         if not raw:
             return bool(rationale)
-        lowered = raw.lower()
-        tool_only = (
-            ("tool_calls" in lowered or "<tool" in lowered or "tool_use" in lowered)
-            and "verdict" not in lowered
-        )
-        return not tool_only
+        return classify_output(raw).substantive
 
     decisive = [r for r in results if substantive(r)]
     infra_errors = [r for r in results if r not in decisive]

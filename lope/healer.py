@@ -47,6 +47,10 @@ SMOKE_PROMPT = "Reply with the single word OK and nothing else."
 SMOKE_EXPECTED = "OK"
 SMOKE_TIMEOUT_SECONDS = 60
 HELP_TIMEOUT_SECONDS = 10
+REVIEW_TIMEOUT_SECONDS = 120
+SELF_HEAL_BUDGET_SECONDS = (
+    HELP_TIMEOUT_SECONDS + REVIEW_TIMEOUT_SECONDS + SMOKE_TIMEOUT_SECONDS
+)
 
 
 # Learned adapters expire after 90 days, at which point lope re-verifies
@@ -65,7 +69,13 @@ class SelfHealer:
     def __init__(self) -> None:
         self._healed_this_session: set[str] = set()
 
-    def should_attempt(self, cli_name: str, reviewer_available: bool) -> bool:
+    def should_attempt(
+        self,
+        cli_name: str,
+        reviewer_available: bool,
+        *,
+        remaining_seconds: Optional[float] = None,
+    ) -> bool:
         """Gate: can we safely attempt a heal for this CLI right now?
 
         Returns False if:
@@ -82,6 +92,11 @@ class SelfHealer:
         if cli_name in self._healed_this_session:
             return False
         if not reviewer_available:
+            return False
+        if (
+            remaining_seconds is not None
+            and remaining_seconds < SELF_HEAL_BUDGET_SECONDS
+        ):
             return False
         return True
 
@@ -188,10 +203,9 @@ class SelfHealer:
     def _capture_help(self, cli_binary: str) -> Optional[str]:
         """Run `<cli_binary> --help` with a timeout, return stdout or None."""
         try:
-            proc = subprocess.run(
+            from .processes import run_subprocess_group
+            proc = run_subprocess_group(
                 [cli_binary, "--help"],
-                capture_output=True,
-                text=True,
                 timeout=HELP_TIMEOUT_SECONDS,
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -212,7 +226,7 @@ class SelfHealer:
         """Build a heal prompt and ask the reviewer for a corrected invocation."""
         prompt = _build_heal_prompt(cli_name, old_argv, stderr, help_text)
         try:
-            response = reviewer.generate(prompt, timeout=120)
+            response = reviewer.generate(prompt, timeout=REVIEW_TIMEOUT_SECONDS)
         except Exception as e:
             log.warning("self-heal: reviewer.generate raised %s", e)
             return None
@@ -229,11 +243,10 @@ class SelfHealer:
         if proposal.stdin_mode == "pipe":
             stdin_data = SMOKE_PROMPT
         try:
-            proc = subprocess.run(
+            from .processes import run_subprocess_group
+            proc = run_subprocess_group(
                 argv,
-                input=stdin_data,
-                capture_output=True,
-                text=True,
+                input_text=stdin_data,
                 timeout=SMOKE_TIMEOUT_SECONDS,
             )
         except (subprocess.TimeoutExpired, OSError) as e:

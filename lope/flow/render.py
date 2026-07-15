@@ -24,6 +24,7 @@ _KIND_SHAPE = {
     NodeKind.SCRIPT: "parallelogram",
     NodeKind.GATE: "hexagon",
 }
+GRAPHVIZ_TIMEOUT_SECONDS = 60
 
 
 def to_canonical_dot(graph: FlowGraph) -> str:
@@ -78,11 +79,15 @@ def render_file(path: str, out_path: str = "", fmt: str = "svg") -> str:
         )
 
     out = out_path or str(Path(path).with_suffix(f".{fmt}"))
-    proc = subprocess.run(
-        ["dot", f"-T{fmt}", "-o", out],
-        input=canonical, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
+    try:
+        proc = subprocess.run(
+            ["dot", f"-T{fmt}", "-o", out],
+            input=canonical, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=GRAPHVIZ_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return f"dot timed out after {GRAPHVIZ_TIMEOUT_SECONDS}s"
     if proc.returncode != 0:
         return f"dot failed (exit {proc.returncode}): {(proc.stderr or '').strip()[:300]}"
     return f"Rendered {out}"

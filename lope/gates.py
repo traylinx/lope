@@ -207,23 +207,23 @@ def default_baseline_path(cwd: Optional[Path] = None) -> Path:
     return Path(cwd or os.getcwd()).resolve() / DEFAULT_BASELINE
 
 
-def run_gates(specs: Sequence[GateSpec], cwd: Optional[Path] = None, default_timeout: int = 480) -> List[GateResult]:
+def run_gates(specs: Sequence[GateSpec], cwd: Optional[Path] = None, default_timeout: int = 480, context=None) -> List[GateResult]:
     root = Path(cwd or os.getcwd()).resolve()
-    return [run_gate(spec, root, default_timeout=default_timeout) for spec in specs]
+    return [run_gate(spec, root, default_timeout=default_timeout, context=context) for spec in specs]
 
 
-def run_gate(spec: GateSpec, cwd: Path, default_timeout: int = 480) -> GateResult:
+def run_gate(spec: GateSpec, cwd: Path, default_timeout: int = 480, context=None) -> GateResult:
     start = time.perf_counter_ns()
     timeout = spec.timeout or default_timeout
     try:
-        proc = subprocess.run(
-            spec.cmd,
-            shell=True,
+        from .processes import run_subprocess_group
+
+        shell_cmd = [os.environ.get("COMSPEC", "cmd.exe"), "/c", spec.cmd] if os.name == "nt" else ["/bin/sh", "-c", spec.cmd]
+        proc = run_subprocess_group(
+            shell_cmd,
             cwd=str(cwd),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             timeout=timeout,
+            context=context,
         )
         duration_ms = int((time.perf_counter_ns() - start) / 1_000_000)
         stdout = _tail(proc.stdout or '')

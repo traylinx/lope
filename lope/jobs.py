@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import platform
+import signal
 import shutil
 import socket
 import subprocess
@@ -100,6 +101,20 @@ def process_start_fingerprint(pid: int) -> Optional[str]:
     return "ps:" + " ".join(value.split()) if proc.returncode == 0 and value else None
 
 
+def process_state(pid: int) -> str:
+    if pid <= 0:
+        return ""
+    ps_bin = shutil.which("ps") or ("/bin/ps" if Path("/bin/ps").is_file() else "/usr/bin/ps")
+    try:
+        proc = subprocess.run(
+            [ps_bin, "-p", str(pid), "-o", "stat="], capture_output=True,
+            text=True, timeout=2, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return proc.stdout.strip()
+
+
 def boot_fingerprint() -> str:
     """Hash host + boot identity so manifests cannot cross reboot silently."""
 
@@ -132,6 +147,9 @@ def identity_matches(identity: Optional[Dict[str, Any]]) -> bool:
         return False
     expected = identity.get("start_fingerprint")
     if pid <= 0 or not expected:
+        return False
+    state = process_state(pid)
+    if not state or state.startswith("Z"):
         return False
     return process_start_fingerprint(pid) == expected
 
@@ -291,6 +309,7 @@ class RunRegistry:
             "pgid", "started_at", "heartbeat_at", "deadline_at", "transport",
             "ownership_marker_hash", "executable_hash", "command_hash",
             "owned_paths", "cleanup_result", "outcome", "ended_at", "reason",
+            "processes_targeted", "platform_cleanup",
         }
         forbidden = {str(key).lower() for key in call} & _FORBIDDEN_MANIFEST_KEYS
         if forbidden:
@@ -368,14 +387,14 @@ class RunRegistry:
     def classify(self, manifest: Dict[str, Any], *, stale_after: float = 45.0) -> str:
         if manifest.get("host_boot_fingerprint") != boot_fingerprint():
             return "abandoned"
+        if manifest.get("cleanup_result") not in (None, "", "pending", "clean"):
+            return "cleanup_failed"
         owner_live = identity_matches(manifest.get("owner"))
         if not owner_live:
             return "abandoned"
         heartbeat = float(manifest.get("heartbeat_at") or 0.0)
         if heartbeat and time.time() - heartbeat > stale_after:
             return "unresponsive"
-        if manifest.get("cleanup_result") not in (None, "", "pending", "clean"):
-            return "cleanup_failed"
         return "active"
 
     def is_owned_path(self, run_id: str, candidate: str) -> bool:
@@ -437,6 +456,174 @@ class RunRegistry:
                 continue
         return removed
 
+    @staticmethod
+    def _wait_identity_gone(identity: Dict[str, Any], timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not identity_matches(identity):
+                return True
+            time.sleep(0.05)
+        return not identity_matches(identity)
+
+    def _remove_empty_work_dirs(self, run_id: str) -> List[Dict[str, str]]:
+        """Remove only empty, canonical directories beneath one run root.
+
+        Reconciliation must not use ``rmtree`` as a shortcut: an unregistered
+        file or a rejected symlink is evidence that cleanup is incomplete, not
+        permission to delete it recursively.
+        """
+
+        root = self.work_dir / run_id
+        if not root.exists():
+            return []
+        results: List[Dict[str, str]] = []
+        for current, directories, _files in os.walk(root, topdown=False, followlinks=False):
+            for name in directories:
+                path = Path(current) / name
+                if path.is_symlink():
+                    continue
+                try:
+                    path.rmdir()
+                    results.append({"path": str(path), "result": "removed"})
+                except OSError:
+                    pass
+        try:
+            root.rmdir()
+            results.append({"path": str(root), "result": "removed"})
+        except OSError as exc:
+            results.append({
+                "path": str(root),
+                "result": "cleanup_failed",
+                "reason": f"work directory not empty: {exc}"[:200],
+            })
+        return results
+
+    def _reap_call(self, run_id: str, call_id: str, call: Dict[str, Any], *, dry_run: bool) -> Dict[str, Any]:
+        child = call.get("child") or {}
+        if not identity_matches(child):
+            try:
+                pid = int(child.get("pid", 0))
+            except (TypeError, ValueError):
+                pid = 0
+            expected = child.get("start_fingerprint")
+            current = process_start_fingerprint(pid) if pid > 0 else None
+            if current and expected and current != expected and not process_state(pid).startswith("Z"):
+                return {"call_id": call_id, "action": "refused", "result": "identity_mismatch"}
+            return {"call_id": call_id, "action": "none", "result": "not_live_or_identity_mismatch"}
+        pid = int(child.get("pid", 0))
+        pgid = int(call.get("pgid") or 0)
+        marker_hash = str(call.get("ownership_marker_hash") or "")
+        if pid <= 0 or pgid <= 0 or len(marker_hash) != 64:
+            return {"call_id": call_id, "action": "refused", "result": "ownership_unverified"}
+        if os.name == "posix":
+            try:
+                actual_pgid = os.getpgid(pid)
+            except OSError:
+                return {"call_id": call_id, "action": "none", "result": "already_gone"}
+            if actual_pgid != pgid:
+                return {"call_id": call_id, "action": "refused", "result": "pgid_mismatch"}
+        if dry_run:
+            return {"call_id": call_id, "action": "would_reap", "result": "confirmed_owned"}
+        try:
+            if os.name == "posix":
+                os.killpg(pgid, signal.SIGTERM)
+            else:  # pragma: no cover
+                os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return {"call_id": call_id, "action": "none", "result": "already_gone"}
+        if not self._wait_identity_gone(child, 1.0):
+            try:
+                if os.name == "posix" and hasattr(signal, "SIGKILL"):
+                    os.killpg(pgid, signal.SIGKILL)
+                else:  # pragma: no cover
+                    os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        gone = self._wait_identity_gone(child, 3.0)
+        return {
+            "call_id": call_id,
+            "action": "reaped" if gone else "kill_sent",
+            "result": "clean" if gone else "cleanup_unconfirmed",
+        }
+
+    def reap_run(self, run_id: str, *, dry_run: bool = False) -> Dict[str, Any]:
+        """Reap one confirmed abandoned run; never signal a live owner."""
+
+        manifest = self.load_active(run_id)
+        classification = self.classify(manifest)
+        if classification != "abandoned":
+            return {
+                "run_id": run_id,
+                "classification": classification,
+                "action": "refused",
+                "reason": "owner is live or ownership is not abandoned",
+                "calls": [],
+            }
+        actions = [
+            self._reap_call(run_id, call_id, call, dry_run=dry_run)
+            for call_id, call in (manifest.get("calls") or {}).items()
+        ]
+        refused = any(item["action"] == "refused" for item in actions)
+        still_live = any(
+            identity_matches(call.get("child"))
+            for call in (manifest.get("calls") or {}).values()
+        )
+        cleanup = []
+        if not dry_run and not refused and not still_live:
+            paths: List[str] = []
+            for call in (manifest.get("calls") or {}).values():
+                paths.extend(str(p) for p in (call.get("owned_paths") or []))
+            cleanup = self.cleanup_owned_paths(run_id, paths)
+            cleanup.extend(self._remove_empty_work_dirs(run_id))
+            cleanup_failed = any(
+                item.get("result") not in ("removed", "already_gone")
+                for item in cleanup
+            )
+
+            def record(manifest_to_update: Dict[str, Any]) -> Dict[str, Any]:
+                manifest_to_update.setdefault("cleanup_history", []).append({
+                    "at": time.time(),
+                    "source": "reconcile",
+                    "calls": actions,
+                    "paths": cleanup,
+                })
+                if cleanup_failed:
+                    manifest_to_update["state"] = "cleanup_failed"
+                    manifest_to_update["cleanup_result"] = "cleanup_failed"
+                    manifest_to_update["reason"] = "owned resource cleanup incomplete"
+                return manifest_to_update
+
+            self.update(run_id, record)
+            if not cleanup_failed:
+                self.finish_run(
+                    run_id,
+                    state="reaped",
+                    reason="confirmed owner dead",
+                    cleanup_result="clean",
+                )
+        return {
+            "run_id": run_id,
+            "classification": classification,
+            "action": (
+                "dry_run" if dry_run else
+                "refused" if refused or still_live else
+                "cleanup_failed" if any(
+                    item.get("result") not in ("removed", "already_gone")
+                    for item in cleanup
+                ) else
+                "reaped"
+            ),
+            "calls": actions,
+            "cleanup": cleanup,
+        }
+
+    def reconcile(self, *, dry_run: bool = False) -> List[Dict[str, Any]]:
+        results = []
+        for manifest in self.list_active(include_invalid=False):
+            if manifest.get("classification") == "abandoned" and manifest.get("run_id"):
+                results.append(self.reap_run(str(manifest["run_id"]), dry_run=dry_run))
+        return results
+
 
 __all__ = [
     "COMPLETED_RETENTION_COUNT",
@@ -448,5 +635,6 @@ __all__ = [
     "identity_matches",
     "lope_home",
     "process_identity",
+    "process_state",
     "process_start_fingerprint",
 ]

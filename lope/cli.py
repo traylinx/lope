@@ -484,7 +484,7 @@ def main():
     t_add.add_argument("--timeout", type=int, default=None,
                        help="Per-call timeout override in seconds")
     t_add.add_argument("--max-tokens", type=int, default=None,
-                       help="Max tokens in response (default: 100000)")
+                       help="Optional provider response-token cap")
     t_add.add_argument("--primary", action="store_true",
                        help="Make this the primary validator (used by execute() for implementation)")
     t_add.add_argument("--disabled", action="store_true",
@@ -1572,7 +1572,10 @@ def _cmd_install(host: str):
     if host != "all":
         args.extend(["--host", host])
     try:
-        proc = subprocess.run(args, check=False)
+        proc = subprocess.run(args, check=False, timeout=600)
+    except subprocess.TimeoutExpired:
+        print("Install failed: installer exceeded 600s maintenance timeout", file=sys.stderr)
+        sys.exit(124)
     except OSError as exc:
         print(f"Install failed: cannot execute {install_script}: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -1646,6 +1649,7 @@ def _ensure_runtime(args, cfg, pool):
         max_output_bytes=cfg.max_output_bytes,
     )
     registry = RunRegistry()
+    registry.reconcile()
     registry.start_run(
         mode,
         run_id=budget.run_id,
@@ -1727,63 +1731,56 @@ def _ensure_config(args=None):
     return cfg, pool
 
 
-def _http_llm_fallback(system: str, user: str, llm_url: str) -> str:
+def _http_llm_fallback(
+    system: str,
+    user: str,
+    llm_url: str,
+    *,
+    timeout: float = 120,
+    context=None,
+) -> str:
     """Optional hosted-LLM fallback when the primary validator can't draft.
 
     Only used when the user explicitly sets LOPE_LLM_URL. Not the default
     path — the default path is to use the primary CLI validator itself.
     """
-    import json as _json
-    import urllib.error
-    import urllib.request
-
     llm_model = os.environ.get("LOPE_LLM_MODEL", "gpt-4o-mini")
     llm_api_key = os.environ.get("LOPE_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    payload = _json.dumps({
-        "model": llm_model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "max_tokens": 100000,
-        "temperature": 0.7,
-    }).encode("utf-8")
+    try:
+        max_tokens = max(1, int(os.environ.get("LOPE_LLM_MAX_TOKENS", "4096")))
+    except ValueError:
+        max_tokens = 4096
     headers = {"Content-Type": "application/json"}
     if llm_api_key:
         headers["Authorization"] = f"Bearer {llm_api_key}"
-    req = urllib.request.Request(
-        f"{llm_url}/chat/completions",
-        data=payload,
-        headers=headers,
-    )
+
+    from .generic_validators import GenericHttpValidator
+
+    validator = GenericHttpValidator({
+        "name": "http-fallback",
+        "type": "http",
+        "url": f"{llm_url.rstrip('/')}/chat/completions",
+        "headers": headers,
+        "body": {
+            "model": llm_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": "{prompt}"},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.7,
+        },
+        "response_path": "choices.0.message.content",
+        "max_tokens": max_tokens,
+        "response_limit": 2 * 1024 * 1024,
+    })
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = _json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            pass
-        hints = []
-        if e.code == 401:
-            hints.append("Set LOPE_LLM_API_KEY (or OPENAI_API_KEY).")
-        elif e.code == 400:
-            hints.append(f"Model '{llm_model}' may not exist. Set LOPE_LLM_MODEL.")
-        elif e.code == 404:
-            hints.append(f"Endpoint not found at {llm_url}. Check LOPE_LLM_URL.")
+        return validator.generate(user, timeout=timeout, context=context)
+    except Exception as exc:
         raise RuntimeError(
-            f"LLM fallback failed — HTTP {e.code}: {e.reason}\n"
-            f"  URL:   {llm_url}/chat/completions\n"
-            f"  Model: {llm_model}\n"
-            f"  Body:  {body}\n"
-            + ("  " + "\n  ".join(hints) if hints else "")
+            f"LLM fallback failed — {exc}; URL={llm_url.rstrip('/')}/chat/completions; "
+            f"model={llm_model}"
         ) from None
-    except urllib.error.URLError as e:
-        raise RuntimeError(
-            f"LLM fallback failed — cannot reach {llm_url}: {e.reason}"
-        ) from None
-    return data["choices"][0]["message"]["content"]
 
 
 def _load_negotiate_context(args) -> str:
@@ -1957,7 +1954,7 @@ def _cmd_negotiate(args):
         llm_url = os.environ.get("LOPE_LLM_URL")
         if llm_url:
             try:
-                return _http_llm_fallback(system, user, llm_url)
+                return _http_llm_fallback(system, user, llm_url, timeout=timeout)
             except Exception as e:
                 errors.append(f"HTTP fallback ({llm_url}): {str(e).splitlines()[0][:120]}")
         # Complete failure — give the user actionable next steps.
@@ -2290,10 +2287,23 @@ def _try_self_heal_from_generate(primary, err_msg: str, pool, timeout: int):
               f"(pool has only {primary.name})")
         return None
 
-    healer = SelfHealer()
-    if not healer.should_attempt(primary.name, reviewer_available=True):
+    healer = getattr(pool, "_self_healer", None)
+    if healer is None:
+        healer = SelfHealer()
+        pool._self_healer = healer
+    runtime_context = getattr(pool, "_invocation_context", None)
+    remaining = (
+        runtime_context.budget.remaining_seconds()
+        if runtime_context is not None else None
+    )
+    if not healer.should_attempt(
+        primary.name,
+        reviewer_available=True,
+        remaining_seconds=remaining,
+    ):
         print(">>> self-heal skipped: set LOPE_SELF_HEAL=1 to enable "
-              "automatic adapter repair on flag breaks")
+              "automatic adapter repair on flag breaks, ensure one reviewer, "
+              "and leave enough run budget for help + review + smoke")
         return None
 
     # Reconstruct the failing argv as best we can — the exception message
@@ -2429,7 +2439,19 @@ def _fanout_generate(pool, prompt, timeout, context=None):
                 )
                 context.register_lease(lease, transport="adapter")
                 effective = lease.effective_timeout
-            answer = validator.generate(prompt, effective) or ""
+            call_context = (
+                context.child(
+                    validator=validator.name,
+                    metadata={"call_id": lease.record.call_id},
+                )
+                if context is not None and lease is not None else context
+            )
+            generate_with_context = getattr(validator, "generate_with_context", None)
+            answer = (
+                generate_with_context(prompt, effective, call_context)
+                if callable(generate_with_context)
+                else validator.generate(prompt, effective)
+            ) or ""
             if lease is not None:
                 lease.finish(
                     OutcomeClass.OK,
@@ -2498,16 +2520,15 @@ def _render_fanout(label, results, machine_json=False):
 def _fanout_quorum(results):
     """Return (ok, reason) for majority substantive raw answers."""
 
+    from .output_validity import classify_output
+
     expected = len(results)
     required = expected // 2 + 1
     usable = 0
     for _name, answer, error in results:
         if error or not (answer or "").strip():
             continue
-        lowered = answer.lower()
-        if ("tool_calls" in lowered or "<tool" in lowered or "tool_use" in lowered) and not any(
-            token in lowered for token in ("verdict", "finding", "answer", "review")
-        ):
+        if not classify_output(answer).substantive:
             continue
         usable += 1
     ok = usable >= required
@@ -4084,7 +4105,7 @@ def _team_build_http_entry(name: str, args):
         serialized = json.dumps(body)
         if "{max_tokens}" not in serialized:
             body = json.loads(serialized)
-            body["{max_tokens}"] = _max_tokens
+            body["max_tokens"] = _max_tokens
 
     entry: Dict[str, Any] = {
         "name": name,
