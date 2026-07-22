@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from lope.processes import run_subprocess_group, _have_process_groups
+from lope.runtime import InvocationContext, RunBudget
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -48,6 +50,46 @@ def test_stdin_piping():
         timeout=10,
     )
     assert "HELLO STDIN" in proc.stdout
+
+
+def _implementation_context():
+    return InvocationContext(
+        budget=RunBudget(mode="implement", run_timeout=30),
+        mode="implement",
+        metadata={"implementation": True},
+    )
+
+
+def test_implementation_guard_applies_at_central_subprocess_boundary():
+    proc = run_subprocess_group(
+        [sys.executable, "-m", "lope.cli", "--help"],
+        timeout=12,
+        context=_implementation_context(),
+        env={"LOPE_IMPLEMENTATION_DEPTH": "0"},
+    )
+
+    assert proc.returncode == 2
+    assert "nested Lope orchestration is disabled" in proc.stderr
+    assert "LOPE_IMPLEMENTATION_DEPTH" not in os.environ
+
+
+def test_concurrent_implementation_guards_do_not_race_or_leak():
+    command = [
+        sys.executable,
+        "-c",
+        "import os; print(os.environ.get('LOPE_IMPLEMENTATION_DEPTH', 'missing'))",
+    ]
+
+    def run_one(_index):
+        return run_subprocess_group(
+            command,
+            timeout=12,
+            context=_implementation_context(),
+        ).stdout.strip()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        assert list(pool.map(run_one, range(8))) == ["1"] * 8
+    assert "LOPE_IMPLEMENTATION_DEPTH" not in os.environ
 
 
 def test_timeout_cleans_descendants_ps():

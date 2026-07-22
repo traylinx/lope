@@ -2,10 +2,9 @@
 
 `lope execute` is the low-level phase runner. `lope implement` is the
 opinionated wrapper Sebastian asked for: choose the CLIs/agents first, then
-run the whole sprint without asking the human again. v1 deliberately uses a
-single-writer model for repo safety. The selected roster is still injected
-into the prompt and validator loop; literal parallel patch writing belongs in
-a later worktree-backed implementation.
+run the whole sprint without asking the human again. Writers run sequentially
+for repo safety; infrastructure failure can move to the next explicitly
+selected writer without allowing parallel patch writes.
 """
 
 from __future__ import annotations
@@ -29,10 +28,9 @@ class RosterError(ValueError):
 class ImplementRoster:
     """Resolved agent roster for `lope implement`.
 
-    `agents` are the selected implementation CLIs. v1 uses `primary` (the
-    first agent) as the only file-writing subprocess to avoid same-checkout
-    races. `escalation_agents` are selected problem-solving/review CLIs and
-    are included in the validator pool plus prompt contract.
+    `agents` are the selected implementation CLIs. `primary` is tried first.
+    Remaining implementation and escalation agents are bounded sequential
+    fallbacks for infrastructure failures only. Validators remain independent.
     """
 
     agents: List[str]
@@ -247,13 +245,14 @@ def build_swarm_prompt(
     """Build the implementer prompt for one phase."""
 
     parts: List[str] = [
-        "Role: Autonomous Swarm Orchestrator",
-        "Primary Directive: execute this sprint phase completely with strict Lope-in-the-loop discipline.",
+        "Role: Autonomous Implementation Agent",
+        "Primary Directive: implement this sprint phase directly; the outer Lope process performs fallback and validation.",
         "",
         "## Execution protocol",
         "- Uninterrupted momentum: implement now. Do not ask the human for input, approval, or clarification.",
-        "- Internal resolution: solve blockers, dependency conflicts, and structural questions inside the selected Lope team context.",
-        "- Targeted escalation: direct complex technical and architectural reasoning to the selected escalation agents only.",
+        "- Internal resolution: solve repository-local blockers, dependency conflicts, and structural questions directly.",
+        "- Orchestration boundary: do not invoke Lope, another AI CLI, an MCP agent, or a nested model process.",
+        "- Outer ownership: the outer Lope process performs fallback, escalation, and validation after this writer returns.",
         "- Strict constraint: the human is out of the loop after roster selection.",
         "- Repository safety: you are the single file-writing agent for this phase. Do not spawn parallel editors in the same checkout.",
         "",
@@ -269,7 +268,7 @@ def build_swarm_prompt(
         "## Selected team",
         f"- Implementation agents: {', '.join(roster.agents)}",
         f"- Escalation agents: {', '.join(roster.escalation_agents)}",
-        f"- Writing lead for this run: {roster.primary}",
+        f"- First writing lead: {roster.primary}",
         "",
         f"## Sprint: {doc.title}",
         f"## Phase {phase.index}: {phase.name}",
@@ -334,7 +333,15 @@ def run_implement(
     pool = build_validator_pool(run_cfg)
     if invocation_context is not None:
         pool._invocation_context = invocation_context
+    from .implementation_runner import ordered_writers
+
     primary = pool.primary_validator()
+    writer_names = _unique(list(roster.agents) + list(roster.escalation_agents))
+    try:
+        writers = ordered_writers(pool, writer_names)
+    except ValueError as exc:
+        raise RosterError(str(exc)) from exc
+    pool._implementation_candidate_count = len(writers)
 
     print_fn(
         f"Implementer: {primary.name}  ·  Escalation: {', '.join(roster.escalation_agents)}  ·  "
@@ -346,13 +353,12 @@ def run_implement(
     def implementation_fn(phase, fix_context=None):
         prompt = build_swarm_prompt(phase, doc, roster, fix_context=fix_context)
         print_fn(f"\n>>> Phase {phase.index}: {phase.name}")
-        print_fn(f">>> Delegating to {primary.name} ({run_cfg.timeout}s timeout)...")
         from .request_plan import PlanAction, plan_request
 
         plan = plan_request(
             prompt,
             mode="implement",
-            validators=[primary],
+            validators=writers,
             policy=run_cfg.request_policy,
             max_chunks=run_cfg.max_chunks,
             max_calls=run_cfg.max_calls,
@@ -371,33 +377,16 @@ def run_implement(
                 summary=f"implementation request rejected: {plan.reason}",
                 error=plan.reason + (f"; {plan.mitigation}" if plan.mitigation else ""),
             )
-        try:
-            from .invocation import invoke_generate
+        from .implementation_runner import invoke_writer_failover
 
-            output = invoke_generate(
-                primary,
-                prompt,
-                run_cfg.timeout,
-                context=invocation_context,
-                stage="implementation",
-                metadata={"implementation": True},
-            )
-        except NotImplementedError:
-            return ImplementationResult(
-                ok=False,
-                summary=f"{primary.name} does not support .generate(); pick another --agents lead.",
-            )
-        except Exception as exc:
-            return ImplementationResult(
-                ok=False,
-                summary=f"{primary.name} subprocess failed: {type(exc).__name__}: {exc}",
-                error=f"{type(exc).__name__}: {exc}",
-            )
-        summary = (output or "").strip()[:2000]
-        if not summary:
-            summary = f"{primary.name} completed phase {phase.index} (no stdout summary)"
-        print_fn(f">>> {primary.name} returned {len(output or '')} chars")
-        return ImplementationResult(ok=True, summary=summary)
+        return invoke_writer_failover(
+            writers,
+            prompt,
+            run_cfg.timeout,
+            phase_index=phase.index,
+            context=invocation_context,
+            print_fn=print_fn,
+        )
 
     executor = PhaseExecutor(
         validator_pool=pool,

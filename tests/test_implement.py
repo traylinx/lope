@@ -132,6 +132,9 @@ def test_swarm_prompt_uses_selected_escalation_agents_not_hardcoded_pair():
     assert "Implementation agents: pi, antigravity" in prompt
     assert "Claude and OpenCode" not in prompt
     assert "Do not ask the human" in prompt
+    assert "do not invoke Lope" in prompt
+    assert "outer Lope process performs fallback" in prompt
+    assert "strict Lope-in-the-loop" not in prompt
     assert "fix x" in prompt
 
 

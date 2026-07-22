@@ -150,6 +150,15 @@ def run_subprocess_group(
         raise ValueError("timeout must be positive")
     if stdout_limit <= 0 or stderr_limit <= 0:
         raise ValueError("output limits must be positive")
+    effective_env = dict(env or {})
+    if context is not None and context.metadata.get("implementation"):
+        raw_depth = os.environ.get("LOPE_IMPLEMENTATION_DEPTH", "0")
+        try:
+            depth = int(raw_depth)
+        except ValueError:
+            depth = 0
+        effective_env["LOPE_IMPLEMENTATION_DEPTH"] = str(depth + 1)
+    env = effective_env or None
     _check_argv_size(command, env)
 
     started = time.monotonic()

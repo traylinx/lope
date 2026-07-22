@@ -8,6 +8,15 @@ from .retry_policy import classify_failure, decide_retry
 from .runtime import BudgetExhausted, InvocationContext, OutcomeClass
 
 
+def _generate_once(validator: Any, prompt: str, timeout: float, context) -> str:
+    bridge = getattr(validator, "generate_with_context", None)
+    return (
+        bridge(prompt, timeout, context)
+        if callable(bridge)
+        else validator.generate(prompt, timeout)
+    )
+
+
 def _outcome_for(error: object) -> OutcomeClass:
     kind = classify_failure(error).kind
     return {
@@ -48,16 +57,13 @@ def invoke_generate(
     context: Optional[InvocationContext] = None,
     stage: Optional[str] = None,
     metadata: Optional[dict] = None,
+    max_retries: int = 1,
 ) -> str:
     """Generate once, with at most one typed transient retry inside budget."""
 
     if context is None:
-        bridge = getattr(validator, "generate_with_context", None)
-        return (
-            bridge(prompt, timeout, None)
-            if callable(bridge)
-            else validator.generate(prompt, timeout)
-        )
+        # No invocation context means no trustworthy implementation metadata.
+        return _generate_once(validator, prompt, timeout, None)
 
     root = context.child(stage=stage or context.stage, validator=validator.name)
     attempt = 0
@@ -92,11 +98,8 @@ def invoke_generate(
             metadata=metadata,
         )
         try:
-            bridge = getattr(validator, "generate_with_context", None)
-            answer = (
-                bridge(prompt, lease.effective_timeout, call_context)
-                if callable(bridge)
-                else validator.generate(prompt, lease.effective_timeout)
+            answer = _generate_once(
+                validator, prompt, lease.effective_timeout, call_context
             ) or ""
         except Exception as exc:
             outcome = _outcome_for(exc)
@@ -122,6 +125,7 @@ def invoke_generate(
                 remaining_seconds=root.budget.remaining_seconds(),
                 requested_timeout=float(timeout),
                 seed=f"{root.run_id}:{validator.name}:{attempt}",
+                max_retries=max_retries,
             )
             root.budget.add_event(
                 "retry_scheduled" if decision.retry else "retry_skipped",

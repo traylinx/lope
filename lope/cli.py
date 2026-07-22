@@ -179,6 +179,18 @@ def _format_drafter_failure_diagnostic(
 
 
 def main():
+    implementation_depth = os.environ.get("LOPE_IMPLEMENTATION_DEPTH", "0")
+    try:
+        nested_implementation = int(implementation_depth) > 0
+    except ValueError:
+        nested_implementation = True
+    if nested_implementation:
+        print(
+            "error: nested Lope orchestration is disabled inside an implementation writer",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
     parser = argparse.ArgumentParser(
         prog="lope",
         description=(

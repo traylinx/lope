@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .processes import OutputLimitExceeded, run_subprocess_group
+from .provider_errors import ProviderInfrastructureError
 from .runtime import DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
 
 from .models import (
@@ -112,17 +113,74 @@ def _run_with_group_kill(
             command, input_text=input_text, timeout=timeout, cwd=cwd,
             context=context,
         )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(
-            f"{command[0]} run timed out after {timeout}s (process group killed)"
+    except subprocess.TimeoutExpired as exc:
+        detail = _format_process_diagnostics(exc.output, exc.stderr)
+        suffix = f"; {detail}" if detail else ""
+        raise ProviderInfrastructureError(
+            f"{command[0]} run timed out after {timeout}s (process group killed){suffix}"
         )
     except FileNotFoundError:
-        raise RuntimeError(f"{command[0]} binary not found")
+        raise ProviderInfrastructureError(f"{command[0]} binary not found")
     except OutputLimitExceeded as exc:
-        raise RuntimeError(f"{command[0]} output limit: {exc}")
+        raise ProviderInfrastructureError(f"{command[0]} output limit: {exc}")
     except OSError as e:
-        raise RuntimeError(f"{command[0]} failed to launch: {e}")
+        raise ProviderInfrastructureError(f"{command[0]} failed to launch: {e}")
     return proc, time.time() - started
+
+
+def _bounded_stream(value, limit: int = 500) -> str:
+    """Return a bounded diagnostic tail from text or bytes."""
+
+    text = _stream_text(value).strip()
+    if len(text) <= limit:
+        return text
+    return f"...[truncated]...{text[-limit:]}"
+
+
+def _stream_text(value) -> str:
+    """Decode a captured subprocess stream without truncation."""
+
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _format_process_diagnostics(stdout, stderr) -> str:
+    """Preserve bounded stdout and stderr for provider failures."""
+
+    parts = []
+    stdout_text = _bounded_stream(stdout)
+    stderr_text = _bounded_stream(stderr)
+    if stdout_text:
+        parts.append(f"stdout: {stdout_text}")
+    if stderr_text:
+        parts.append(f"stderr: {stderr_text}")
+    return "; ".join(parts)
+
+
+def _is_infrastructure_exit(provider: str, stdout, stderr) -> bool:
+    """Match anchored provider-specific transport failures."""
+
+    stdout_text = _stream_text(stdout).strip()
+    stderr_text = _stream_text(stderr).strip()
+    if provider == "claude":
+        patterns = (
+            r"^API Error: (?:429|503)\b",
+            r"^API Error: 400 Tool reference '[^']+' not found in available tools$",
+        )
+        return any(re.search(pattern, stdout_text, re.MULTILINE) for pattern in patterns)
+    if provider == "codex":
+        patterns = (
+            r"^Error: failed to initialize in-process app-server client: .+$",
+            r"^Error: (?:connection reset|service unavailable).*$",
+        )
+        return any(
+            re.search(pattern, stderr_text, re.MULTILINE | re.IGNORECASE)
+            for pattern in patterns
+        )
+    return False
 
 
 def _opencode_extra_args() -> List[str]:
@@ -135,6 +193,17 @@ def _opencode_extra_args() -> List[str]:
     if not raw:
         return []
     import shlex
+    return shlex.split(raw)
+
+
+def _claude_extra_args() -> List[str]:
+    """Return optional Claude CLI args from ``LOPE_CLAUDE_ARGS``."""
+
+    raw = os.environ.get("LOPE_CLAUDE_ARGS", "").strip()
+    if not raw:
+        return []
+    import shlex
+
     return shlex.split(raw)
 
 
@@ -271,6 +340,8 @@ class Validator(ABC):
     and reviewing are the same CLI, different prompts — the whole lope
     premise is that any CLI can implement AND any CLI can validate.
     """
+
+    supports_safe_implementation_failover = False
 
     @property
     @abstractmethod
@@ -1367,6 +1438,8 @@ class ClaudeCodeValidator(Validator):
     Uses the same ---VERDICT---...---END--- block format as OpencodeValidator.
     """
 
+    supports_safe_implementation_failover = True
+
     def __init__(self, binary: str = None):
         import shutil
 
@@ -1395,17 +1468,19 @@ class ClaudeCodeValidator(Validator):
             raise RuntimeError(f"claude binary not found: {self._binary}")
         try:
             proc, _elapsed = _run_with_group_kill(
-                [self._binary, "--print"], input_text=prompt, timeout=timeout,
+                [self._binary, "--print", *_claude_extra_args()], input_text=prompt, timeout=timeout,
                 cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()), context=context,
             )
-        except RuntimeError as e:
-            raise RuntimeError(f"claude failed: {e}")
+        except ProviderInfrastructureError as e:
+            raise ProviderInfrastructureError(f"claude failed: {e}") from e
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"claude exited {proc.returncode}: {(proc.stderr or '')[:500]}"
-            )
+            detail = _format_process_diagnostics(proc.stdout, proc.stderr)
+            message = f"claude exited {proc.returncode}: {detail}"
+            if _is_infrastructure_exit("claude", proc.stdout, proc.stderr):
+                raise ProviderInfrastructureError(message)
+            raise RuntimeError(message)
         if not proc.stdout:
-            raise RuntimeError("claude returned empty output")
+            raise ProviderInfrastructureError("claude returned empty output")
         return proc.stdout
 
     def validate(
@@ -1417,7 +1492,7 @@ class ClaudeCodeValidator(Validator):
         started = time.time()
         try:
             proc, _elapsed = _run_with_group_kill(
-                [self._binary, "--print"], input_text=self._build_prompt(prompt),
+                [self._binary, "--print", *_claude_extra_args()], input_text=self._build_prompt(prompt),
                 timeout=timeout, cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()),
                 context=context,
             )
@@ -1464,6 +1539,8 @@ class ClaudeCodeValidator(Validator):
 
 class CodexValidator(Validator):
     """Wraps `codex exec "<prompt>"` for validated review."""
+
+    supports_safe_implementation_failover = True
 
     def __init__(self, binary: str = None):
         import shutil
@@ -1526,14 +1603,16 @@ class CodexValidator(Validator):
                 cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()),
                 context=context,
             )
-        except RuntimeError as e:
-            raise RuntimeError(f"codex failed: {e}")
+        except ProviderInfrastructureError as e:
+            raise ProviderInfrastructureError(f"codex failed: {e}") from e
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"codex exited {proc.returncode}: {(proc.stderr or '')[:500]}"
-            )
+            detail = _format_process_diagnostics(proc.stdout, proc.stderr)
+            message = f"codex exited {proc.returncode}: {detail}"
+            if _is_infrastructure_exit("codex", proc.stdout, proc.stderr):
+                raise ProviderInfrastructureError(message)
+            raise RuntimeError(message)
         if not proc.stdout:
-            raise RuntimeError("codex returned empty output")
+            raise ProviderInfrastructureError("codex returned empty output")
         return proc.stdout
 
     def validate(

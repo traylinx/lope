@@ -120,12 +120,20 @@ class PhaseExecutor:
             except Exception:
                 return 1
 
+    def _validator_call_count(self) -> int:
+        from .retry_policy import MAX_TRANSIENT_RETRIES
+
+        return self._validator_count() * (MAX_TRANSIENT_RETRIES + 1)
+
+    def _implementation_call_count(self) -> int:
+        return max(1, int(getattr(self._pool, "_implementation_candidate_count", 1)))
+
     def _can_fund_attempt(self, phase: Phase, attempt: int) -> bool:
         context = self._runtime_context()
         if context is None:
             return True
-        validator_calls = self._validator_count()
-        required_calls = 1 + validator_calls
+        validator_calls = self._validator_call_count()
+        required_calls = self._implementation_call_count() + validator_calls
         required_seconds = 2 * float(self._timeout)
         context.budget.add_event(
             "phase_forecast",
