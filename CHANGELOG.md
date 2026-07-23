@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.1 — Safe implementation failover and recursion guards
+
+- Added bounded sequential implementation-writer failover for typed provider infrastructure failures while preserving a single shared stage deadline.
+- Added fail-closed workspace fingerprints across HEAD, index, tracked, untracked, and ignored files so fallback never continues after a failed writer mutates the checkout.
+- Blocked nested Lope orchestration centrally at the provider subprocess boundary, including concurrent Flow writers and custom subprocess adapters.
+- Preserved bounded stdout and stderr on provider failures and tightened Claude/Codex infrastructure classification to anchored, provider-specific signatures.
+- Added process-local Claude CLI arguments for bypassing broken MCP/tool-search proxy paths during controlled validation.
+- Expanded regression coverage for budgeting, failover ordering, dirty-worktree safety, recursion rejection, concurrency isolation, diagnostics, and false-positive classification.
+
 ## 0.14.0 — Deadline budgeting, request shaping, and orphan-safe jobs
 
 - Added monotonic `--run-timeout` budgets across retries, fallbacks, gates, synthesis, and Flow.

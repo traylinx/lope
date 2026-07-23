@@ -1,6 +1,6 @@
 [project]
 name = "lope-agent"
-version = "0.14.0"
+version = "0.14.1"
 description = "Multi-CLI validator ensemble for AI work — sprint mode (negotiate/execute/implement/audit), single-shot verbs (ask/review/vote/compare/pipe), declarative graph workflows (flow), natural-language roster management (team), and paste-a-curl onboarding for any AI API. Any AI CLI implements; any AI CLI validates."
 readme = "README.md"
 license = { text = "MIT" }
