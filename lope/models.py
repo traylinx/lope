@@ -86,6 +86,14 @@ class ValidatorResult:
     # (e.g. upstream renamed --prompt to --input). Non-empty hint triggers
     # the SelfHealer at the pool boundary when LOPE_SELF_HEAL=1.
     flag_error_hint: str = ""
+    # Verdict-repair trail. A validator that reasoned correctly but omitted
+    # the VERDICT block gets one extraction-only retry; these record whether
+    # that happened so a coaxed verdict stays distinguishable from a clean
+    # one. `initial_parse_status` holds the status before repair.
+    repair_attempted: bool = False
+    repair_status: Optional[str] = None
+    repaired_response: str = ""
+    initial_parse_status: Optional[VerdictStatus] = None
 
     def ok(self) -> bool:
         return not self.error and self.verdict.status not in (
