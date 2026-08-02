@@ -45,6 +45,15 @@ ENV_DB_PATH = "LOPE_MEMORY_DB"
 DEFAULT_DIR_NAME = ".lope"
 DEFAULT_DB_NAME = "memory.db"
 
+# Schema version tracked in ``PRAGMA user_version``. Bump only when adding a
+# migration step to :data:`MIGRATIONS`.
+#
+#   0 -> pre-versioning (findings/review_sessions/session_findings/gate_sessions
+#        created idempotently by ``LopeMemory.SCHEMA``)
+#   1 -> verdict_events: per-validator-call audit trail so parse failures stop
+#        being discarded. Purely additive; never rewrites existing tables.
+SCHEMA_VERSION = 1
+
 
 def is_memory_disabled(env: Optional[Dict[str, str]] = None) -> bool:
     """Return ``True`` when ``LOPE_MEMORY`` is set to a disable token.
@@ -271,12 +280,115 @@ class LopeMemory:
     CREATE INDEX IF NOT EXISTS idx_gate_sessions_created ON gate_sessions(created_at DESC);
     """
 
+    # Versioned additive migrations, keyed by the version they upgrade *to*.
+    # Every statement must be additive: CREATE TABLE/INDEX IF NOT EXISTS or
+    # ALTER TABLE ADD COLUMN. Never DROP, never rewrite an existing table --
+    # a Lope memory.db holds review history that cannot be regenerated.
+    MIGRATIONS: Dict[int, Tuple[str, ...]] = {
+        1: (
+            """
+            CREATE TABLE IF NOT EXISTS verdict_events (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                schema_version          TEXT    NOT NULL DEFAULT '1.0.0',
+                run_id                  TEXT    NOT NULL,
+                gate_id                 TEXT,
+                validator_name          TEXT    NOT NULL,
+                validator_version       TEXT,
+                prompt_template_version TEXT    NOT NULL,
+                rendered_prompt         TEXT    NOT NULL,
+                task_spec_hash          TEXT    NOT NULL,
+                validation_input_ref    TEXT,
+                raw_response            TEXT    NOT NULL,
+                parser_version          TEXT    NOT NULL,
+                initial_parse_status    TEXT    NOT NULL,
+                parse_error_category    TEXT,
+                repair_attempted        INTEGER NOT NULL DEFAULT 0,
+                repair_status           TEXT,
+                repaired_response       TEXT,
+                final_verdict           TEXT    NOT NULL,
+                candidate_output_ref    TEXT,
+                latency_s               REAL,
+                exit_status             INTEGER,
+                timed_out               INTEGER NOT NULL DEFAULT 0,
+                created_at              TEXT    NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_verdict_events_run "
+            "ON verdict_events(run_id)",
+            "CREATE INDEX IF NOT EXISTS idx_verdict_events_validator "
+            "ON verdict_events(validator_name, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_verdict_events_category "
+            "ON verdict_events(parse_error_category)",
+            "CREATE INDEX IF NOT EXISTS idx_verdict_events_created "
+            "ON verdict_events(created_at DESC)",
+        ),
+    }
+
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = Path(db_path) if db_path is not None else default_db_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(self.SCHEMA)
             conn.commit()
+            self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> int:
+        """Apply pending additive migrations inside a single transaction.
+
+        SQLite makes both DDL and ``PRAGMA user_version`` transactional, so a
+        failure part-way through leaves the database byte-identical to how it
+        started -- no half-migrated state, no lost review history.
+
+        Returns the schema version in force after the call.
+        """
+        current = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if current >= SCHEMA_VERSION:
+            return current
+
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for version in range(current + 1, SCHEMA_VERSION + 1):
+                for statement in self.MIGRATIONS.get(version, ()):
+                    conn.execute(statement)
+            self._validate_schema(conn)
+            # PRAGMA cannot be parameterised; SCHEMA_VERSION is a module-level int.
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION:d}")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+        return SCHEMA_VERSION
+
+    @staticmethod
+    def _validate_schema(conn: sqlite3.Connection) -> None:
+        """Assert the post-migration shape before committing.
+
+        Guards both directions: the new table must exist, and every pre-existing
+        table must still be present and readable.
+        """
+        names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        required = {
+            "findings",
+            "review_sessions",
+            "session_findings",
+            "gate_sessions",
+            "verdict_events",
+        }
+        missing = required - names
+        if missing:
+            raise RuntimeError(
+                f"migration validation failed: missing table(s) {sorted(missing)}"
+            )
+        # Readability check -- a corrupt/renamed column surfaces here, inside
+        # the transaction, while rollback is still possible.
+        for table in sorted(required):
+            conn.execute(f"SELECT COUNT(*) FROM {table}")  # noqa: S608 - fixed set
 
     def _connect(self) -> sqlite3.Connection:
         # ``check_same_thread=False`` keeps tests that share fixtures safe;
