@@ -499,7 +499,7 @@ if [ "${LOPE_INSTALL_ONE_HOST:-0}" = "1" ]; then
 fi
 
 echo ""
-echo "Lope v0.14.1 — Installing skills and commands"
+echo "Lope v0.15.0 — Installing skills and commands"
 echo "─────────────────────────────────────────────"
 echo ""
 

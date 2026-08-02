@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.0 — Verdict repair and verdict event capture
+
+- Added one-shot mechanical repair for validator responses that omit the VERDICT block: the original response is embedded in an extraction-only prompt, and the reply is accepted only if it is a single well-formed verdict block with no extra prose. A validator that reasoned correctly but formatted badly no longer loses its verdict to the fallback chain; transport errors, timeouts, and process failures are never repaired. Repair cannot return INFRA_ERROR, cannot run without the original text, and repaired verdicts stay marked so they are never mistaken for clean ones.
+- Added opt-in verdict event capture (`LOPE_VERDICT_EVENTS=on`): one audit row per validator call in `memory.db` recording the exact rendered prompt, task spec hash, post-redaction raw response, parser version, parse-error category, repair trail, and timing. Off by default because rows durably store whole prompts and responses; redaction filters known secret shapes but is not a guarantee.
+- Added `PRAGMA user_version` schema tracking with transactional additive migrations. A failed migration rolls back to a logically identical database; databases written by newer Lope versions are rejected instead of silently written to; a pre-existing incompatible `verdict_events` table fails early with a clear message. Rehearsed against a real memory.db with all review history preserved.
+- Repair timeout is independently bounded (`LOPE_REPAIR_TIMEOUT`, default 30s). Distinct repair failure statuses: prose, invalid, timeout, process failure, unsupported drafting, missing original.
+- 55 new tests; full suite 848.
+
 ## 0.14.1 — Safe implementation failover and recursion guards
 
 - Added bounded sequential implementation-writer failover for typed provider infrastructure failures while preserving a single shared stage deadline.
