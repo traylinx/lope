@@ -1312,6 +1312,14 @@ class ValidatorPool:
                     validator.name,
                     f"validator raised: {type(exc).__name__}: {exc}",
                 )
+
+            # A validator that reasoned fine but omitted the VERDICT block has
+            # a formatting fault, not a broken tool. Give it exactly one
+            # extraction-only retry before writing off its work.
+            result = _try_verdict_repair(validator, result, prompt, context)
+
+            _record_event(result, prompt=prompt, context=context)
+
             # PASS / NEEDS_FIX / FAIL halt the chain. INFRA_ERROR falls through.
             if result.verdict.status not in (VerdictStatus.INFRA_ERROR, VerdictStatus.INCONCLUSIVE):
                 log.info(
@@ -1329,6 +1337,129 @@ class ValidatorPool:
             f"all validators exhausted ({','.join(attempts) or 'none'}). "
             f"Last error: {last_error[:300]}",
         )
+
+
+def _try_verdict_repair(
+    validator: Validator,
+    result: ValidatorResult,
+    prompt: str,
+    context=None,
+) -> ValidatorResult:
+    """One extraction-only retry when the VERDICT block is merely missing.
+
+    Returns the original result untouched unless a repair was both eligible
+    and produced a clean verdict block. Never raises -- a failed repair must
+    leave the pool exactly where it was, falling through to the next
+    validator.
+    """
+    from .verdict_events import classify_parse_error
+    from .verdict_repair import (
+        RepairStatus,
+        build_repair_prompt,
+        evaluate_repair_reply,
+        is_repairable,
+        repair_timeout,
+    )
+
+    original_category = classify_parse_error(result)
+    if not is_repairable(original_category):
+        return result
+
+    # Extraction needs the text to extract from. Without it the second call
+    # would be free to invent a verdict.
+    original = (result.raw_response or "").strip()
+    if not original:
+        result.repair_attempted = True
+        result.repair_status = RepairStatus.REJECTED_NO_ORIGINAL.value
+        result.parse_error_category = original_category.value
+        return result
+
+    log.info(f"[pool] {validator.name} omitted VERDICT block → one repair attempt")
+    try:
+        reply = validator.generate_with_context(
+            build_repair_prompt(original, validator.name),
+            repair_timeout(),
+            context,
+        )
+    except NotImplementedError:
+        # Plenty of validators review without being able to draft.
+        result.repair_attempted = True
+        result.repair_status = RepairStatus.REJECTED_UNSUPPORTED.value
+        result.parse_error_category = original_category.value
+        return result
+    except Exception as exc:
+        status = (
+            RepairStatus.REJECTED_TIMEOUT
+            if "timed out" in str(exc).lower() or "timeout" in str(exc).lower()
+            else RepairStatus.REJECTED_PROCESS
+        )
+        log.debug(f"[pool] repair call failed for {validator.name}: {exc}")
+        result.repair_attempted = True
+        result.repair_status = status.value
+        result.parse_error_category = original_category.value
+        return result
+
+    outcome = evaluate_repair_reply(reply, validator_name=validator.name)
+    result.repair_attempted = True
+    result.repair_status = outcome.status.value
+    result.repaired_response = reply or ""
+    result.parse_error_category = original_category.value
+
+    if not outcome.accepted:
+        log.info(f"[pool] repair rejected for {validator.name}: {outcome.reason}")
+        return result
+
+    log.info(
+        f"[pool] repair accepted for {validator.name}: "
+        f"{outcome.verdict.status.value}"
+    )
+    repaired = ValidatorResult(
+        validator_name=result.validator_name,
+        verdict=outcome.verdict,
+        raw_response=result.raw_response,
+        error="",
+        flag_error_hint=result.flag_error_hint,
+    )
+    repaired.repair_attempted = True
+    repaired.repair_status = outcome.status.value
+    repaired.repaired_response = reply
+    repaired.initial_parse_status = VerdictStatus.INFRA_ERROR
+    # Carried explicitly: classifying the *repaired* result would return None
+    # and erase the very failure this row exists to document.
+    repaired.parse_error_category = original_category.value
+    return repaired
+
+
+def _record_event(result: ValidatorResult, *, prompt: str, context=None) -> None:
+    """Best-effort audit row for this validator call. Never raises."""
+    try:
+        from .verdict_events import record_verdict_event
+
+        record_verdict_event(
+            result,
+            prompt=prompt,
+            run_id=getattr(context, "run_id", "") or "unknown",
+            gate_id=getattr(context, "stage", "") or "",
+            repair_attempted=getattr(result, "repair_attempted", False),
+            repair_status=_repair_status_enum(
+                getattr(result, "repair_status", None)
+            ),
+            repaired_response=getattr(result, "repaired_response", "") or "",
+            initial_status=getattr(result, "initial_parse_status", None),
+        )
+    except Exception as exc:  # pragma: no cover - observability must not break runs
+        log.debug(f"[pool] verdict event not recorded: {exc}")
+
+
+def _repair_status_enum(value):
+    if value is None:
+        return None
+    from .verdict_repair import RepairStatus
+
+    try:
+        return RepairStatus(value)
+    except ValueError:
+        return None
 
 
 def _reorder_primary_first(
