@@ -252,3 +252,37 @@ def _logical_snapshot(path: Path) -> dict:
         }
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Version and shape guards
+# ---------------------------------------------------------------------------
+
+
+def test_future_schema_version_is_rejected(tmp_path):
+    """Older code must not write into a database it does not understand."""
+    db = tmp_path / "memory.db"
+    LopeMemory(db)
+    conn = sqlite3.connect(str(db))
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(RuntimeError, match="newer Lope"):
+        LopeMemory(db)
+
+
+def test_incompatible_preexisting_verdict_events_is_rejected(tmp_path):
+    """CREATE TABLE IF NOT EXISTS silently accepts a wrong-shaped table."""
+    db = tmp_path / "memory.db"
+    _make_legacy_db(db)
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE verdict_events (id INTEGER PRIMARY KEY, junk TEXT)")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(RuntimeError, match="missing column"):
+        LopeMemory(db)
+
+    # And the version must not have advanced past a schema that cannot accept rows.
+    assert _user_version(db) == 0

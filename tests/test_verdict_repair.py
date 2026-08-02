@@ -154,19 +154,42 @@ def test_none_is_rejected_without_raising():
 # ---------------------------------------------------------------------------
 
 
+ORIGINAL = "I checked the auth path. It handles the empty case correctly."
+
+
 def test_repair_prompt_is_extraction_only():
-    prompt = build_repair_prompt()
+    prompt = build_repair_prompt(ORIGINAL)
     lowered = prompt.lower()
-    assert "do not perform any new analysis" in lowered
-    assert "do not change your assessment" in lowered
-    assert "restate" in lowered
-    # It must not invite fresh review work.
-    assert "review the code" not in lowered
+    assert "pure extraction" in lowered
+    assert "do not perform new analysis" in lowered
+    assert "do not re-review" in lowered
+
+
+def test_repair_prompt_embeds_the_original_response():
+    """Without the text, the validator has nothing to extract from.
+
+    Validators are stateless subprocesses: a second call cannot remember the
+    first, so an un-grounded prompt would be asking it to invent a verdict.
+    """
+    prompt = build_repair_prompt(ORIGINAL)
+    assert ORIGINAL in prompt
+    assert "BEGIN RESPONSE" in prompt and "END RESPONSE" in prompt
+
+
+def test_repair_prompt_requires_an_original_response():
+    for empty in ("", "   ", None):
+        with pytest.raises(ValueError, match="requires the original response"):
+            build_repair_prompt(empty)
+
+
+def test_repair_prompt_offers_inconclusive_for_unclear_text():
+    """The escape hatch that makes honest extraction possible."""
+    assert "INCONCLUSIVE" in build_repair_prompt(ORIGINAL)
 
 
 def test_repair_prompt_does_not_offer_infra_error():
     """Offering it as a choice would invite exactly the laundering we reject."""
-    assert "INFRA_ERROR" not in build_repair_prompt()
+    assert "INFRA_ERROR" not in build_repair_prompt(ORIGINAL)
 
 
 # ---------------------------------------------------------------------------

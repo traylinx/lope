@@ -94,6 +94,10 @@ class ValidatorResult:
     repair_status: Optional[str] = None
     repaired_response: str = ""
     initial_parse_status: Optional[VerdictStatus] = None
+    # Why parsing failed originally. Carried explicitly because a successful
+    # repair changes the verdict, so re-deriving the category afterwards would
+    # report "no failure" and erase what the audit row exists to record.
+    parse_error_category: Optional[str] = None
 
     def ok(self) -> bool:
         return not self.error and self.verdict.status not in (

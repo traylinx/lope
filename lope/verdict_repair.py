@@ -71,10 +71,20 @@ class ParseErrorCategory(str, Enum):
 
 
 class RepairStatus(str, Enum):
+    """Outcome of a repair attempt.
+
+    Distinct failure modes stay distinct: collapsing "this CLI cannot draft"
+    into "timed out" produces telemetry that reads like an infrastructure
+    problem when nothing timed out.
+    """
+
     ACCEPTED = "accepted"
     REJECTED_PROSE = "rejected-prose"
     REJECTED_INVALID = "rejected-invalid"
     REJECTED_TIMEOUT = "rejected-timeout"
+    REJECTED_UNSUPPORTED = "rejected-unsupported"
+    REJECTED_PROCESS = "rejected-process"
+    REJECTED_NO_ORIGINAL = "rejected-no-original"
 
 
 @dataclass(frozen=True)
@@ -112,23 +122,44 @@ def is_repairable(category: Optional[ParseErrorCategory]) -> bool:
     return category is ParseErrorCategory.MISSING_VERDICT_BLOCK
 
 
-def build_repair_prompt(validator_name: str = "") -> str:
-    """Extraction-only prompt: re-state, never re-analyse."""
+def build_repair_prompt(original_response: str, validator_name: str = "") -> str:
+    """Extraction-only prompt over *supplied* text.
+
+    The original response must be embedded here. Validators are stateless
+    subprocess invocations: a second call has no memory of the first, so
+    "restate what you concluded" would be an instruction to invent one, and an
+    invented ``PASS`` would halt the pool on a verdict nobody reached. Quoting
+    the text back turns the task into extraction from evidence that is present
+    in the prompt.
+    """
+    if not (original_response or "").strip():
+        raise ValueError(
+            "repair requires the original response; extraction without it "
+            "would let the validator fabricate a verdict"
+        )
     return (
-        "Your previous response was missing the required VERDICT block.\n"
+        "Below is a code-review response you produced. It is missing the "
+        "required VERDICT block.\n"
         "\n"
-        "Do NOT perform any new analysis and do NOT change your assessment. "
-        "Restate the conclusion you already reached, in exactly this format "
-        "and nothing else:\n"
+        "Your task is pure extraction. Read the response and express the "
+        "conclusion it already contains. Do NOT perform new analysis, do NOT "
+        "re-review anything, and do NOT reach a conclusion the text does not "
+        "support. If the response does not clearly reach a conclusion, answer "
+        "INCONCLUSIVE.\n"
+        "\n"
+        "--- BEGIN RESPONSE ---\n"
+        f"{original_response.strip()}\n"
+        "--- END RESPONSE ---\n"
+        "\n"
+        "Output exactly this format and nothing else:\n"
         "\n"
         "VERDICT: <PASS|NEEDS_FIX|FAIL|INCONCLUSIVE>\n"
         "RATIONALE:\n"
-        "<one or two sentences summarising the reasoning you already gave>\n"
+        "<one or two sentences drawn from the response above>\n"
         "REQUIRED_FIXES:\n"
-        "- <one line per required fix; omit this section entirely if none>\n"
+        "- <one line per fix named in the response; omit this section if none>\n"
         "\n"
-        "Output only those lines. No preamble, no explanation, no code fences, "
-        "no closing remarks."
+        "No preamble, no explanation, no code fences, no closing remarks."
     )
 
 

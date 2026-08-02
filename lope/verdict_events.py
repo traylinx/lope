@@ -40,15 +40,28 @@ EVENT_SCHEMA_VERSION = "1.0.0"
 ENV_DISABLE_EVENTS = "LOPE_VERDICT_EVENTS"
 
 
-def events_disabled(env: Optional[dict] = None) -> bool:
-    """Honour ``LOPE_VERDICT_EVENTS=off`` (and the global memory switch)."""
+def events_enabled(env: Optional[dict] = None) -> bool:
+    """Whether to persist verdict events. **Opt-in**, via ``LOPE_VERDICT_EVENTS=on``.
+
+    Off by default on purpose. A row holds an entire rendered prompt and an
+    entire model response, kept indefinitely. Redaction is a filter for known
+    secret shapes, not a guarantee, and "the file is local" is not a privacy
+    boundary -- it is still durable storage of whatever happened to be in a
+    reviewed diff. Capturing that has to be a decision someone makes, not a
+    side effect of upgrading.
+    """
     source = os.environ if env is None else env
     return str(source.get(ENV_DISABLE_EVENTS, "")).strip().lower() in {
-        "0",
-        "off",
-        "false",
-        "no",
+        "1",
+        "on",
+        "true",
+        "yes",
     }
+
+
+def events_disabled(env: Optional[dict] = None) -> bool:
+    """Backwards-compatible inverse of :func:`events_enabled`."""
+    return not events_enabled(env)
 
 
 def task_spec_hash(text: str) -> str:
@@ -108,7 +121,7 @@ def record_verdict_event(
 
     Never raises: observability must not be able to fail a review.
     """
-    if events_disabled():
+    if not events_enabled():
         return False
 
     try:
@@ -117,9 +130,16 @@ def record_verdict_event(
         if is_memory_disabled():
             return False
 
-        category = classify_parse_error(result)
+        # Prefer the category recorded at parse time: a repaired result now
+        # carries a real verdict, so re-classifying it would report no failure
+        # and lose the reason this row was written.
+        recorded = getattr(result, "parse_error_category", None)
+        category_value = recorded or (
+            c.value if (c := classify_parse_error(result)) else None
+        )
         initial = initial_status or result.verdict.status
 
+        redacted_prompt = redact_text(prompt)
         row = (
             EVENT_SCHEMA_VERSION,
             run_id,
@@ -127,13 +147,15 @@ def record_verdict_event(
             result.validator_name,
             validator_version or None,
             PROMPT_TEMPLATE_VERSION,
-            redact_text(prompt),
-            task_spec_hash(prompt),
+            redacted_prompt,
+            # Hash the redacted text: hashing the raw prompt would leave a
+            # stable equality oracle over content we deliberately removed.
+            task_spec_hash(redacted_prompt),
             validation_input_ref or None,
             redact_text(result.raw_response),
             PARSER_VERSION,
             initial.value,
-            category.value if category else None,
+            category_value,
             1 if repair_attempted else 0,
             repair_status.value if repair_status else None,
             redact_text(repaired_response) if repaired_response else None,
@@ -141,7 +163,7 @@ def record_verdict_event(
             candidate_output_ref or None,
             latency_s if latency_s is not None else result.verdict.duration_seconds,
             exit_status,
-            1 if category is ParseErrorCategory.TIMEOUT else 0,
+            1 if category_value == ParseErrorCategory.TIMEOUT.value else 0,
             datetime.now(timezone.utc).isoformat(),
         )
 

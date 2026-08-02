@@ -1361,26 +1361,49 @@ def _try_verdict_repair(
         repair_timeout,
     )
 
-    if not is_repairable(classify_parse_error(result)):
+    original_category = classify_parse_error(result)
+    if not is_repairable(original_category):
+        return result
+
+    # Extraction needs the text to extract from. Without it the second call
+    # would be free to invent a verdict.
+    original = (result.raw_response or "").strip()
+    if not original:
+        result.repair_attempted = True
+        result.repair_status = RepairStatus.REJECTED_NO_ORIGINAL.value
+        result.parse_error_category = original_category.value
         return result
 
     log.info(f"[pool] {validator.name} omitted VERDICT block → one repair attempt")
     try:
         reply = validator.generate_with_context(
-            build_repair_prompt(validator.name),
+            build_repair_prompt(original, validator.name),
             repair_timeout(),
             context,
         )
+    except NotImplementedError:
+        # Plenty of validators review without being able to draft.
+        result.repair_attempted = True
+        result.repair_status = RepairStatus.REJECTED_UNSUPPORTED.value
+        result.parse_error_category = original_category.value
+        return result
     except Exception as exc:
+        status = (
+            RepairStatus.REJECTED_TIMEOUT
+            if "timed out" in str(exc).lower() or "timeout" in str(exc).lower()
+            else RepairStatus.REJECTED_PROCESS
+        )
         log.debug(f"[pool] repair call failed for {validator.name}: {exc}")
         result.repair_attempted = True
-        result.repair_status = RepairStatus.REJECTED_TIMEOUT.value
+        result.repair_status = status.value
+        result.parse_error_category = original_category.value
         return result
 
     outcome = evaluate_repair_reply(reply, validator_name=validator.name)
     result.repair_attempted = True
     result.repair_status = outcome.status.value
     result.repaired_response = reply or ""
+    result.parse_error_category = original_category.value
 
     if not outcome.accepted:
         log.info(f"[pool] repair rejected for {validator.name}: {outcome.reason}")
@@ -1401,6 +1424,9 @@ def _try_verdict_repair(
     repaired.repair_status = outcome.status.value
     repaired.repaired_response = reply
     repaired.initial_parse_status = VerdictStatus.INFRA_ERROR
+    # Carried explicitly: classifying the *repaired* result would return None
+    # and erase the very failure this row exists to document.
+    repaired.parse_error_category = original_category.value
     return repaired
 
 

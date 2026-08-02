@@ -336,17 +336,32 @@ class LopeMemory:
         """Apply pending additive migrations inside a single transaction.
 
         SQLite makes both DDL and ``PRAGMA user_version`` transactional, so a
-        failure part-way through leaves the database byte-identical to how it
-        started -- no half-migrated state, no lost review history.
+        failure part-way through leaves the database logically unchanged --
+        no half-migrated state, no lost review history. (Header bookkeeping
+        such as the file change counter still moves; see
+        ``tests/test_verdict_events.py`` for the exact guarantee.)
+
+        Scope note: this covers the versioned migrations only. The idempotent
+        ``CREATE TABLE IF NOT EXISTS`` bootstrap in ``__init__`` commits before
+        this runs and is not part of the transaction.
 
         Returns the schema version in force after the call.
         """
         current = int(conn.execute("PRAGMA user_version").fetchone()[0])
-        if current >= SCHEMA_VERSION:
+        if current > SCHEMA_VERSION:
+            # Older code against a newer database would write rows under
+            # assumptions the schema no longer guarantees. Refuse loudly.
+            raise RuntimeError(
+                f"{self.db_path} was created by a newer Lope "
+                f"(schema v{current}; this build understands v{SCHEMA_VERSION}). "
+                f"Upgrade Lope, or point LOPE_MEMORY_DB at a different file."
+            )
+        if current == SCHEMA_VERSION:
             return current
 
         try:
             conn.execute("BEGIN IMMEDIATE")
+            self._reject_incompatible_tables(conn)
             for version in range(current + 1, SCHEMA_VERSION + 1):
                 for statement in self.MIGRATIONS.get(version, ()):
                     conn.execute(statement)
@@ -359,6 +374,29 @@ class LopeMemory:
             raise
 
         return SCHEMA_VERSION
+
+    @staticmethod
+    def _reject_incompatible_tables(conn: sqlite3.Connection) -> None:
+        """Fail early and legibly on a pre-existing table of the wrong shape.
+
+        ``CREATE TABLE IF NOT EXISTS`` is a no-op against a table that already
+        exists under the same name, whatever its columns. Without this check
+        the migration dies further along on an index build, reporting a bare
+        ``no such column`` that says nothing about the actual problem.
+        """
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='verdict_events'"
+        ).fetchone()
+        if not exists:
+            return
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(verdict_events)")}
+        absent = {"run_id", "validator_name", "final_verdict", "created_at"} - columns
+        if absent:
+            raise RuntimeError(
+                f"verdict_events already exists but is missing column(s) "
+                f"{sorted(absent)} -- refusing to migrate over an incompatible "
+                f"table. Rename or drop it, then re-run."
+            )
 
     @staticmethod
     def _validate_schema(conn: sqlite3.Connection) -> None:
@@ -385,10 +423,35 @@ class LopeMemory:
             raise RuntimeError(
                 f"migration validation failed: missing table(s) {sorted(missing)}"
             )
-        # Readability check -- a corrupt/renamed column surfaces here, inside
-        # the transaction, while rollback is still possible.
+
+        # Shape, not just presence. ``CREATE TABLE IF NOT EXISTS`` silently
+        # accepts a pre-existing table of the wrong shape, which would let the
+        # version advance while every insert fails.
+        expected_columns = {
+            "schema_version", "run_id", "gate_id", "validator_name",
+            "validator_version", "prompt_template_version", "rendered_prompt",
+            "task_spec_hash", "validation_input_ref", "raw_response",
+            "parser_version", "initial_parse_status", "parse_error_category",
+            "repair_attempted", "repair_status", "repaired_response",
+            "final_verdict", "candidate_output_ref", "latency_s",
+            "exit_status", "timed_out", "created_at",
+        }
+        actual_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(verdict_events)")
+        }
+        absent = expected_columns - actual_columns
+        if absent:
+            raise RuntimeError(
+                f"migration validation failed: verdict_events is missing "
+                f"column(s) {sorted(absent)} -- a table of this name already "
+                f"exists with an incompatible shape"
+            )
+
+        # Readability check. LIMIT 1 rather than COUNT(*): this runs inside
+        # BEGIN IMMEDIATE, and a full scan of every historical table would
+        # block writers for longer the more review history exists.
         for table in sorted(required):
-            conn.execute(f"SELECT COUNT(*) FROM {table}")  # noqa: S608 - fixed set
+            conn.execute(f"SELECT 1 FROM {table} LIMIT 1")  # noqa: S608 - fixed set
 
     def _connect(self) -> sqlite3.Connection:
         # ``check_same_thread=False`` keeps tests that share fixtures safe;

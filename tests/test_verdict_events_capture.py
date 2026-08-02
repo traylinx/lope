@@ -11,11 +11,17 @@ from lope.models import PhaseVerdict, ValidatorResult, VerdictStatus
 from lope.verdict_events import (
     ENV_DISABLE_EVENTS,
     classify_parse_error,
-    events_disabled,
+    events_enabled,
     record_verdict_event,
     task_spec_hash,
 )
 from lope.verdict_repair import ParseErrorCategory, RepairStatus
+
+
+@pytest.fixture(autouse=True)
+def _opt_in(monkeypatch):
+    """Capture is opt-in; these tests exercise the enabled path explicitly."""
+    monkeypatch.setenv(ENV_DISABLE_EVENTS, "on")
 
 
 def _result(status, *, error="", rationale="", raw="some output", name="codex"):
@@ -177,11 +183,12 @@ def test_recording_never_raises_on_a_broken_backend(tmp_path):
     )
 
 
-def test_events_can_be_disabled(monkeypatch, tmp_path):
+def test_capture_is_off_unless_explicitly_enabled(monkeypatch, tmp_path):
+    """Durable storage of whole prompts must be a decision, not a default."""
     mem = LopeMemory(tmp_path / "memory.db")
-    monkeypatch.setenv(ENV_DISABLE_EVENTS, "off")
+    monkeypatch.delenv(ENV_DISABLE_EVENTS, raising=False)
 
-    assert events_disabled() is True
+    assert events_enabled() is False
     assert record_verdict_event(
         _result(VerdictStatus.PASS), prompt="p", run_id="r", memory=mem
     ) is False
@@ -190,6 +197,62 @@ def test_events_can_be_disabled(monkeypatch, tmp_path):
     count = conn.execute("SELECT COUNT(*) FROM verdict_events").fetchone()[0]
     conn.close()
     assert count == 0
+
+
+@pytest.mark.parametrize("value", ["off", "0", "false", "no", "maybe", ""])
+def test_only_affirmative_values_enable_capture(monkeypatch, value):
+    monkeypatch.setenv(ENV_DISABLE_EVENTS, value)
+    assert events_enabled() is False
+
+
+@pytest.mark.parametrize("value", ["on", "1", "true", "yes", "ON", " on "])
+def test_affirmative_values_enable_capture(monkeypatch, value):
+    monkeypatch.setenv(ENV_DISABLE_EVENTS, value)
+    assert events_enabled() is True
+
+
+def test_parse_error_category_survives_a_successful_repair(tmp_path):
+    """The row must still say *why* it was written after the verdict changed."""
+    mem = LopeMemory(tmp_path / "memory.db")
+    result = _result(VerdictStatus.PASS, raw="VERDICT: PASS")
+    result.parse_error_category = "missing-verdict-block"
+
+    record_verdict_event(
+        result,
+        prompt="p",
+        run_id="run-1",
+        repair_attempted=True,
+        repair_status=RepairStatus.ACCEPTED,
+        initial_status=VerdictStatus.INFRA_ERROR,
+        memory=mem,
+    )
+
+    conn = sqlite3.connect(str(mem.db_path))
+    row = conn.execute(
+        "SELECT initial_parse_status, parse_error_category, final_verdict"
+        " FROM verdict_events"
+    ).fetchone()
+    conn.close()
+
+    assert row == ("INFRA_ERROR", "missing-verdict-block", "PASS")
+
+
+def test_task_spec_hash_is_computed_over_redacted_text(tmp_path):
+    """Hashing the raw prompt would leave an equality oracle over removed content."""
+    mem = LopeMemory(tmp_path / "memory.db")
+    secret = "sk-ant-api03-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+    record_verdict_event(
+        _result(VerdictStatus.PASS), prompt=f"deploy {secret}", run_id="r", memory=mem
+    )
+
+    conn = sqlite3.connect(str(mem.db_path))
+    stored_hash, stored_prompt = conn.execute(
+        "SELECT task_spec_hash, rendered_prompt FROM verdict_events"
+    ).fetchone()
+    conn.close()
+
+    assert stored_hash == task_spec_hash(stored_prompt)
+    assert stored_hash != task_spec_hash(f"deploy {secret}")
 
 
 def test_task_spec_hash_is_stable_and_distinguishing():
