@@ -372,6 +372,21 @@ class RunBudget:
                 record.outcome,
                 record.reason,
             )
+            observed_validator = record.validator
+            observed_duration = record.duration_seconds
+            observed_outcome = record.outcome
+        # Outside the lock: the ledger touches the filesystem, and it is
+        # advisory telemetry that must never delay or break a call.
+        try:
+            from .latency import record as record_latency
+
+            record_latency(
+                observed_validator,
+                observed_duration,
+                outcome=observed_outcome,
+            )
+        except Exception:
+            pass
 
     def records(self) -> List[CallRecord]:
         with self._lock:

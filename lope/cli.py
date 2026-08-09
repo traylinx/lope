@@ -222,6 +222,10 @@ def main():
                        help="Name of the primary validator (must be in --validators)")
         p.add_argument("--timeout", type=_positive_int, default=None,
                        help="Per-validator timeout in seconds")
+        p.add_argument("--respect-provider-timeout", dest="respect_provider_timeout",
+                       action="store_true", default=False,
+                       help="Let a provider's configured timeout outrank --timeout "
+                            "(default: the stricter of the two wins)")
         run_group = p.add_mutually_exclusive_group()
         run_group.add_argument(
             "--run-timeout", dest="run_timeout", type=_positive_int, default=None,
@@ -784,6 +788,11 @@ def main():
         level=logging.INFO,
         format="%(name)s | %(message)s",
     )
+
+    # Timeout precedence is resolved deep inside each provider call, far from
+    # argv; carry the operator's choice there through the environment.
+    if getattr(args, "respect_provider_timeout", False):
+        os.environ["LOPE_RESPECT_PROVIDER_TIMEOUT"] = "1"
 
     if args.command == "version":
         from . import __version__ as _v
@@ -2122,6 +2131,13 @@ def _plan_external_request(
             f"nominal ceiling {plan.nominal_wall_ceiling_seconds:g}s",
             file=sys.stderr,
         )
+        try:
+            from .latency import fit_warnings
+
+            for line in fit_warnings(validators, cfg.timeout):
+                print(line, file=sys.stderr)
+        except Exception:
+            pass
     return plan
 
 

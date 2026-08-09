@@ -61,6 +61,21 @@ class ConfigError(ValueError):
     """Raised when a provider config entry is invalid."""
 
 
+def respect_provider_timeout() -> bool:
+    """True when a provider's configured timeout outranks the call ceiling.
+
+    Off by default: the stricter-wins rule below is deliberate and protects
+    bounded probes like `team test --timeout 10`. This escape hatch exists for
+    the opposite case — a provider configured slow *on purpose* (a
+    high-reasoning-effort model) being clamped by a generic ceiling that some
+    caller guessed. Set by `--respect-provider-timeout`.
+    """
+
+    return os.environ.get("LOPE_RESPECT_PROVIDER_TIMEOUT", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def _effective_timeout(provider_timeout: Optional[int], call_timeout: Optional[int]) -> Optional[int]:
     """Return the timeout Lope should actually enforce for one provider call.
 
@@ -68,10 +83,16 @@ def _effective_timeout(provider_timeout: Optional[int], call_timeout: Optional[i
     cap than the global Lope default. That provider value must never silently
     extend an explicit per-call timeout (`lope ask --timeout 30`, `team test
     --timeout 10`, etc.). Use the stricter value when both are present.
+
+    The clamp is reported before launch by `latency.fit_warnings`, and can be
+    inverted per-invocation with `--respect-provider-timeout` when the provider
+    is the one that knows better.
     """
     if provider_timeout is None:
         return call_timeout
     if call_timeout is None:
+        return provider_timeout
+    if respect_provider_timeout():
         return provider_timeout
     return min(provider_timeout, call_timeout)
 
