@@ -1668,6 +1668,14 @@ class ClaudeCodeValidator(Validator):
 # ─── Codex validator ───────────────────────────────────────────
 
 
+# 2026-08-07: --ignore-user-config below discards ~/.codex/config.toml, so the user's default
+# model never reached lope. Pin it explicitly instead. Reasoning stays "low" on purpose (see the
+# comment in generate()): these are fast pass/fail gates, and xhigh would make every validation
+# slow and expensive. For a heavyweight opinion call `codex exec` directly, which reads the user
+# config (gpt-5.6-sol / xhigh). Override without editing this file: LOPE_CODEX_MODEL=<slug>.
+CODEX_MODEL = os.environ.get("LOPE_CODEX_MODEL", "gpt-5.6-sol")
+
+
 class CodexValidator(Validator):
     """Wraps `codex exec "<prompt>"` for validated review."""
 
@@ -1726,6 +1734,8 @@ class CodexValidator(Validator):
                     "--skip-git-repo-check",
                     "-s",
                     "workspace-write" if implementation_mode else "read-only",
+                    "-m",
+                    CODEX_MODEL,
                     "-c",
                     'model_reasoning_effort="low"',
                 ],
@@ -1764,6 +1774,8 @@ class CodexValidator(Validator):
                     "--skip-git-repo-check",
                     "-s",
                     "read-only",
+                    "-m",
+                    CODEX_MODEL,
                     "-c",
                     'model_reasoning_effort="low"',
                 ],
