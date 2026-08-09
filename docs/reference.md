@@ -635,6 +635,49 @@ Custom providers via `~/.lope/config.json` — subprocess or HTTP. Schema in the
 | **v0.4.0 self-heal** | |
 | `LOPE_SELF_HEAL` | `1` to opt into adapter self-healing on flag-break detection. Default off in v0.4.0. |
 | `LOPE_HOME` | Override `~/.lope` for the global config directory. Useful for sandboxed test runs. |
+| **v0.16.0 budget awareness** | |
+| `LOPE_LATENCY` | `off` to disable the per-validator latency ledger entirely — no recording, no pre-launch budget advice. |
+| `LOPE_RESPECT_PROVIDER_TIMEOUT` | `1` to let a provider's configured `timeout` outrank `--timeout`. Same effect as `--respect-provider-timeout`. |
+
+## Budget awareness (v0.16.0)
+
+Lope records how long each validator actually takes and uses that history to
+tell you, **before** a run starts, when the budget you asked for cannot work.
+
+The ledger lives at `$LOPE_HOME/latency.json` and holds a bounded window of
+recent call durations per validator. Timed-out calls are kept as censored
+lower bounds — a call killed at 240s proves the real duration exceeds 240s —
+so estimates are biased upward, which is the safe direction for a budget.
+
+Before launch the request plan reports two distinct problems:
+
+- **clamp** — the call ceiling is silently cutting a provider's own configured
+  timeout. Previously invisible: `--timeout 240` against a provider configured
+  for 600s enforced 240 and said nothing.
+- **misfit** — the enforced ceiling is below the validator's observed p90 plus
+  variance room, so the call is predicted to be killed at the wall.
+
+```text
+Request plan: direct · 22 bytes · 1 chunk(s) · 1 call(s) · nominal ceiling 15s
+  budget advice: claude-safe-review ceiling 15s; clamps its configured 600s
+  (pass --respect-provider-timeout to honour the config); is below observed
+  p90 13s over 3 call(s) — predicted timeout; raise --timeout to >= 20s
+```
+
+The advice **prints, it does not block** — a first-ever call has no history and
+must still be allowed to run. Everything is advisory and failure-contained: a
+corrupt or unwritable ledger degrades to "no advice", never to a failed run.
+
+### Timeout precedence
+
+When both a provider config timeout and a call timeout are present, **the
+stricter one wins by default.** This is deliberate: provider timeouts exist as
+shorter safety caps, and a bounded probe like `team test --timeout 10` must
+stay bounded to 10s.
+
+`--respect-provider-timeout` inverts that for one invocation, for the opposite
+case — a provider configured slow *on purpose* (a high-reasoning-effort model)
+being clamped by a generic ceiling somebody guessed.
 
 ## Config precedence (v0.4.0)
 

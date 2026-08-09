@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.0 — Budget awareness: validator latency ledger and pre-launch advice
+
+- Lope now remembers how long each validator actually takes. A bounded window of recent call durations per validator is kept at `$LOPE_HOME/latency.json`. Timed-out calls are stored as censored lower bounds — a call killed at 240s proves the real duration exceeds 240s — so estimates are biased upward, the safe direction for a budget.
+- The request plan reports two previously invisible problems before a run starts. A **clamp**: the call ceiling is silently cutting a provider's own configured timeout (`--timeout 240` against a provider configured for 600s enforced 240 and said nothing). A **misfit**: the enforced ceiling sits below the validator's observed p90 plus variance room, so the call is predicted to be killed at the wall. The advice prints and does not block — a first-ever call has no history and must still run.
+- Added `--respect-provider-timeout` (and `LOPE_RESPECT_PROVIDER_TIMEOUT=1`) to let a provider's configured timeout outrank `--timeout` for one invocation. The default is unchanged and deliberate: the stricter of the two still wins, because provider timeouts exist as shorter safety caps and a bounded probe like `team test --timeout 10` must stay bounded.
+- Added `LOPE_LATENCY=off` to disable recording and advice entirely. The ledger is advisory and failure-contained: a corrupt or unwritable ledger degrades to "no advice", never to a failed run. Only `ok` and `provider_timeout` outcomes are recorded, since a launch or parse error says nothing about how long a model needs to think.
+- Fixed: the test suite wrote fixture validator names (`stub`, `a`, `b`) into the operator's real ledger. `tests/conftest.py` now isolates it.
+- 24 new tests; full suite 871. Each new guard was mutation-tested individually.
+
 ## 0.15.0 — Verdict repair and verdict event capture
 
 - Added one-shot mechanical repair for validator responses that omit the VERDICT block: the original response is embedded in an extraction-only prompt, and the reply is accepted only if it is a single well-formed verdict block with no extra prose. A validator that reasoned correctly but formatted badly no longer loses its verdict to the fallback chain; transport errors, timeouts, and process failures are never repaired. Repair cannot return INFRA_ERROR, cannot run without the original text, and repaired verdicts stay marked so they are never mistaken for clean ones.
