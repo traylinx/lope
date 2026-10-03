@@ -233,6 +233,17 @@ For engineering sprint execution, minimality audit is ON by default. Keep requir
 - **Do not silently expand a phase's scope.** If during work you discover a better approach, raise it with the user before folding it in.
 - **Do not ignore the lint.** If `lope negotiate` rejects your draft for placeholder language or empty artifact lists, fix the draft — do not try to bypass the lint with `LOPE_LINT=off` unless the user explicitly asks for it.
 
+## Prompting validators: point, don't paste
+
+Validators run on this same machine and can read files. Learned on a long review loop (2026-10-03):
+
+- **Point, don't paste.** Send a short task plus absolute file paths ("Read /abs/path/SPEC.md and /abs/path/PLAN.md, then …"), not the file contents. Pasting ~90 KB made runs fail or come back empty; a short prompt with paths let each validator read what it needed and check claims against the code. Prefer `lope ask "<short prompt with paths>"` over `lope review <file>` (which pastes the file) for anything larger than a few KB.
+- **Tell subprocess validators not to run commands.** Headless CLIs such as `agy` deny shell commands they cannot ask permission for, and a denied command ends the run with **no output** (lope shows `agy returned empty output` / `parse_error`). Add: "Use only your file-reading tool. Do NOT run any shell or git command." Do not reach for `--dangerously-skip-permissions`.
+- **Diagnose an empty answer by running the CLI directly** with the same prompt and reading its stderr (e.g. `agy -p "<prompt>" 2>err.txt`). The reason is usually printed there; the size of the prompt was not the cause in this case.
+- **Codex reading many files can exceed lope's 512 KB stderr limit** (`codex failed: … stderr exceeded 524288 bytes`). Then run it directly: `codex exec --skip-git-repo-check -s read-only -C <dir> --output-last-message <file> "<prompt>" < /dev/null`, and read `<file>`.
+- **Give a direct Codex run time:** reading a plan and checking it against code can take 20–30 minutes, and Codex writes its answer only at the end (while it waits for the model it shows 0% CPU, which is normal). Wrap it in `timeout 1800`, not 1000: a shorter limit kills it with no report.
+- **Make reviews converge.** An open "find anything wrong" review never ends: each round reads different parts and finds something new. Instead give a fixed checklist answered PASS/FAIL per item (save it as a file and point to it), a list of choices "decided on purpose, do not raise", and a stop rule (for example: every validator clean in the same round, twice in a row).
+
 ## Runtime safety (v0.14.0)
 
 Use `--run-timeout` for the whole command; `--timeout` remains a per-provider-call ceiling. Inspect the emitted request plan before large work and prefer compact evidence. Automatic shaping is bounded; use chunking only when the forecast fits `--max-calls` and `--max-chunks`. For abandoned work, run `lope jobs list` and preview `lope jobs reap --dry-run`. Never use `pkill -f`, `killall`, or process-name matching.
