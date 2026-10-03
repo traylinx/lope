@@ -84,6 +84,17 @@ Normal engineering `execute` and `implement` runs include Ponytail-inspired mini
 
 Treat the sprint as dynamic. If during work you discover a better approach or have an "aha" moment, do not silently expand scope and do not ignore it. Raise it with your lope teammates, negotiate whether it belongs, and fold it in if agreed.
 
+## Prompting validators: point, don't paste
+
+Validators run on this same machine and can read files. Learned on a long review loop (2026-10-03):
+
+- **Point, don't paste.** Send a short task plus absolute file paths ("Read /abs/path/SPEC.md and /abs/path/PLAN.md, then …"), not the file contents. Pasting ~90 KB made runs fail or come back empty; a short prompt with paths let each validator read what it needed and check claims against the code. Prefer `lope ask "<short prompt with paths>"` over `lope review <file>` (which pastes the file) for anything larger than a few KB.
+- **Tell subprocess validators not to run commands.** Headless CLIs such as `agy` deny shell commands they cannot ask permission for, and a denied command ends the run with **no output** (lope shows `agy returned empty output` / `parse_error`). Add: "Use only your file-reading tool. Do NOT run any shell or git command." Do not reach for `--dangerously-skip-permissions`.
+- **Diagnose an empty answer by running the CLI directly** with the same prompt and reading its stderr (e.g. `agy -p "<prompt>" 2>err.txt`). The reason is usually printed there; the size of the prompt was not the cause in this case.
+- **Codex reading many files can exceed lope's 512 KB stderr limit** (`codex failed: … stderr exceeded 524288 bytes`). Then run it directly: `codex exec --skip-git-repo-check -s read-only -C <dir> --output-last-message <file> "<prompt>" < /dev/null`, and read `<file>`.
+- **Give a direct Codex run time:** reading a plan and checking it against code can take 20–30 minutes, and Codex writes its answer only at the end (while it waits for the model it shows 0% CPU, which is normal). Wrap it in `timeout 1800`, not 1000: a shorter limit kills it with no report.
+- **Make reviews converge.** An open "find anything wrong" review never ends: each round reads different parts and finds something new. Instead give a fixed checklist answered PASS/FAIL per item (save it as a file and point to it), a list of choices "decided on purpose, do not raise", and a stop rule (for example: every validator clean in the same round, twice in a row).
+
 ## When NOT to use lope
 
 - One-off refactors that are a single edit → just do the edit

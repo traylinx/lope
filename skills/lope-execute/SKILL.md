@@ -60,3 +60,5 @@ The validator review task adapts automatically. Same `/lope-execute` command for
 ## Runtime safety (v0.14.0)
 
 Use `--run-timeout` for the whole command; `--timeout` remains a per-provider-call ceiling. Inspect the emitted request plan before large work and prefer compact evidence. Automatic shaping is bounded; use chunking only when the forecast fits `--max-calls` and `--max-chunks`. For abandoned work, run `lope jobs list` and preview `lope jobs reap --dry-run`. Never use `pkill -f`, `killall`, or process-name matching.
+
+See **Prompting validators: point, don't paste** in the `using-lope` skill: send a short prompt with absolute file paths instead of pasting files, tell subprocess validators (e.g. `agy`) to use only file reading and run no shell commands (a denied command returns empty output), and give reviews a fixed PASS/FAIL checklist with a stop rule.
