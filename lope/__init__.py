@@ -18,7 +18,7 @@ and edges carry conditions and loops, bounded by visit caps. Maintenance is
 Any CLI implements; any CLI validates.
 """
 
-__version__ = "0.17.1"
+__version__ = "0.17.2"
 
 from .models import (
     ExecutionReport,

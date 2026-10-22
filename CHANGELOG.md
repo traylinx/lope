@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.17.2 — Publishing metadata compatibility
+
+- Update the SHA-pinned PyPA publisher to v1.14.3 and align artifact-check Twine/Packaging versions with its runtime. The previous action rejected Metadata-Version 2.5 before upload, despite current local and CI validation passing.
+- Preserve the v0.17.1 tag unchanged. No 0.17.1 package was uploaded to PyPI; this patch carries the complete packaging and installation fixes below. TestPyPI remains disabled.
+
 ## 0.17.1 — Complete Python packages and preservation-aware installation
 
 - Bundle skills, host command wrappers, installer, and documentation in wheels; source archives retain the same canonical assets. `lope install` and `lope docs` resolve resources from the running version instead of assuming a Git checkout.
