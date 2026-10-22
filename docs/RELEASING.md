@@ -27,6 +27,22 @@ If you change the version, every one of these must move in lockstep or the insta
 
 Use `./scripts/bump-version.sh NEW_VERSION` — it seds all 6 files and runs a sync check. Never edit them by hand.
 
+## Preparation is not publication
+
+A local candidate, version bump, successful tests and installed-file sync do not
+publish a release. Commit, integration/merge, push, tag publication and hosted
+release actions require explicit approval. The `v*` tag workflow publishes to
+PyPI/TestPyPI only when the corresponding repository variable is explicitly
+`true`: `PYPI_PUBLISH_ENABLED` or `TESTPYPI_PUBLISH_ENABLED`. Leave both unset for
+a GitHub-only release. First configure the matching trusted publisher; a tag is
+a distribution action, not merely bookkeeping.
+
+Inspect source and installed checkouts separately. Preserve unrelated dirty work;
+do not use a reset, stash, broad reinstall or tag deletion as a synchronization
+shortcut. If the source branch is behind main, prepare the integration plan and
+obtain approval before changing branch ancestry. Never silently discard installed
+adapter fixes or locally modified skills.
+
 ## Release checklist
 
 Copy this into the PR description (or into the commit body for a direct-to-main release). Check each box in order.
@@ -37,7 +53,7 @@ Copy this into the PR description (or into the commit body for a direct-to-main 
 - [ ] **On `main`.** `git rev-parse --abbrev-ref HEAD` prints `main`. Never tag a release from a feature branch.
 - [ ] **Up to date.** `git pull --ff-only origin main` reports no changes pulled.
 - [ ] **CHANGELOG draft.** Write the new section at the top of `CHANGELOG.md` under `# Changelog`. Format: `## X.Y.Z — <one-line tagline>` followed by bullet points of what changed, grouped by the reader's interest (user-facing features first, install/docs fixes second, internals last).
-- [ ] **Nothing secret in the diff.** `git diff --staged | grep -iE "sk-|AKIA|ghp_|/Users/|localhost:|OPENAI_API_KEY"` returns empty.
+- [ ] **Nothing secret in the diff.** Run the full configured secret scan and review the staged patch. Credential-shaped fixtures, environment-variable names and local paths may match a grep; examine each match rather than treating grep alone as proof. Never publish operator config, private review transcripts or local runtime stores.
 
 ### Version bump
 
@@ -48,17 +64,19 @@ Copy this into the PR description (or into the commit body for a direct-to-main 
 
 ### Local smoke test
 
-- [ ] **Install runs clean.** `./install` completes without errors and writes skills for every host that exists on your machine.
+- [ ] **Installer qualification.** Inspect the installer and use an explicitly approved host/scope or isolated fixture. Do not overwrite modified local skills merely to tick this box. Record any unexecuted installer gate.
 - [ ] **Status runs clean.** `PYTHONPATH=. python3 -m lope status` prints the validator table and config path.
 - [ ] **Tiny negotiate works.** `PYTHONPATH=. python3 -m lope negotiate --domain engineering --max-rounds 1 "rename a constant in one file"` runs end-to-end without a Python traceback. Validators may escalate — that's fine, we only care that the engine itself works.
-- [ ] **Tests pass** (if present). `PYTHONPATH=. python3.11 -m pytest tests/ -x -q` returns 0. Public repo currently has no `tests/` dir — skip this box until tests are added.
+- [ ] **Tests pass.** Run the full `tests/` suite on supported CI interpreters (currently Python 3.9 and 3.12), lint, syntax, version sync and secret scan. No optional skip: the repository has a substantial regression suite.
+- [ ] **Packages verified.** Build wheel/sdist without publishing; check version metadata, changed modules, required docs and absence of local credentials/runtime artifacts.
+- [ ] **Native adapter smoke.** Exercise changed provider paths with an approved bounded fixture. A keyless test is not native-provider proof; a successful fixture is not a universal permission guarantee.
 
 ### Commit and tag
 
 - [ ] **Stage only the release files.** `git add pyproject.toml lope/__init__.py install CHANGELOG.md .claude-plugin/plugin.json .cursor-plugin/plugin.json gemini-extension.json` plus any feature/fix files that belong to this release. Never `git add .`.
 - [ ] **Commit with a release body.** Subject: `vX.Y.Z — <tagline>`. Body: the CHANGELOG section pasted verbatim (minus the `## X.Y.Z —` header). Use a HEREDOC, not inline `-m`.
 - [ ] **Tag annotated, not lightweight.** `git tag -a vX.Y.Z -m "vX.Y.Z — <tagline>"`. Lightweight tags don't carry metadata and break GitHub's release UI.
-- [ ] **Push main first, tag second.** `git push origin main` → `git push origin vX.Y.Z`. Pushing the tag before the commit can leave consumers pulling a tag that references an unpushed SHA.
+- [ ] **Push main first; verify CI for that exact commit before publishing the tag.** Only after explicit publication approval and green CI, push `vX.Y.Z`. Confirm the requested destination: GitHub-only means both package-publishing repository variables are unset/false; package publication additionally requires the matching trusted publishers and opt-in variables. Do not infer readiness from an earlier branch/test run.
 
 ### Post-push verification
 
@@ -70,7 +88,7 @@ Copy this into the PR description (or into the commit body for a direct-to-main 
   Read https://raw.githubusercontent.com/traylinx/lope/main/INSTALL.md and follow the instructions to install lope on this machine natively.
   ```
   Agent fetches, installs, reports back. For a PATCH release this is a 30-second smoke. For MINOR/MAJOR, run it in at least 2 different host CLIs.
-- [ ] **`~/.lope` resync.** If you dogfood lope from `~/.lope`, run `cd ~/.lope && git fetch && git reset --hard origin/main && git tag -d vX.Y.Z 2>/dev/null; git fetch --tags` so your local copy matches the new tag.
+- [ ] **Preservation-aware local sync.** Compare installed/source hashes and diffs. Back up the exact affected files, verify they have not changed since inspection, then synchronize only reviewed owning modules and version surfaces. Preserve local provider config, permissions, credentials, history and modified skills. Use a separate clean checkout for full installer/release verification. Report local-source parity separately from Git ancestry or publication.
 
 ### Announce (MINOR and MAJOR only, skip for PATCH unless the fix is user-visible)
 
@@ -95,7 +113,7 @@ Copy this into the PR description (or into the commit body for a direct-to-main 
 ## Quick reference
 
 ```bash
-# From a clean main tree, full PATCH release in 8 commands:
+# Example after explicit release approval and all checks above; not an automatic script:
 ./scripts/bump-version.sh 0.3.2                           # 1. bump
 ./scripts/check-version.sh                                # 2. verify sync
 $EDITOR CHANGELOG.md                                      # 3. add release notes
@@ -105,7 +123,9 @@ git add pyproject.toml lope/__init__.py install \
         .cursor-plugin/plugin.json gemini-extension.json  # 5. stage
 git commit                                                # 6. commit (HEREDOC body)
 git tag -a v0.3.2 -m "v0.3.2 — <tagline>"                 # 7. tag
-git push origin main && git push origin v0.3.2            # 8. push
+git push origin main                                     # 8a. push approved commit
+# Verify green CI for this exact commit, then obtain/confirm publication approval.
+git push origin v0.3.2                                    # 8b. publishes tag; package uploads are separately opt-in
 ```
 
 That's it. Memorize nothing — read this file every single time.

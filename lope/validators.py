@@ -124,7 +124,12 @@ def _run_with_group_kill(
     except OutputLimitExceeded as exc:
         raise ProviderInfrastructureError(f"{command[0]} output limit: {exc}")
     except OSError as e:
-        raise ProviderInfrastructureError(f"{command[0]} failed to launch: {e}")
+        from .diagnostics import diagnostic_suffix, redact_diagnostic
+
+        raise ProviderInfrastructureError(
+            f"{command[0]} subprocess failure: " + redact_diagnostic(e)
+            + diagnostic_suffix(getattr(e, "stdout", None), getattr(e, "stderr", None))
+        ) from None
     return proc, time.time() - started
 
 
@@ -205,6 +210,28 @@ def _claude_extra_args() -> List[str]:
     import shlex
 
     return shlex.split(raw)
+
+
+def _claude_invocation_args() -> List[str]:
+    """Return deterministic non-interactive args for Claude Code.
+
+    Lope must not inherit Claude Code plugins, MCP servers, hooks, or project
+    customizations. In print mode those surfaces can advertise dynamic tool
+    references that are absent from the request's actual tool set (notably
+    ``WaitForMcpServers``), causing an API 400 before the validator responds.
+
+    ``--safe-mode`` disables those customizations while retaining Claude's
+    built-in tools, which implementation calls still need. User-supplied args
+    stay last so model and other harmless per-run overrides continue to work.
+    """
+
+    return [
+        "--safe-mode",
+        "--no-session-persistence",
+        "--output-format",
+        "text",
+        *_claude_extra_args(),
+    ]
 
 
 # ─── Formal VERDICT schema ──────────────────────────────────────
@@ -1599,7 +1626,7 @@ class ClaudeCodeValidator(Validator):
             raise RuntimeError(f"claude binary not found: {self._binary}")
         try:
             proc, _elapsed = _run_with_group_kill(
-                [self._binary, "--print", *_claude_extra_args()], input_text=prompt, timeout=timeout,
+                [self._binary, "--print", *_claude_invocation_args()], input_text=prompt, timeout=timeout,
                 cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()), context=context,
             )
         except ProviderInfrastructureError as e:
@@ -1623,7 +1650,7 @@ class ClaudeCodeValidator(Validator):
         started = time.time()
         try:
             proc, _elapsed = _run_with_group_kill(
-                [self._binary, "--print", *_claude_extra_args()], input_text=self._build_prompt(prompt),
+                [self._binary, "--print", *_claude_invocation_args()], input_text=self._build_prompt(prompt),
                 timeout=timeout, cwd=os.environ.get("LOPE_WORKDIR", os.getcwd()),
                 context=context,
             )

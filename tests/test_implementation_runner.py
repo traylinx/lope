@@ -381,3 +381,20 @@ def test_writer_failover_stops_on_not_implemented(monkeypatch):
     assert result.ok is False
     assert calls == ["codex"]
     assert "generate not supported" in result.error
+
+
+def test_permission_denial_never_tries_next_writer(monkeypatch):
+    from lope.provider_errors import ProviderToolPermissionError
+    calls = []
+    def deny(writer, *args, **kwargs):
+        calls.append(writer.name)
+        raise ProviderToolPermissionError("fixture tool_permission_denied: command")
+    monkeypatch.setattr("lope.invocation.invoke_generate", deny)
+    monkeypatch.setattr("lope.implementation_runner.workspace_snapshot", lambda: "unchanged")
+    result = invoke_writer_failover(
+        writers=[_Writer("denied"), _Writer("fallback")], base_prompt="p",
+        phase_index=1, timeout=10, print_fn=lambda *args: None,
+    )
+    assert not result.ok
+    assert "tool_permission_denied" in result.error
+    assert calls == ["denied"]

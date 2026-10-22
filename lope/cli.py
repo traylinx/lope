@@ -2101,9 +2101,26 @@ def _plan_external_request(
         ) if chunk_extra_calls is None else chunk_extra_calls,
         units=units,
     )
+    # Advice is part of the request evidence, not a human-output-only feature.
+    # Machine callers need the same clamp/history warnings as interactive ones.
+    try:
+        from .latency import fit_warnings
+
+        budget_advice = fit_warnings(validators, cfg.timeout)
+    except Exception:
+        budget_advice = []
+    plan_evidence = plan.to_dict()
+    plan_evidence["budget_advice"] = budget_advice
+    execution_profiles = []
+    if mode == "review":
+        for validator in validators:
+            profile = getattr(validator, "execution_profile", None)
+            if callable(profile):
+                execution_profiles.append(profile(mode))
+    plan_evidence["execution_profiles"] = execution_profiles
     context = getattr(pool, "_invocation_context", None)
     if context is not None:
-        context.add_request_plan(plan.to_dict())
+        context.add_request_plan(plan_evidence)
     if plan.action == PlanAction.REJECT:
         if getattr(args, "json", False):
             from .output import print_json
@@ -2112,7 +2129,7 @@ def _plan_external_request(
             payload.update({
                 "partial": False,
                 "reason": "input_limit",
-                "request_plan": plan.to_dict(),
+                "request_plan": plan_evidence,
                 "error": plan.reason,
             })
             print_json(payload)
@@ -2131,13 +2148,11 @@ def _plan_external_request(
             f"nominal ceiling {plan.nominal_wall_ceiling_seconds:g}s",
             file=sys.stderr,
         )
-        try:
-            from .latency import fit_warnings
-
-            for line in fit_warnings(validators, cfg.timeout):
-                print(line, file=sys.stderr)
-        except Exception:
-            pass
+    for line in budget_advice:
+        print(line, file=sys.stderr)
+    for profile in execution_profiles:
+        for line in profile.get("warnings", []):
+            print(line, file=sys.stderr)
     return plan
 
 
@@ -3864,7 +3879,9 @@ def _cmd_review(args):
         "Review this file. Identify bugs, code-smells, design issues, "
         "and concrete improvements. Be specific with line references."
     )
+    from .review import REVIEW_SCOPE
     prompt = (
+        f"{REVIEW_SCOPE}\n\n"
         f"{focus}\n\n"
         f"File: {file_path}\n"
         f"```\n{content}\n```\n\n"
@@ -4223,6 +4240,9 @@ def _cmd_review_consensus(args, file_path, content, output_format):
                 "plan",
                 "timing",
                 "limits",
+                "actual",
+                "events",
+                "circuits",
                 "partial",
                 "reason",
                 "artifacts",

@@ -60,7 +60,7 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
 
 
-def process_start_fingerprint(pid: int) -> Optional[str]:
+def process_start_fingerprint(pid: int, *, timeout: float = 2) -> Optional[str]:
     """Return a stable-per-process start fingerprint, or ``None`` if dead.
 
     Linux exposes the kernel start tick in ``/proc/<pid>/stat``.  POSIX hosts
@@ -92,7 +92,7 @@ def process_start_fingerprint(pid: int) -> Optional[str]:
             [ps_bin, "-p", str(pid), "-o", "lstart="],
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=timeout,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -131,10 +131,10 @@ def boot_fingerprint() -> str:
     return _sha256_text("|".join((socket.gethostname(), boot)))
 
 
-def process_identity(pid: int) -> Dict[str, Any]:
+def process_identity(pid: int, *, timeout: float = 2) -> Dict[str, Any]:
     return {
         "pid": int(pid),
-        "start_fingerprint": process_start_fingerprint(int(pid)),
+        "start_fingerprint": process_start_fingerprint(int(pid), timeout=timeout),
     }
 
 

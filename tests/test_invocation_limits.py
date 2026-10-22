@@ -61,7 +61,10 @@ def test_term_exiting_leader_does_not_leave_term_ignoring_grandchild(tmp_path):
     with pytest.raises(subprocess.TimeoutExpired):
         run_subprocess_group(
             [sys.executable, str(script), str(pid_file)],
-            timeout=0.5,
+            # Total timeout includes interpreter startup and identity probes.
+            # 0.5s sometimes expired before this fixture spawned under load.
+            # Keep the independent five-second descendant-death check below.
+            timeout=2,
         )
     assert pid_file.exists()
     grandchild = int(pid_file.read_text(encoding="utf-8"))
@@ -162,5 +165,5 @@ def test_supervisor_publishes_child_identity_and_cleanup(tmp_path):
     assert call["child"]["pid"] > 0
     assert call["pgid"] > 0
     assert call["ownership_marker_hash"]
-    assert call["cleanup_result"].startswith("clean")
+    assert call["cleanup_result"] == "clean" or call["cleanup_result"].startswith("clean:")
     assert not list((registry.work_dir / "run1").rglob("supervisor-result.json"))

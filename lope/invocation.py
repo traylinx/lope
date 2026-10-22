@@ -25,6 +25,9 @@ def _outcome_for(error: object) -> OutcomeClass:
         "output_limit": OutcomeClass.OUTPUT_LIMIT,
         "input_limit": OutcomeClass.INPUT_LIMIT,
         "parse_error": OutcomeClass.PARSE_ERROR,
+        "tool_permission_denied": OutcomeClass.TOOL_PERMISSION_DENIED,
+        "auth_error": OutcomeClass.AUTH_ERROR,
+        "empty_output": OutcomeClass.EMPTY_OUTPUT,
         "service_unavailable": OutcomeClass.TRANSIENT_FAILURE,
         "connection_reset": OutcomeClass.TRANSIENT_FAILURE,
     }.get(kind, OutcomeClass.LAUNCH_ERROR)
@@ -40,7 +43,13 @@ def _call_context(
 ) -> InvocationContext:
     extra = dict(metadata or {})
     extra["call_id"] = call_id
+    # Per-attempt evidence must never inherit a previous subprocess result.
+    extra["process_cleanup_result"] = None
     return context.child(stage=stage, validator=validator, metadata=extra)
+
+
+def _cleanup_result(context: InvocationContext, default: str = "unknown") -> str:
+    return context.metadata.get("process_cleanup_result") or default
 
 
 def _wait(context: InvocationContext, seconds: float) -> bool:
@@ -105,7 +114,7 @@ def invoke_generate(
             outcome = _outcome_for(exc)
             lease.finish(
                 outcome,
-                cleanup_result=(
+                cleanup_result=_cleanup_result(call_context, (
                     "clean"
                     if outcome in {
                         OutcomeClass.PROVIDER_TIMEOUT,
@@ -115,7 +124,7 @@ def invoke_generate(
                         OutcomeClass.OUTPUT_LIMIT,
                     }
                     else "unknown"
-                ),
+                )),
                 reason=str(exc)[:300],
             )
             root.finish_lease(lease)
@@ -151,7 +160,7 @@ def invoke_generate(
         lease.finish(
             OutcomeClass.OK,
             output_bytes=len(answer.encode("utf-8")),
-            cleanup_result="clean",
+            cleanup_result=_cleanup_result(call_context, "clean"),
         )
         root.finish_lease(lease)
         return answer
@@ -228,7 +237,7 @@ def invoke_validate(
                 lease.finish(
                     OutcomeClass.OK,
                     output_bytes=len((result.raw_response or "").encode("utf-8")),
-                    cleanup_result="clean",
+                    cleanup_result=_cleanup_result(call_context, "clean"),
                 )
                 root.finish_lease(lease)
                 return result
@@ -241,7 +250,7 @@ def invoke_validate(
                 len((result.raw_response or "").encode("utf-8"))
                 if result is not None else 0
             ),
-            cleanup_result=(
+            cleanup_result=_cleanup_result(call_context, (
                 "clean"
                 if outcome in {
                     OutcomeClass.PROVIDER_TIMEOUT,
@@ -250,7 +259,7 @@ def invoke_validate(
                     OutcomeClass.PARSE_ERROR,
                 }
                 else "unknown"
-            ),
+            )),
             reason=str(error)[:300],
         )
         root.finish_lease(lease)

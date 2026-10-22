@@ -147,7 +147,10 @@ KNOWN_CLIS = [
         display_name="Agy",
         tier=2,
         is_default=False,
-        # Print mode: one stateless prompt -> response, no interactive session.
+        # Print mode is non-interactive, NOT a guarantee of stateless/tool-free
+        # execution. Agy can still request tool permissions and fail headlessly.
+        # A separate, locally verified review_command/review_workdir profile can
+        # reduce startup context; never auto-add permission-bypass flags.
         # Multi-model agent CLI (Gemini / Claude / GPT-OSS); the active model
         # comes from the user's agy config. Same validator shape as qwen.
         generic_command=["agy", "-p", "{prompt}"],

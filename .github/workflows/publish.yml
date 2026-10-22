@@ -7,6 +7,9 @@ on:
 
 jobs:
   publish:
+    # Publishing is opt-in after the matching PyPI trusted publisher exists.
+    # Missing/false variables deliberately make a tag a GitHub-only release.
+    if: ${{ vars.PYPI_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     # PyPI Trusted Publisher must match:
     # owner=traylinx, repository=lope, workflow=publish.yml, environment=pypi
@@ -33,6 +36,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
 
   publish-test:
+    if: ${{ vars.TESTPYPI_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     # TestPyPI Trusted Publisher must match:
     # owner=traylinx, repository=lope, workflow=publish.yml, environment=testpypi

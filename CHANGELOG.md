@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.17.0 — Review runner reliability
+
+- Recognize native Agy headless tool-permission denials before empty-output parsing, diagnostic clipping or accepting preparatory stdout as a review. The terminal `tool_permission_denied` outcome does not retry, grant permissions or trigger infrastructure writer failover.
+- Keep `auth_error` and `empty_output` distinct in runtime telemetry instead of reporting them as launch/parse errors.
+- Add optional generic-provider `review_command`, `review_stdin` and `review_workdir` launch profiles. Only review-mode calls select them; legacy/direct and implementation calls keep their original command/cwd. Isolated review cwd is temporary, not a filesystem/network/tool sandbox. Configuration and CLI permissions are never auto-escalated.
+- Inline review prompts explicitly bound scope to the supplied material. Preflight prints and records the selected review profile, executable availability and unchanged tool-policy boundary without exposing argv or prompts.
+- Consensus-review JSON now retains actual usage, retry events and circuit state alongside raw-mode telemetry. Missing alternate review executables are named correctly.
+- Promote the existing installed Claude safe-mode/session-persistence hotfix into source, with regression coverage, so a later release does not undo the working local adapter.
+- Send cancellation signals before process-table telemetry; bound supervisor identity probes and fail closed on unknown cleanup. Fix the `cleanup_failed`/`clean` prefix collision. Process-target counts are now an explicit leader lower bound, not a full census.
+- Harden review profiles against dropped prompts and stale `LOPE_WORKDIR`; preserve provider outcomes if temporary-directory removal fails (with an explicit warning). Quoted model diagnostics cannot forge the new permission classification.
+- Handle supervisor TERM during startup or registry I/O by immediately killing its owned provider group, preventing an orphan when the owner must force-stop the supervisor.
+- Preserve subprocess cleanup evidence in invocation telemetry; a timeout without a supervisor result stays `unknown`, not `clean`, and retries cannot inherit a previous cleanup result.
+- Make PyPI/TestPyPI publication explicitly opt-in through repository variables after trusted publishers are configured; GitHub-only tags no longer attempt broken uploads.
+- Includes the previously unreleased October harness repairs below. Pre-publication verification and its limits are recorded in `docs/releases/0.17.0-local-validation.md`.
+
+### Earlier unreleased harness work (8 October 2026; historical test counts)
+
+- Budget advice is computed in JSON mode as well as plain mode. Clamp/history warnings appear on stderr and in `plan.requests[].budget_advice` (or the rejected `request_plan`), without changing timeout precedence.
+- Custom subprocess adapters preserve bounded, credential-redacted stdout/stderr diagnostics for timeout, empty output and nonzero exit. Recognized reasoning blocks are suppressed; this is not a guarantee of arbitrary PII detection.
+- Providers retain the caller's working directory, promoting the proven installed-copy hotfix into source.
+- Parent exit no longer waits for pipe-inheriting children until the model deadline or reports clean success while owned children survive. Exact owned-group cleanup precedes a bounded drain; unfinished pipes/cleanup fail closed, and output caps remain enforced.
+- Added 21 keyless regression cases; full local suite: 892 passing. No version bump, remote push or release implied.
+
 ## 0.16.0 — Budget awareness: validator latency ledger and pre-launch advice
 
 - Lope now remembers how long each validator actually takes. A bounded window of recent call durations per validator is kept at `$LOPE_HOME/latency.json`. Timed-out calls are stored as censored lower bounds — a call killed at 240s proves the real duration exceeds 240s — so estimates are biased upward, the safe direction for a budget.

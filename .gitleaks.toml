@@ -36,4 +36,5 @@ regexes = [
   '''raw-key-12345''',                 # tests/test_curl_parser.py: literal-key refusal fixture
   '''1234567890SECRET''',              # tests/test_redaction.py: fake PEM body
   '''abcdefghijklmnopqrstuvwxyz''',    # tests/test_redaction.py: fake bearer token
+  '''api_key=sk-testsecret123456789''', # test_harness_repair.py: exact synthetic redaction fixture, verified 2026-10-22
 ]

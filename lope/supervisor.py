@@ -32,6 +32,8 @@ SUPERVISOR_HEARTBEAT_SECONDS = 5.0
 # caller's hard timeout and leave the parent waiting on supervisor cleanup.
 TERM_GRACE_SECONDS = 0.2
 KILL_GRACE_SECONDS = 0.5
+# Shared, not additive, allowance inside the parent's 1s cleanup reserve.
+CLEANUP_TIMEOUT_SECONDS = 0.7
 TRUNCATION_MARKER = b"\n...[output truncated; head and tail preserved]...\n"
 
 
@@ -69,12 +71,13 @@ def _drain_provider_streams(
     streams_open: set,
     stdout: _BoundedStream,
     stderr: _BoundedStream,
+    deadline: Optional[float] = None,
 ) -> None:
     """Drain already-emitted bytes after cancellation for head/tail diagnostics."""
 
-    deadline = time.monotonic() + 0.5
+    deadline = min(deadline, time.monotonic() + 0.5) if deadline is not None else time.monotonic() + 0.5
     while streams_open and time.monotonic() < deadline:
-        events = selector.select(timeout=0.05)
+        events = selector.select(timeout=min(0.05, max(0.0, deadline - time.monotonic())))
         if not events:
             continue
         for key, _mask in events:
@@ -96,21 +99,31 @@ def _drain_provider_streams(
             (stdout if label == "stdout" else stderr).add(chunk)
 
 
-def _process_group_count(pgid: int) -> int:
-    """Best-effort member count used only for cleanup telemetry."""
+def _process_group_count(pgid: int, *, timeout: float = 0.3) -> int:
+    """Bounded member count; -1 means inspection failed, not an empty group."""
 
     if os.name != "posix" or pgid <= 0:
         return 0
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return 0  # Common case: no process-table subprocess is necessary.
+    except PermissionError:
+        pass  # Inspect rather than claiming another user's group is absent.
+    except OSError:
+        return -1
     try:
         proc = subprocess.run(
             ["/bin/ps", "-axo", "pgid=,pid=,stat="],
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=timeout,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return 0
+        return -1
+    if proc.returncode != 0:
+        return -1
     count = 0
     for line in proc.stdout.splitlines():
         fields = line.split()
@@ -246,56 +259,51 @@ def _signal_tree(proc: subprocess.Popen, sig: int) -> str:
         return "cleanup_degraded"
 
 
+def _wait_group_exit(pgid: int, deadline: float) -> int:
+    remaining = -1
+    while time.monotonic() < deadline:
+        remaining = _process_group_count(
+            pgid, timeout=min(0.3, max(0.001, deadline - time.monotonic()))
+        )
+        if remaining <= 0:  # Zero is proven empty; -1 is unknown, not live.
+            break
+        time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+    return remaining
+
+
 def _terminate_and_reap(proc: subprocess.Popen) -> Tuple[str, int]:
-    targeted = _process_group_count(proc.pid)
-    if proc.poll() is not None:
+    # Never inspect the process table before signalling: a slow `ps` used to
+    # exhaust the parent's reserve before TERM, leaving the owned group alive.
+    # Telemetry is a leader lower bound, not an exact descendant census.
+    deadline = time.monotonic() + CLEANUP_TIMEOUT_SECONDS
+    targeted = int(proc.poll() is None)
+    already_exited = not targeted
+    if not already_exited:
+        _signal_tree(proc, signal.SIGTERM)
         try:
-            proc.wait(timeout=0)
-        except (OSError, subprocess.TimeoutExpired):
+            proc.wait(timeout=min(TERM_GRACE_SECONDS, max(0.0, deadline - time.monotonic())))
+        except subprocess.TimeoutExpired:
             pass
-        if os.name == "posix" and _process_group_count(proc.pid):
-            _signal_tree(proc, signal.SIGKILL)
-            deadline = time.monotonic() + KILL_GRACE_SECONDS
-            while time.monotonic() < deadline and _process_group_count(proc.pid):
-                time.sleep(0.05)
-        remaining = _process_group_count(proc.pid)
-        return ("clean" if not remaining else "cleanup_failed:descendants_live"), targeted
-    term = _signal_tree(proc, signal.SIGTERM if os.name == "posix" else signal.SIGTERM)
-    direct_reaped = False
-    try:
-        proc.wait(timeout=TERM_GRACE_SECONDS)
-        direct_reaped = True
-    except subprocess.TimeoutExpired:
-        pass
-    remaining = _process_group_count(proc.pid) if os.name == "posix" else int(not direct_reaped)
-    killed = "not_needed"
-    if remaining or not direct_reaped:
-        kill_sig = signal.SIGKILL if hasattr(signal, "SIGKILL") else signal.SIGTERM
-        killed = _signal_tree(proc, kill_sig)
-    # A process-group signal should include the leader, but an explicit direct
-    # kill closes the last race on platforms/shims with delayed group setup.
-    if not direct_reaped:
+    # A clean leader exit says nothing about descendants. Always signal the
+    # owned POSIX group, without a slow/fallible census gating escalation.
+    kill_result = "already_exited"
+    if os.name == "posix" or proc.poll() is None:
+        kill_result = _signal_tree(proc, getattr(signal, "SIGKILL", signal.SIGTERM))
+    if proc.poll() is None:
         try:
             proc.kill()
         except OSError:
             pass
     try:
-        proc.wait(timeout=KILL_GRACE_SECONDS)
-        direct_reaped = True
+        proc.wait(timeout=min(KILL_GRACE_SECONDS, max(0.0, deadline - time.monotonic())))
     except subprocess.TimeoutExpired:
-        direct_reaped = False
-    if os.name == "posix":
-        deadline = time.monotonic() + KILL_GRACE_SECONDS
-        while time.monotonic() < deadline and _process_group_count(proc.pid):
-            time.sleep(0.05)
-        remaining = _process_group_count(proc.pid)
-    else:
-        remaining = int(not direct_reaped)
-    if not direct_reaped:
         return "cleanup_failed:child_not_reaped", targeted
+    remaining = _wait_group_exit(proc.pid, deadline) if os.name == "posix" else 0
+    if remaining < 0:
+        return "cleanup_failed:inspection_unknown", targeted
     if remaining:
         return "cleanup_failed:descendants_live", targeted
-    return "clean:" + (killed if killed != "not_needed" else term), targeted
+    return ("clean" if already_exited else "clean:" + kill_result), targeted
 
 
 def _registry_update(spec: Dict[str, Any], **changes: Any) -> None:
@@ -309,7 +317,7 @@ def _registry_update(spec: Dict[str, Any], **changes: Any) -> None:
 
         registry = RunRegistry(Path(root))
         if "supervisor" not in changes:
-            changes["supervisor"] = process_identity(os.getpid())
+            changes["supervisor"] = process_identity(os.getpid(), timeout=0.3)
         registry.update_call(str(run_id), str(call_id), **changes)
     except Exception:
         # Registry failure must not prevent provider cleanup. The parent still
@@ -355,6 +363,35 @@ def _spawn_provider(spec: Dict[str, Any]) -> subprocess.Popen:
 
 
 def _run_provider(spec: Dict[str, Any], control_fd: int) -> Dict[str, Any]:
+    # The owner may terminate this supervisor while startup/registry I/O is
+    # blocked. Its provider lives in a separate session, so killing only the
+    # supervisor would orphan that group. Keep the signal path syscall-only:
+    # no process inspection, registry locks, waits or output parsing.
+    owned = []
+    terminating = [False]
+
+    def stop_owned_group(_signum, _frame):
+        terminating[0] = True
+        if owned:
+            _signal_tree(owned[0], signal.SIGKILL)
+
+    def on_spawn(proc):
+        owned.append(proc)
+        # Covers TERM arriving inside Popen before the child reference exists.
+        if terminating[0]:
+            stop_owned_group(None, None)
+
+    old_handler = None
+    if os.name == "posix":
+        old_handler = signal.signal(signal.SIGTERM, stop_owned_group)
+    try:
+        return _run_provider_impl(spec, control_fd, on_spawn=on_spawn)
+    finally:
+        if os.name == "posix":
+            signal.signal(signal.SIGTERM, old_handler)
+
+
+def _run_provider_impl(spec: Dict[str, Any], control_fd: int, *, on_spawn) -> Dict[str, Any]:
     started = time.monotonic()
     timeout = float(spec.get("timeout") or 0.0)
     if timeout <= 0:
@@ -363,6 +400,7 @@ def _run_provider(spec: Dict[str, Any], control_fd: int) -> Dict[str, Any]:
     stderr_limit = int(spec.get("stderr_limit") or 512 * 1024)
     input_bytes = str(spec.get("input_text") or "").encode("utf-8")
     proc = _spawn_provider(spec)
+    on_spawn(proc)
     windows_job = _attach_windows_job(proc)
     marker = str(spec.get("ownership_marker") or "")
     try:
@@ -373,7 +411,7 @@ def _run_provider(spec: Dict[str, Any], control_fd: int) -> Dict[str, Any]:
     try:
         from .jobs import process_identity
 
-        child_identity = process_identity(proc.pid)
+        child_identity = process_identity(proc.pid, timeout=0.3)
     except Exception:
         pass
     _registry_update(
@@ -429,8 +467,25 @@ def _run_provider(spec: Dict[str, Any], control_fd: int) -> Dict[str, Any]:
                 cleanup, processes_targeted = _terminate_and_reap(proc)
                 cleanup_attempted = True
                 break
-            if proc.poll() is not None and not streams_open:
-                cleanup = "clean"
+            if proc.poll() is not None:
+                # Parent completion is not group completion. Reap only this
+                # call's isolated group before draining inherited output pipes.
+                # A background helper must not hold a finished CLI open until
+                # its model-call deadline or survive a reported clean success.
+                cleanup, processes_targeted = _terminate_and_reap(proc)
+                cleanup_attempted = True
+                _close_windows_job(proc)
+                _drain_provider_streams(selector, streams_open, stdout, stderr, deadline=deadline)
+                if stdout.total > stdout_limit or stderr.total > stderr_limit:
+                    outcome = "output_limit"
+                    label = "stdout" if stdout.total > stdout_limit else "stderr"
+                    reason = f"{label} exceeded {stdout_limit if label == 'stdout' else stderr_limit} bytes"
+                elif not (cleanup == "clean" or cleanup.startswith("clean:")):
+                    outcome = "cleanup_failed"
+                    reason = "provider exited but owned descendants could not be reaped"
+                elif streams_open:
+                    outcome = "output_drain_timeout"
+                    reason = "provider exited but output pipes did not close after bounded drain"
                 break
             events = selector.select(timeout=min(0.1, max(0.0, deadline - now)))
             for key, _mask in events:
@@ -503,7 +558,9 @@ def _run_provider(spec: Dict[str, Any], control_fd: int) -> Dict[str, Any]:
             except (OSError, subprocess.TimeoutExpired):
                 cleanup = "cleanup_failed:wait"
         if outcome in ("provider_timeout", "cancelled", "output_limit"):
-            _drain_provider_streams(selector, streams_open, stdout, stderr)
+            _drain_provider_streams(
+                selector, streams_open, stdout, stderr, deadline=time.monotonic() + 0.1
+            )
         returncode = proc.returncode if proc.returncode is not None else -9
         if outcome == "ok" and returncode != 0:
             outcome = "nonzero_exit"

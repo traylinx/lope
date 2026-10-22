@@ -50,15 +50,34 @@ import os
 import subprocess
 import sys
 import time
+import tempfile
+import warnings
+from contextlib import contextmanager, nullcontext
 from typing import Any, Dict, List, Optional
 
 from .models import ValidatorResult
+from .diagnostics import diagnostic_suffix, redact_diagnostic
 from .runtime import DEFAULT_MODEL_CALL_TIMEOUT_SECONDS
 from .validators import Validator, parse_opencode_verdict
+from .provider_errors import ProviderToolPermissionError, tool_permission_denial
 
 
 class ConfigError(ValueError):
     """Raised when a provider config entry is invalid."""
+
+
+@contextmanager
+def _review_directory():
+    directory = tempfile.TemporaryDirectory(prefix="lope-review-")
+    try:
+        yield directory.name
+    finally:
+        try:
+            directory.cleanup()
+        except OSError:
+            # Preserve the provider result/original exception, but never hide
+            # a directory left behind. No provider payload in the warning.
+            warnings.warn(f"Lope review directory cleanup failed: {directory.name}", RuntimeWarning)
 
 
 def respect_provider_timeout() -> bool:
@@ -114,6 +133,29 @@ def _validate_provider_config(entry: Dict[str, Any]) -> None:
         if "${" in " ".join(cmd):
             raise ConfigError(
                 f"provider {name!r}: ${{VAR}} not allowed in command (API keys in argv are visible via ps)"
+            )
+        review_cmd = entry.get("review_command")
+        if review_cmd is not None:
+            if (not isinstance(review_cmd, list) or not review_cmd
+                    or not all(isinstance(c, str) for c in review_cmd)
+                    or not review_cmd[0].strip()):
+                raise ConfigError(f"provider {name!r} review_command must be a nonempty argv list")
+            if "${" in " ".join(review_cmd):
+                raise ConfigError(f"provider {name!r}: ${{VAR}} not allowed in review_command")
+        if entry.get("review_workdir", "caller") not in ("caller", "isolated"):
+            raise ConfigError(f"provider {name!r} review_workdir must be caller or isolated")
+        if "review_stdin" in entry and not isinstance(entry["review_stdin"], bool):
+            raise ConfigError(f"provider {name!r} review_stdin must be a boolean")
+        selected_review = review_cmd if review_cmd is not None else cmd
+        has_review_profile = any(key in entry for key in ("review_command", "review_stdin", "review_workdir"))
+        if (has_review_profile and not entry.get("review_stdin", entry.get("stdin", False))
+                and not any("{prompt}" in arg for arg in selected_review)):
+            raise ConfigError(f"provider {name!r}: review profile needs stdin or a {{prompt}} argument")
+        if (entry.get("review_workdir") == "isolated" and selected_review
+                and os.path.dirname(selected_review[0])
+                and not os.path.isabs(selected_review[0])):
+            raise ConfigError(
+                f"provider {name!r}: isolated review requires an absolute executable or PATH name"
             )
     elif ptype == "http":
         url = entry.get("url")
@@ -193,6 +235,12 @@ class GenericSubprocessValidator(Validator):
         self._stdin: bool = bool(config.get("stdin", False))
         self._prompt_wrapper: Optional[str] = config.get("prompt_wrapper")
         self._timeout_override: Optional[int] = config.get("timeout")
+        self._review_command = (
+            list(config["review_command"]) if config.get("review_command") is not None else None
+        )
+        self._review_workdir = config.get("review_workdir", "caller")
+        self._review_stdin = config.get("review_stdin", self._stdin)
+        self._has_review_profile = any(key in config for key in ("review_command", "review_stdin", "review_workdir"))
 
     @property
     def name(self) -> str:
@@ -203,6 +251,49 @@ class GenericSubprocessValidator(Validator):
         if not self._command:
             return False
         return shutil.which(self._command[0]) is not None
+
+    def execution_profile(self, mode: str) -> Dict[str, Any]:
+        """Safe preflight metadata: no argv, prompts or permission mutation.
+
+        An isolated cwd reduces project startup context; it is NOT a filesystem,
+        network or tool sandbox. Tool permissions remain owned by the CLI.
+        """
+        import shutil
+        review = mode == "review"
+        command = self._review_command if review and self._review_command else self._command
+        available = bool(command and shutil.which(command[0]))
+        isolated = review and self._review_workdir == "isolated"
+        configured = review and self._has_review_profile
+        warnings = []
+        if not available:
+            warnings.append(f"{self.name}: selected provider executable is unavailable")
+        if review:
+            warnings.append(
+                f"{self.name}: review uses {'isolated temporary' if isolated else 'caller'} cwd; "
+                "CLI tool permissions are unchanged (not a tool sandbox). "
+                "Headless tool approval can fail; no automatic permission bypass."
+            )
+        return {
+            "validator": self.name, "review_profile_configured": bool(configured),
+            "workdir": "isolated" if isolated else "caller", "launchable": available,
+            "tool_policy": "provider_owned_unchanged", "warnings": warnings,
+        }
+
+    def _permission_error(self, stderr: str):
+        permission = tool_permission_denial(stderr)
+        if permission:
+            return ProviderToolPermissionError(
+                f"{self.name} tool_permission_denied: {permission} requires approval "
+                "unavailable in headless mode. Lope will not retry, bypass, or grant this "
+                "permission. Use another validator or review the requested action manually. "
+                "The CLI diagnostic does not identify the requested command."
+            )
+        return None
+
+    def _executable_for(self, context=None) -> str:
+        if getattr(context, "mode", None) == "review" and self._review_command:
+            return self._review_command[0]
+        return self._command[0]
 
     def _run(self, prompt: str, timeout: int, context=None) -> tuple[int, str, str, float]:
         """Execute the subprocess; return (returncode, stdout, stderr, duration).
@@ -218,21 +309,29 @@ class GenericSubprocessValidator(Validator):
         started = _time.time()
         if self._prompt_wrapper:
             prompt = self._prompt_wrapper.format(prompt=prompt)
-        if self._stdin:
-            cmd = list(self._command)
+        review = getattr(context, "mode", None) == "review"
+        command = self._review_command if review and self._review_command else self._command
+        stdin = self._review_stdin if review else self._stdin
+        if stdin:
+            cmd = list(command)
             stdin_data = prompt
         else:
-            cmd = [arg.replace("{prompt}", prompt) for arg in self._command]
+            cmd = [arg.replace("{prompt}", prompt) for arg in command]
             stdin_data = None
         effective_timeout = _effective_timeout(self._timeout_override, timeout)
         from .processes import run_subprocess_group
         try:
-            proc = run_subprocess_group(
-                cmd,
-                input_text=stdin_data,
-                timeout=effective_timeout,
-                context=context,
+            caller_cwd = os.environ.get("LOPE_WORKDIR", os.getcwd())
+            workdir = (
+                _review_directory()
+                if review and self._review_workdir == "isolated" else nullcontext(caller_cwd)
             )
+            with workdir as cwd:
+                proc = run_subprocess_group(
+                    cmd, input_text=stdin_data, timeout=effective_timeout,
+                    cwd=cwd, context=context,
+                    env={"LOPE_WORKDIR": cwd} if review and self._review_workdir == "isolated" else None,
+                )
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             raise
         return proc.returncode, proc.stdout or "", proc.stderr or "", _time.time() - started
@@ -240,20 +339,37 @@ class GenericSubprocessValidator(Validator):
     def validate(self, prompt: str, timeout: int = DEFAULT_MODEL_CALL_TIMEOUT_SECONDS, *, context=None) -> ValidatorResult:
         try:
             rc, stdout, stderr, duration = self._run(prompt, timeout, context=context)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
+            denial = self._permission_error(e.stderr)
+            if denial is not None:
+                return self._infra_error(str(denial), 0.0)
             effective_timeout = _effective_timeout(self._timeout_override, timeout)
             return self._infra_error(
-                f"timeout after {effective_timeout}s", 0.0
+                f"timeout after {effective_timeout}s" + diagnostic_suffix(e.output, e.stderr), 0.0
             )
-        except FileNotFoundError:
-            return self._infra_error(f"binary not found: {self._command[0]}", 0.0)
+        except FileNotFoundError as e:
+            return self._infra_error(
+                "binary not found: " + redact_diagnostic(e.filename or self._executable_for(context)), 0.0
+            )
         except Exception as e:
-            return self._infra_error(f"subprocess error: {e}", 0.0)
+            denial = self._permission_error(getattr(e, "stderr", None))
+            if denial is not None:
+                return self._infra_error(str(denial), 0.0)
+            return self._infra_error(
+                "subprocess error: " + redact_diagnostic(e)
+                + diagnostic_suffix(getattr(e, "stdout", None), getattr(e, "stderr", None)), 0.0,
+            )
 
+        denial = self._permission_error(stderr)
+        if denial is not None:
+            return self._infra_error(str(denial), duration)
         if rc != 0:
             return self._infra_error(
-                f"exit {rc}: {(stderr or '')[:200]}", duration
+                f"exit {rc}" + diagnostic_suffix(stdout, stderr), duration
             )
+
+        if not stdout.strip():
+            return self._infra_error("returned empty output" + diagnostic_suffix(stdout, stderr), duration)
 
         verdict = parse_opencode_verdict(
             stdout, validator_name=self._name, fallback_duration=duration
@@ -275,22 +391,38 @@ class GenericSubprocessValidator(Validator):
         """
         try:
             rc, stdout, stderr, _duration = self._run(prompt, timeout, context=context)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
+            denial = self._permission_error(e.stderr)
+            if denial is not None:
+                raise denial from None
             effective_timeout = _effective_timeout(self._timeout_override, timeout)
             raise RuntimeError(
                 f"{self._name} timed out after {effective_timeout}s"
-            )
-        except FileNotFoundError:
-            raise RuntimeError(f"{self._name} binary not found: {self._command[0]}")
+                + diagnostic_suffix(e.output, e.stderr)
+            ) from None
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                f"{self._name} binary not found: "
+                + redact_diagnostic(e.filename or self._executable_for(context))
+            ) from None
         except Exception as e:
-            raise RuntimeError(f"{self._name} subprocess error: {e}")
+            denial = self._permission_error(getattr(e, "stderr", None))
+            if denial is not None:
+                raise denial from None
+            raise RuntimeError(
+                f"{self._name} subprocess error: " + redact_diagnostic(e)
+                + diagnostic_suffix(getattr(e, "stdout", None), getattr(e, "stderr", None))
+            ) from None
 
+        denial = self._permission_error(stderr)
+        if denial is not None:
+            raise denial
         if rc != 0:
             raise RuntimeError(
-                f"{self._name} exited {rc}: {(stderr or '')[:300]}"
+                f"{self._name} exited {rc}" + diagnostic_suffix(stdout, stderr)
             )
         if not stdout.strip():
-            raise RuntimeError(f"{self._name} returned empty output")
+            raise RuntimeError(f"{self._name} returned empty output" + diagnostic_suffix(stdout, stderr))
         return stdout
 
     def _infra_error(self, msg: str, duration: float) -> ValidatorResult:

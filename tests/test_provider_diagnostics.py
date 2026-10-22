@@ -12,6 +12,7 @@ from lope.validators import (
     CodexValidator,
     _bounded_stream,
     _claude_extra_args,
+    _claude_invocation_args,
     _is_infrastructure_exit,
     _run_with_group_kill,
 )
@@ -39,7 +40,10 @@ def test_claude_generate_passes_extra_args(monkeypatch):
         with patch("lope.validators._run_with_group_kill", return_value=(proc, 0.1)) as run:
             assert validator.generate("implement", timeout=60) == "done"
 
-    assert run.call_args.args[0] == ["claude", "--print", "--model", "sonnet"]
+    assert run.call_args.args[0] == [
+        "claude", "--print", "--safe-mode", "--no-session-persistence",
+        "--output-format", "text", "--model", "sonnet",
+    ]
 
 
 def test_implementation_context_sets_per_call_nested_lope_guard():
@@ -207,3 +211,11 @@ def test_claude_auth_and_infrastructure_looking_semantic_exits_are_not_typed(std
                 validator.generate("implement", timeout=60)
 
     assert not isinstance(raised.value, ProviderInfrastructureError)
+
+
+def test_claude_existing_safe_mode_is_not_lost_on_source_release(monkeypatch):
+    monkeypatch.delenv("LOPE_CLAUDE_ARGS", raising=False)
+    args = _claude_invocation_args()
+    assert args == ["--safe-mode", "--no-session-persistence", "--output-format", "text"]
+    assert "--dangerously-skip-permissions" not in args
+    assert "--tools" not in args  # Preserve implementation built-ins, not a no-tools claim.

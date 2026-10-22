@@ -46,6 +46,15 @@ class InputLimitExceeded(RuntimeError):
     pass
 
 
+class ProcessCompletionError(OSError):
+    """A parent exited, but safe local completion could not be established."""
+
+    def __init__(self, reason: str, stdout: str = "", stderr: str = ""):
+        super().__init__(reason)
+        self.stdout = stdout
+        self.stderr = stderr
+
+
 def _have_process_groups() -> bool:
     return os.name == "posix" and hasattr(os, "killpg")
 
@@ -150,6 +159,10 @@ def run_subprocess_group(
         raise ValueError("timeout must be positive")
     if stdout_limit <= 0 or stderr_limit <= 0:
         raise ValueError("output limits must be positive")
+    if context is not None:
+        # Forced supervisor shutdown may produce no completion record. A
+        # timeout classification alone must not be reported as clean cleanup.
+        context.metadata["process_cleanup_result"] = "unknown"
     effective_env = dict(env or {})
     if context is not None and context.metadata.get("implementation"):
         raw_depth = os.environ.get("LOPE_IMPLEMENTATION_DEPTH", "0")
@@ -264,6 +277,10 @@ def run_subprocess_group(
             print(f"lope supervisor result: {result}", file=sys.stderr)
 
         outcome = result.get("outcome")
+        if context is not None:
+            context.metadata["process_cleanup_result"] = str(
+                result.get("cleanup_result") or "unknown"
+            )
         stdout = str(result.get("stdout") or "")
         stderr = str(result.get("stderr") or "")
         reason = str(result.get("reason") or "")
@@ -277,6 +294,8 @@ def run_subprocess_group(
             if "FileNotFoundError" in reason or "No such file" in reason:
                 raise FileNotFoundError(reason)
             raise OSError(reason or "provider launch failed")
+        if outcome in ("cleanup_failed", "output_drain_timeout"):
+            raise ProcessCompletionError(reason or outcome, stdout=stdout, stderr=stderr)
         return subprocess.CompletedProcess(
             args=list(command),
             returncode=int(result.get("returncode", -1)),
@@ -301,6 +320,7 @@ __all__ = [
     "DEFAULT_STDERR_LIMIT",
     "DEFAULT_STDOUT_LIMIT",
     "InputLimitExceeded",
+    "ProcessCompletionError",
     "OutputLimitExceeded",
     "run_subprocess_group",
 ]

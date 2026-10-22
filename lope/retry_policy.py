@@ -13,6 +13,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from .provider_errors import ProviderToolPermissionError, tool_permission_denial
+
 
 MAX_TRANSIENT_RETRIES = 1
 DEFAULT_TRANSIENT_DELAY_SECONDS = 0.25
@@ -42,6 +44,21 @@ class RetryDecision:
 def classify_failure(error: object) -> FailureClassification:
     text = str(error or "").strip()
     lowered = text.lower()
+    # Policy failures outrank empty output and incidental transient-error text.
+    # These are not parser failures and cannot be repaired by retrying a model.
+    header = re.split(r";\s*(?:stdout|stderr):", text, maxsplit=1)[0]
+    # Do not promote quoted source/model stdout to a runner policy decision.
+    # Retain the observed legacy empty-output record, but never search a
+    # combined stdout/stderr dump for the vendor signature.
+    legacy_stderr = ""
+    legacy = re.fullmatch(r"[^;\n]+ returned empty output;\s*stderr:\s*(.*)", text, re.DOTALL)
+    if legacy:
+        legacy_stderr = legacy.group(1)
+    if (isinstance(error, ProviderToolPermissionError)
+            or re.match(r"^[\w.-]+ tool_permission_denied\s*:", header)
+            or (text.startswith("jetski:") and tool_permission_denial(text))
+            or tool_permission_denial(legacy_stderr)):
+        return FailureClassification("tool_permission_denied", False)
     retry_after = None
     match = _RETRY_AFTER_RE.search(text)
     if match:
@@ -82,9 +99,10 @@ def classify_failure(error: object) -> FailureClassification:
         "invalid json",
         "no ---verdict---",
         "unparseable",
-        "empty output",
     )):
         return FailureClassification("parse_error", False)
+    if re.search(r"(?<![\w-])empty output\b", lowered):
+        return FailureClassification("empty_output", False)
     return FailureClassification("launch_error", False)
 
 
