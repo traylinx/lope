@@ -9,12 +9,14 @@ Headroom is Lope's optional context-compression layer for bulky tool and MCP out
 
 ## Install and verify
 
-Lope's `./install` skips Headroom by default. Enable the best-effort setup only when the user asks for it:
+Lope skips Headroom by default. From a Git checkout, enable the best-effort setup only when the user asks for it:
 
 ```bash
 ./install --host claude --with-headroom
 headroom mcp status
 ```
+
+For a wheel/pipx install, use the explicit manual Headroom installation below; do not assume `./install` exists in the working directory.
 
 For ordinary Lope updates, use `lope update`; do not install Headroom unless the user explicitly asks for compression setup.
 

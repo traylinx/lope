@@ -34,7 +34,30 @@ One AI CLI drafts. Others validate. No single-model blindspot. Works for multi-p
 Read https://raw.githubusercontent.com/traylinx/lope/main/INSTALL.md and follow the instructions to install lope on this machine natively.
 ```
 
-**Terminal install:**
+**Isolated Python package (macOS/Linux):**
+
+```bash
+pipx install lope-agent
+lope install --host codex  # choose your host, or all
+lope configure
+lope docs
+```
+
+Python 3.9+ and Bash 3.2+ are required for host integration. The wheel includes
+skills, host wrappers, installer, and reference docs. No repository clone is needed.
+For upgrades: `pipx upgrade lope-agent`, then `lope install --host codex`.
+A regular virtualenv can use `python -m pip install lope-agent` and `lope update`.
+Keep an existing Git install if you have local modifications; do not layer a second
+installation over its shell alias/wrapper. Check `command -v lope` before switching.
+Native Windows host installation is not qualified; use a Linux environment.
+
+Existing host files are moved to `${XDG_STATE_HOME:-~/.local/state}/lope/install-backups/`
+before replacement. Backups preserve symlinks as links, not snapshots of their
+external targets. Config, credentials, and runtime history are not rewritten.
+Review and merge your custom skills from the printed backup path; restarting a CLI
+is required to reload skills. Headroom remains optional and off by default.
+
+**Git checkout install (also supported):**
 
 ```bash
 if [ -d "$HOME/.lope/.git" ]; then
@@ -60,7 +83,7 @@ lope update --dry-run   # preview the exact commands
 lope upgrade            # legacy alias
 ```
 
-The standard install is a git checkout in `~/.lope`. That is the path to use today. PyPI publishing is not live yet, so do not rely on `pip install lope-agent` until the release workflow's Trusted Publisher setup is fixed.
+Git installations and Python packages are supported. `lope update` detects the running installation and refreshes host integrations; use `--skip-install` to update only the engine. For pipx-managed environments, use `pipx upgrade lope-agent` followed by `lope install`.
 
 ---
 ### Judgment superpowers
@@ -228,7 +251,7 @@ lope update --host codex # update code, then refresh only Codex skills
 lope upgrade            # legacy alias for update
 ```
 
-For the standard `~/.lope` git install, `lope update` fetches tags, pulls the explicit tracked remote branch with `--ff-only`, and reruns `./install` so host skills stay in sync. Pass `--skip-install` if you only want the engine code. PyPI publishing is not live yet, so use the git checkout install path on servers for now.
+For the standard `~/.lope` git install, `lope update` fetches tags, pulls the explicit tracked remote branch with `--ff-only`, and reruns `./install` so host skills stay in sync. Pass `--skip-install` if you only want the engine code. For a virtualenv package install, `lope update` upgrades `lope-agent` and then refreshes bundled host integrations in a fresh process.
 
 **Requirements:** `git`, `python3 ≥ 3.9`, `bash ≥ 3.2`. That's all.
 
@@ -695,7 +718,7 @@ Git checkouts fetch tags, pull the explicit tracked remote branch with `--ff-onl
 
 `--host` scopes the post-pull installer run; it still fetches and pulls first. If you only want to refresh one host's files without updating code, run `~/.lope/install --host <host>` directly.
 
-Use the git checkout install path today. PyPI publishing is not live yet, so `pip install --upgrade lope-agent` is not the recommended server update path.
+Package installations include the installer and documentation. After an external pip/pipx upgrade or reinstall, run `lope install --host <host>` to refresh host files. Do not manually remove the package while hosts still use its resource symlinks.
 
 ---
 

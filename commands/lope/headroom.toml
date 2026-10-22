@@ -6,7 +6,7 @@ Help the user install, verify, configure, or troubleshoot Headroom with Lope.
 </objective>
 
 <steps>
-1. Read `~/.lope/skills/lope-headroom/SKILL.md`. If this checkout is local and `~/.lope` is unavailable, read `skills/lope-headroom/SKILL.md`.
+1. Read the sibling bundled skill at `../../skills/lope-headroom/SKILL.md`, relative to this command file's resolved path. For a Git install, use `skills/lope-headroom/SKILL.md` from that checkout. Do not assume a separate `~/.lope` source install exists.
 2. Follow that skill's decision tree exactly.
 3. Use `lope update` only for Lope self-update. Headroom is optional and opt-in unless the user asks for it.
 </steps>

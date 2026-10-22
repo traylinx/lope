@@ -18,7 +18,7 @@ and unverified assumptions across different AI model families. No single-model b
 
 3. **Run negotiate**:
 ```bash
-PYTHONPATH=~/.lope python3 -m lope negotiate "$GOAL" \\
+lope negotiate "$GOAL" \\
     --domain engineering \\
     --out SPRINT-$(date +%s).md \\
     --max-rounds 3

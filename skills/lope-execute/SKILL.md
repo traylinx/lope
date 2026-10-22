@@ -31,7 +31,7 @@ For engineering sprints, the quality stage also includes minimality audit by def
    b. Run validation:
 
 ```bash
-PYTHONPATH=~/.lope python3 -m lope execute "$SPRINT_PATH"
+lope execute "$SPRINT_PATH"
 ```
 
    c. If spec NEEDS_FIX: apply the spec-level fixes, re-validate. Quality pass won't run until spec passes.

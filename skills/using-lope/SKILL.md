@@ -24,11 +24,11 @@ Lope is a multi-CLI ensemble for AI work. Any AI CLI drafts, any AI CLI validate
 | `deliberate` | [lope-deliberate] | Scenario file + template (ADR/PRD/RFC/build-vs-buy/migration/incident) → 7-stage council artifact |
 | `gate`      | shell: `lope gate` | Run project-defined objective evidence gates and compare against a baseline |
 | `check`     | shell: `lope check` | CI-friendly one-shot run of objective evidence gates |
-| `update` / `upgrade` | shell: `lope update` | Self-update a git checkout and refresh installed host skills |
+| `update` / `upgrade` | shell: `lope update` | Self-update Git/package installation and refresh host skills |
 | `headroom`  | [lope-headroom] | Configure optional Headroom compression for bulky Lope / agent outputs |
 | `help`      | [lope-help] | Print the complete reference via `lope docs` |
 
-`ask`, `review`, `vote`, `compare`, and `pipe` are the lightweight verbs — no sprint, no phases, no validator retry loop. `team` manages the roster. `flow` shapes autonomous collaboration. `lope memory` and `lope deliberate` turn raw fan-out into durable judgment. `gate` / `check` run deterministic evidence commands from the project. `update` keeps the git checkout and host skills current. The cross-cutting flags `--consensus`, `--synth`, `--remember`, `--brain-context`, `--brain-log`, `--divide`, and `--roles` are opt-in.
+`ask`, `review`, `vote`, `compare`, and `pipe` are the lightweight verbs — no sprint, no phases, no validator retry loop. `team` manages the roster. `flow` shapes autonomous collaboration. `lope memory` and `lope deliberate` turn raw fan-out into durable judgment. `gate` / `check` run deterministic evidence commands from the project. `update` keeps Git/package installs and host skills current; pipx users run `pipx upgrade lope-agent` then `lope install`. The cross-cutting flags `--consensus`, `--synth`, `--remember`, `--brain-context`, `--brain-log`, `--divide`, and `--roles` are opt-in.
 
 Engineering `execute`/`implement` runs include minimality audit by default. Agents should expect Lope to prefer existing code, stdlib/native features, and the smallest safe custom code, and to have quality-stage validators flag material over-engineering. This is not part of `gate`/`check` because those commands run deterministic evidence checks. Disable with `LOPE_MINIMALITY=off`; enforce material bloat with `LOPE_MINIMALITY=enforce`.
 
@@ -159,7 +159,7 @@ Skip lope — just do the work directly — when:
 | Deliberate | `/lope-deliberate <template> <scenario>` | 7-stage council for ADR / PRD / RFC / build-vs-buy / migration / incident decisions. |
 | Gate | `lope gate save/check` | Save or compare project-defined objective evidence gates. |
 | Check | `lope check` | CI-friendly one-shot gate run. |
-| Update | `lope update` / `lope upgrade` | Pull the git checkout and refresh installed host skills. |
+| Update | `lope update` / `lope upgrade` | Update Git/package installation and refresh host skills. |
 | Headroom | `/lope-headroom` | Configure optional Headroom MCP compression. |
 | Help | `/lope-help` | Print the complete reference via `lope docs`. |
 
@@ -185,8 +185,8 @@ Fast diagnosis:
 
 ```bash
 which lope codex
-PYTHONPATH=$HOME/.lope python3 -m lope team test codex "Reply exactly: CODEX-OK" --timeout 60
-PYTHONPATH=$HOME/.lope python3 -m lope ask --validators codex --timeout 120 "Reply exactly: CODEX-OK"
+lope team test codex "Reply exactly: CODEX-OK" --timeout 60
+lope ask --validators codex --timeout 120 "Reply exactly: CODEX-OK"
 ```
 
 Expected Lope-side Codex invocation for validator work: `codex exec --ignore-user-config --skip-git-repo-check -s read-only -c 'model_reasoning_effort="low"' <prompt>`. This avoids loading user MCPs and keeps Codex as a validator, not a full interactive agent. If the installed adapter does not do this, patch `~/.lope/lope/validators.py` before trusting Codex timings.

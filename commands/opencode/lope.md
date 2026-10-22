@@ -19,7 +19,7 @@ For the complete reference (all flags, all domains, all env vars, troubleshootin
 lope docs
 ```
 
-If `lope` is not on PATH, use `PYTHONPATH=~/.lope python3 -m lope docs`.
+Only for a verified Git checkout at `~/.lope`, if `lope` is not on PATH, use `PYTHONPATH=~/.lope python3 -m lope docs`.
 
 ## When to use which mode
 

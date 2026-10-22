@@ -32,7 +32,7 @@ lope flow render .lope/flow/consensus.dot -o flow.svg
 
 5. **Run it** — autonomous, scored, journaled:
 ```bash
-PYTHONPATH=~/.lope python3 -m lope flow run .lope/flow/consensus.dot --task "$GOAL"
+lope flow run .lope/flow/consensus.dot --task "$GOAL"
 ```
 Use `--dry-run` first to print the plan without invoking any model. `--out DIR`
 writes a trace; `--max-node-visits N` overrides the runaway cap.

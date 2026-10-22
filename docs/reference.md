@@ -557,11 +557,11 @@ Interactive validator picker. Writes to `~/.lope/config.json`.
 
 ### `lope install`
 
-Engine-level installer pointer. Prefer the top-level `./install` bash script or the paste-a-prompt flow (see below).
+Install or refresh host skills and wrappers from this version's bundled assets (wheel) or source tree (Git). `lope install --host <host>` scopes the refresh without updating the engine. Existing files are backed up under `${XDG_STATE_HOME:-~/.local/state}/lope/install-backups/`; symlinks are preserved as links. Config and runtime history are untouched. Bash 3.2+ is required; native Windows host installation is unqualified.
 
 ### `lope update` / `lope upgrade`
 
-Self-update Lope. Default mode auto-detects whether the running copy is a git checkout or a pip install. The supported server path today is the `~/.lope` git checkout; PyPI publishing is not live until Trusted Publisher is configured.
+Self-update Lope. Default mode auto-detects whether the running copy is a git checkout or a pip install. Both Git checkouts and Python virtualenv packages are supported. For pipx use `pipx upgrade lope-agent` then `lope install`.
 
 ```bash
 lope update
@@ -571,9 +571,9 @@ lope update --skip-install     # pull code only
 lope upgrade                   # legacy alias
 ```
 
-For a git checkout, Lope refuses tracked dirty files unless `--allow-dirty` is passed, validates the requested host before mutating the checkout, then runs `git fetch --tags <remote>` and `git pull --ff-only <remote> <branch>`. Unless `--skip-install` is passed, it then runs `./install --host <host>`. Untracked runtime state such as `~/.lope/config.json`, journals, and memory databases does not block the update. Pip mode exists for future package installs, but do not use it as the current server update path until the package publishing workflow is configured.
+For a git checkout, Lope refuses tracked dirty files unless `--allow-dirty` is passed, validates the requested host before mutating the checkout, then runs `git fetch --tags <remote>` and `git pull --ff-only <remote> <branch>`. Unless `--skip-install` is passed, it then runs `./install --host <host>`. Untracked runtime state such as `~/.lope/config.json`, journals, and memory databases does not block the update. Pip mode runs `python -m pip install --upgrade lope-agent`, then starts a fresh `python -m lope install --host <host>` so the new package owns resource selection. `--skip-install` suppresses that refresh; a failed pip command never runs it.
 
-`--host` scopes the installer run after the pull. For install-only host refresh without code update, run `~/.lope/install --host <host>` directly.
+`--host` scopes the installer run after the engine update. For install-only host refresh without code update, run `lope install --host <host>`.
 
 ### `lope version`
 
@@ -818,6 +818,30 @@ Modes via `LOPE_CAVEMAN` env var:
 
 ## Install
 
+**Isolated Python package (macOS/Linux):**
+
+```bash
+pipx install lope-agent
+lope install --host codex  # choose your host, or all
+lope configure
+lope docs
+```
+
+Python 3.9+ and Bash 3.2+ are required for host integration. The wheel includes
+skills, host wrappers, installer, and reference docs. No repository clone is needed.
+For upgrades: `pipx upgrade lope-agent`, then `lope install --host codex`.
+A regular virtualenv can use `python -m pip install lope-agent` and `lope update`.
+Keep an existing Git install if you have local modifications; do not layer a second
+installation over its shell alias/wrapper. Check `command -v lope` before switching.
+Native Windows host installation is not qualified; use a Linux environment.
+
+Existing host files are moved to `${XDG_STATE_HOME:-~/.local/state}/lope/install-backups/`
+before replacement. Backups preserve symlinks as links, not snapshots of their
+external targets. Config, credentials, and runtime history are not rewritten.
+Review and merge your custom skills from the printed backup path; restarting a CLI
+is required to reload skills. Headroom remains optional and off by default.
+
+
 **Preferred (paste-a-prompt):** Paste one line into any AI agent you already use:
 
 ```
@@ -919,9 +943,9 @@ Back-compat: `from lope.validators import EnsemblePool` still resolves (re-expor
 - `lope --help` / `lope <mode> --help` — authoritative flag surface
 - `lope docs` — this document
 - `/lope-help` — this document, injected as a slash command
-- `~/.lope/docs/samples.md` — 8 end-to-end conversation walkthroughs across all 3 domains
-- `~/.lope/README.md` — marketing/overview version
-- `~/.lope/CHANGELOG.md` — release notes
+- [docs/samples.md](https://github.com/traylinx/lope/blob/main/docs/samples.md) — 8 end-to-end conversation walkthroughs across all 3 domains
+- [README.md](https://github.com/traylinx/lope/blob/main/README.md) — marketing/overview version
+- [CHANGELOG.md](https://github.com/traylinx/lope/blob/main/CHANGELOG.md) — release notes
 - https://github.com/traylinx/lope — source of truth
 
 Built by Sebastian Schkudlara (Traylinx). MIT licensed. Caveman mode core rules adapted from JuliusBrussee/caveman.

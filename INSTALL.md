@@ -16,9 +16,36 @@ Lope is a multi-CLI validator ensemble for AI work. Any AI CLI drafts; any AI CL
 - **Meta and help**: `/lope-help`, `/lope`, `/using-lope`
 - **Terminal maintenance**: `lope update` and `lope upgrade`
 
-Gemini uses the `/lope:<verb>` namespaced form; Codex and Vibe load skills as content and invoke lope via natural language. Source: https://github.com/traylinx/lope (MIT, zero external Python deps, pure stdlib). The standard install is a git checkout in `~/.lope`; PyPI publishing is not live yet.
+Gemini uses the `/lope:<verb>` namespaced form; Codex and Vibe load skills as content and invoke lope via natural language. Source: https://github.com/traylinx/lope (MIT, zero external Python deps, pure stdlib). Git checkout and isolated Python package installations are supported.
 
-## Prerequisites
+## Package installation alternative
+
+**Isolated Python package (macOS/Linux):**
+
+```bash
+pipx install lope-agent
+lope install --host codex  # choose your host, or all
+lope configure
+lope docs
+```
+
+Python 3.9+ and Bash 3.2+ are required for host integration. The wheel includes
+skills, host wrappers, installer, and reference docs. No repository clone is needed.
+For upgrades: `pipx upgrade lope-agent`, then `lope install --host codex`.
+A regular virtualenv can use `python -m pip install lope-agent` and `lope update`.
+Keep an existing Git install if you have local modifications; do not layer a second
+installation over its shell alias/wrapper. Check `command -v lope` before switching.
+Native Windows host installation is not qualified; use a Linux environment.
+
+Existing host files are moved to `${XDG_STATE_HOME:-~/.local/state}/lope/install-backups/`
+before replacement. Backups preserve symlinks as links, not snapshots of their
+external targets. Config, credentials, and runtime history are not rewritten.
+Review and merge your custom skills from the printed backup path; restarting a CLI
+is required to reload skills. Headroom remains optional and off by default.
+
+The remaining steps describe the Git checkout route. Choose one route, not both.
+
+## Prerequisites for the Git route
 
 - `git` on `PATH`
 - `python3` >= 3.9 on `PATH`
@@ -240,7 +267,7 @@ PYTHONPATH="$HOME/.lope" python3 -m lope update
 lope update
 ```
 
-`lope update` auto-detects the install method. For the normal `~/.lope` git checkout it fetches tags, pulls the explicit tracked remote branch with `--ff-only`, and reruns `./install` so host skills stay current. `lope update --dry-run` previews the commands. `lope update --host <host>` still updates code first, then scopes the installer refresh to that host. If you only want an install-only refresh, run `~/.lope/install --host <host>` directly. `lope upgrade` is kept as a legacy alias. PyPI publishing is not live yet, so the git checkout path is the supported server install/update path.
+`lope update` auto-detects the install method. For the normal `~/.lope` git checkout it fetches tags, pulls the explicit tracked remote branch with `--ff-only`, and reruns `./install` so host skills stay current. `lope update --dry-run` previews the commands. `lope update --host <host>` still updates code first, then scopes the installer refresh to that host. If you only want an install-only refresh, run `~/.lope/install --host <host>` directly. `lope upgrade` is kept as a legacy alias. For a virtualenv package, `lope update` upgrades the package and refreshes host files; for pipx use `pipx upgrade lope-agent` followed by `lope install --host <host>`.
 
 ## Step 4 — Suggest a shell alias
 

@@ -276,7 +276,7 @@ def run_update(
             if not dry_run and not allow_dirty:
                 raise UpdateError(
                     "tracked changes would make `git pull --ff-only` unsafe; "
-                    "commit/stash them or pass --allow-dirty"
+                    "preserve and commit them or pass --allow-dirty"
                 )
         if dry_run:
             emit("# DRY RUN — would execute:")
@@ -294,16 +294,17 @@ def run_update(
             emit("# host skills refreshed")
         return UpdateResult(resolved_method, git_root, before, after, commands, False)
 
-    if host != "all":
-        raise UpdateError("`--host` only applies to git checkout updates")
-    if not reinstall_skills:
-        emit("# note: --skip-install is already implicit for pip updates")
+    if reinstall_skills:
+        _validate_host(host)
     if allow_dirty:
         raise UpdateError("`--allow-dirty` only applies to git checkout updates")
     before = _python_version(None)
     commands = _pip_commands()
+    if reinstall_skills:
+        # A fresh interpreter resolves resources from the newly installed wheel,
+        # never from modules imported before pip replaced this installation.
+        commands.append([sys.executable, "-m", "lope", "install", "--host", host])
     emit("# install method: pip (lope-agent)")
-    emit("# WARNING: PyPI publishing is not live yet (Trusted Publisher pending); git checkout is the supported path")
     if dry_run:
         emit("# DRY RUN — would execute:")
         _emit_commands(emit, commands)
@@ -316,5 +317,5 @@ def run_update(
     emit("# version delta:")
     emit(f"  before: lope {before}")
     emit(f"  after:  lope {after}")
-    emit("# pip update complete; host-skill refresh is available from the git checkout installer")
+    emit("# pip update complete" + ("; host skills refreshed" if reinstall_skills else "; host install skipped"))
     return UpdateResult(resolved_method, None, before, after, commands, False)

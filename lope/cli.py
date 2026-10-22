@@ -713,7 +713,7 @@ def main():
             ),
         )
         p.add_argument("--skip-install", action="store_true",
-                       help="Do not rerun ./install after a git update")
+                       help="Do not refresh host integrations after updating")
         p.add_argument("--allow-dirty", action="store_true",
                        help="Proceed even when tracked git files are modified")
 
@@ -1591,21 +1591,12 @@ def _memory_forget(store, args):
 
 def _cmd_docs():
     """Print the complete lope reference (docs/reference.md) to stdout."""
-    from pathlib import Path
-    here = Path(__file__).resolve().parent.parent  # lope/ -> repo root
-    ref = here / "docs" / "reference.md"
-    if not ref.is_file():
-        # Fallback: try ~/.lope if we're imported from a non-repo install
-        home_ref = Path.home() / ".lope" / "docs" / "reference.md"
-        if home_ref.is_file():
-            ref = home_ref
-        else:
-            print(
-                f"ERROR: lope reference not found at {ref} or {home_ref}.\n"
-                f"Reinstall lope: https://github.com/traylinx/lope",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    from .resources import resource_root
+    try:
+        ref = resource_root() / "docs" / "reference.md"
+    except FileNotFoundError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
     print(ref.read_text(encoding="utf-8"))
 
 
@@ -1814,26 +1805,29 @@ def _cmd_configure():
 def _cmd_install(host: str):
     """Install SKILL.md files into CLI host skill directories.
 
-    Canonical installer is the bash script at repo root (./install).
+    Canonical installer is bundled in wheels and lives at source repo root.
     This Python command delegates to it for consistency.
     """
-    pkg_dir = Path(__file__).parent.parent
-    install_script = pkg_dir / "install"
-    if not install_script.exists():
-        print(f"Install script not found at {install_script}")
-        print("Use: git clone https://github.com/traylinx/lope.git ~/.lope && ~/.lope/install")
+    from .resources import resource_root
+    pkg_dir = Path(__file__).resolve().parent.parent
+    try:
+        assets = resource_root()
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
         sys.exit(1)
     import subprocess
-    args = [str(install_script)]
+    args = ["bash", str(assets / "install")]
     if host != "all":
         args.extend(["--host", host])
+    env = dict(os.environ, LOPE_ENGINE_ROOT=str(pkg_dir), LOPE_PYTHON=sys.executable)
+    env["LOPE_PACKAGED_INSTALL"] = "1" if assets != pkg_dir else "0"
     try:
-        proc = subprocess.run(args, check=False, timeout=600)
+        proc = subprocess.run(args, check=False, timeout=600, env=env)
     except subprocess.TimeoutExpired:
         print("Install failed: installer exceeded 600s maintenance timeout", file=sys.stderr)
         sys.exit(124)
     except OSError as exc:
-        print(f"Install failed: cannot execute {install_script}: {exc}", file=sys.stderr)
+        print(f"Install failed: cannot execute {assets / 'install'}: {exc}", file=sys.stderr)
         sys.exit(1)
     sys.exit(proc.returncode)
 

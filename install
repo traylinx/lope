@@ -15,8 +15,12 @@
 set -euo pipefail
 
 LOPE_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENGINE_ROOT="${LOPE_ENGINE_ROOT:-$LOPE_DIR}"
+PYTHON_BIN="${LOPE_PYTHON:-python3}"
 SKILLS_DIR="$LOPE_DIR/skills"
 COMMANDS_DIR="$LOPE_DIR/commands"
+LOPE_INSTALL_BACKUP_DIR="${LOPE_INSTALL_BACKUP_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/lope/install-backups/$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+export LOPE_INSTALL_BACKUP_DIR
 # Headroom is opt-in: its Docker fallback executes a remote install script, so
 # it must never run on the default path. Enable with --with-headroom / =1.
 INSTALL_HEADROOM="${LOPE_INSTALL_HEADROOM:-0}"
@@ -65,12 +69,19 @@ for i in "${!ARGS[@]}"; do
   esac
 done
 
-# Idempotent replace: remove whatever is at $target (symlink, dir, or file).
+# Preserve existing host content before replacement; never discard custom skills.
 replace_target() {
   local target="$1"
-  if [ -L "$target" ]; then rm -f "$target"
-  elif [ -d "$target" ]; then rm -rf "$target"
-  elif [ -e "$target" ]; then rm -f "$target"
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    local relative="${target#"$HOME"/}"
+    local backup="$LOPE_INSTALL_BACKUP_DIR/$relative"
+    if [ "$relative" = "$target" ] || [ -e "$backup" ] || [ -L "$backup" ]; then
+      echo "ERROR: cannot safely back up $target" >&2
+      return 1
+    fi
+    mkdir -p "$(dirname "$backup")"
+    mv "$target" "$backup"
+    echo "  preserved: $backup"
   fi
 }
 
@@ -134,7 +145,7 @@ install_opencode() {
   local stale="$HOME/.config/opencode/command"
   if [ -d "$stale" ]; then
     for f in "$stale"/lope*.md "$stale"/using-lope.md; do
-      [ -e "$f" ] && rm -f "$f"
+      if [ -e "$f" ] || [ -L "$f" ]; then replace_target "$f"; fi
     done
   fi
   for md in "$COMMANDS_DIR"/opencode/*.md; do
@@ -499,7 +510,7 @@ if [ "${LOPE_INSTALL_ONE_HOST:-0}" = "1" ]; then
 fi
 
 echo ""
-echo "Lope v0.17.0 — Installing skills and commands"
+echo "Lope v0.17.1 — Installing skills and commands"
 echo "─────────────────────────────────────────────"
 echo ""
 
@@ -531,7 +542,7 @@ install_headroom
 
 echo ""
 echo "Verifying lope engine..."
-if python3 -c "import sys; sys.path.insert(0, '$LOPE_DIR'); import lope; print('  OK — lope v' + lope.__version__)" 2>/dev/null; then
+if "$PYTHON_BIN" -c "import sys; sys.path.insert(0, sys.argv[1]); import lope; print('  OK — lope v' + lope.__version__)" "$ENGINE_ROOT" 2>/dev/null; then
   :
 else
   echo "  WARNING: python3 import check failed"
@@ -561,12 +572,20 @@ echo "IMPORTANT: Restart your CLI to pick up the new slash commands —"
 echo "every host caches its skill list at session start."
 echo ""
 echo "Next steps:"
-echo "  1. Configure validators:  PYTHONPATH=$LOPE_DIR python3 -m lope configure"
-echo "  2. Check status:          PYTHONPATH=$LOPE_DIR python3 -m lope status"
+if [ "${LOPE_PACKAGED_INSTALL:-0}" = "1" ]; then
+  echo "  1. Configure validators:  lope configure"
+  echo "  2. Check status:          lope status"
+else
+  echo "  1. Configure validators:  PYTHONPATH=$ENGINE_ROOT python3 -m lope configure"
+  echo "  2. Check status:          PYTHONPATH=$ENGINE_ROOT python3 -m lope status"
+fi
 if [ "$INSTALL_HEADROOM" = "1" ]; then
   echo "  3. Verify Headroom:       headroom mcp status"
 else
   echo "  3. Optional Headroom:     $LOPE_DIR/install --with-headroom"
 fi
-echo "  4. Alias for convenience: alias lope='PYTHONPATH=$LOPE_DIR python3 -m lope'"
+if [ "${LOPE_PACKAGED_INSTALL:-0}" != "1" ]; then
+  echo "  4. Alias for convenience: alias lope='PYTHONPATH=$ENGINE_ROOT python3 -m lope'"
+fi
+echo "Existing host files, if any, were preserved under: $LOPE_INSTALL_BACKUP_DIR"
 echo ""

@@ -13,7 +13,7 @@ Execute a lope sprint doc in order, phase by phase, with validator-in-the-loop r
 
 3. **Run execute**:
 ```bash
-PYTHONPATH=~/.lope python3 -m lope execute "$SPRINT_DOC_PATH"
+lope execute "$SPRINT_DOC_PATH"
 ```
 
 4. **Per-phase flow**:

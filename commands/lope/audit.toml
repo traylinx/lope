@@ -11,7 +11,7 @@ Audit a completed lope sprint and produce a scorecard.
 
 2. **Run audit**:
 ```bash
-PYTHONPATH=~/.lope python3 -m lope audit "$SPRINT_DOC_PATH"
+lope audit "$SPRINT_DOC_PATH"
 ```
 
 3. **Present the scorecard**: per-phase verdict, confidence, duration, overall status, and the journal path.

@@ -16,7 +16,7 @@ Inject the authoritative lope reference into the current session and answer the 
 lope docs
 ```
 
-If `lope` is not on PATH, fallback:
+Only for a verified Git checkout at `~/.lope`, if `lope` is not on PATH, use:
 
 ```bash
 PYTHONPATH=~/.lope python3 -m lope docs
@@ -32,3 +32,5 @@ PYTHONPATH=~/.lope python3 -m lope docs
 
 - Do not paraphrase from memory and skip `lope docs`. Always pull fresh.
 - Do not use this for invoking lope. Use `/lope-negotiate`, `/lope-execute`, `/lope-implement`, `/lope-audit`. This is read-only documentation.
+
+For a pipx install with a missing command, run `pipx ensurepath` and restart the shell. Do not redirect a packaged install to an unrelated Git checkout.

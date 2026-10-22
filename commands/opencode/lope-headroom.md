@@ -8,16 +8,6 @@ agent: build
 
 Use this when the user asks to install, verify, configure, or debug Headroom with Lope.
 
-Read the source skill first:
-
-```bash
-cat ~/.lope/skills/lope-headroom/SKILL.md
-```
-
-If `~/.lope` is not the active checkout, use the repo-local file:
-
-```bash
-cat skills/lope-headroom/SKILL.md
-```
+Read the sibling bundled skill at `../../skills/lope-headroom/SKILL.md`, relative to this command file's resolved path. For a Git install use `skills/lope-headroom/SKILL.md` in that checkout. Do not assume a separate `~/.lope` source install exists.
 
 Follow that skill's decision tree. Do not invent Headroom flags. For ordinary Lope updates, use `lope update`; Headroom is optional and stays opt-in unless the user asks for it.

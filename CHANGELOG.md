@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.17.1 — Complete Python packages and preservation-aware installation
+
+- Bundle skills, host command wrappers, installer, and documentation in wheels; source archives retain the same canonical assets. `lope install` and `lope docs` resolve resources from the running version instead of assuming a Git checkout.
+- Bind installer engine checks to the active interpreter; invoke Bash explicitly and report missing resources, launch errors, and maintenance timeouts without masking the original failure.
+- Use the active `lope` executable in host commands rather than assuming a Git checkout. Closed progress streams no longer kill owner heartbeats or mask completed calls; registry liveness reporting continues.
+- Preserve existing host directories, files, and dangling symlinks before replacement. Config, credentials, and runtime history remain untouched; symlink backups do not snapshot external targets.
+- Refresh integrations after virtualenv pip upgrades using a fresh interpreter. Respect `--host` and `--skip-install`; stop before host installation when pip fails. Document the explicit pipx upgrade-plus-install flow.
+- Add isolated, offline wheel/sdist qualification, repeat-install and upgrade checks, and resource/error regression tests. CI verifies artifacts outside the source checkout before publishing.
+- Build distribution artifacts once per release and promote the same verified bytes to enabled destinations through scoped trusted publishers. TestPyPI remains an independent opt-in, not a prerequisite or an implied test result.
+
 ## 0.17.0 — Review runner reliability
 
 - Recognize native Agy headless tool-permission denials before empty-output parsing, diagnostic clipping or accepting preparatory stdout as a review. The terminal `tool_permission_denied` outcome does not retry, grant permissions or trigger infrastructure writer failover.

@@ -13,7 +13,7 @@ When this skill is invoked, you (the agent) should:
    lope docs
    ```
 
-   If `lope` is not on `PATH`, use the fallback:
+   Only for a verified Git checkout at `~/.lope`, if `lope` is not on `PATH`, use:
 
    ```bash
    PYTHONPATH=~/.lope python3 -m lope docs
@@ -35,7 +35,7 @@ When this skill is invoked, you (the agent) should:
 
 4. **If the user asks about something not in the reference**, say so explicitly and point them to:
    - `lope <mode> --help` for flags not covered
-   - `~/.lope/docs/samples.md` for 8 end-to-end walkthroughs
+   - https://github.com/traylinx/lope/blob/main/docs/samples.md for 8 end-to-end walkthroughs
    - https://github.com/traylinx/lope/issues for bugs
 
 ## Why this skill exists
@@ -47,3 +47,5 @@ The lope reference is versioned with lope itself. Running `lope docs` guarantees
 - **Do not paraphrase from memory** and skip running `lope docs`. The output is <6K tokens and fits trivially in context. Always pull it fresh.
 - **Do not use this skill for invoking lope** — that's what `/lope-negotiate`, `/lope-execute`, `/lope-implement`, `/lope-audit`, and the `using-lope` auto-trigger skill are for. This skill is read-only documentation.
 - **Do not write wrapper scripts around lope**. The reference says so; read it.
+
+For a pipx install with a missing command, run `pipx ensurepath` and restart the shell. Do not redirect a packaged install to an unrelated Git checkout.

@@ -177,3 +177,35 @@ def test_real_cli_run_deadline_exhaustion_exits_124_and_closes_registry(tmp_path
     assert payload["partial"] is True
     assert str(payload["reason"]).startswith("run_budget_exhausted")
     assert not list((home / "runs" / "active").glob("*.json"))
+
+
+
+def test_progress_closed_stream_keeps_owner_heartbeats():
+    import io
+    from types import SimpleNamespace
+    from lope.progress import ProgressReporter
+    from lope.runtime import RunBudget
+    beats = []
+    stream = io.StringIO()
+    stream.close()
+    registry = SimpleNamespace(heartbeat=lambda *a, **kw: beats.append(a))
+    reporter = ProgressReporter(RunBudget(mode="ask", run_timeout=60),
+                                stream=stream, registry=registry, emit=True)
+    reporter.heartbeat()
+    reporter.heartbeat()
+    assert len(beats) == 2
+    assert reporter.emit is False
+
+
+def test_progress_broken_pipe_does_not_mask_completed_call():
+    from lope.progress import ProgressReporter
+    from lope.runtime import RunBudget
+    class ClosedPipe:
+        def write(self, text):
+            raise BrokenPipeError("closed pipe")
+    reporter = ProgressReporter(RunBudget(mode="ask", run_timeout=60),
+                                stream=ClosedPipe(), emit=True)
+    reporter.call_started("fixture", "review")
+    reporter.call_finished("fixture", "ok")
+    assert reporter.emit is False
+    assert not reporter._active

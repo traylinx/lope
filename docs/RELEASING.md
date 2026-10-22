@@ -49,7 +49,7 @@ Copy this into the PR description (or into the commit body for a direct-to-main 
 
 ### Pre-flight
 
-- [ ] **Clean working tree.** `git status` shows no untracked lope files and no accidental stash.
+- [ ] **Reviewed working tree.** Account for every release change; preserve unrelated dirty/untracked operator state without staging it. No accidental stash.
 - [ ] **On `main`.** `git rev-parse --abbrev-ref HEAD` prints `main`. Never tag a release from a feature branch.
 - [ ] **Up to date.** `git pull --ff-only origin main` reports no changes pulled.
 - [ ] **CHANGELOG draft.** Write the new section at the top of `CHANGELOG.md` under `# Changelog`. Format: `## X.Y.Z — <one-line tagline>` followed by bullet points of what changed, grouped by the reader's interest (user-facing features first, install/docs fixes second, internals last).
@@ -68,7 +68,7 @@ Copy this into the PR description (or into the commit body for a direct-to-main 
 - [ ] **Status runs clean.** `PYTHONPATH=. python3 -m lope status` prints the validator table and config path.
 - [ ] **Tiny negotiate works.** `PYTHONPATH=. python3 -m lope negotiate --domain engineering --max-rounds 1 "rename a constant in one file"` runs end-to-end without a Python traceback. Validators may escalate — that's fine, we only care that the engine itself works.
 - [ ] **Tests pass.** Run the full `tests/` suite on supported CI interpreters (currently Python 3.9 and 3.12), lint, syntax, version sync and secret scan. No optional skip: the repository has a substantial regression suite.
-- [ ] **Packages verified.** Build wheel/sdist without publishing; check version metadata, changed modules, required docs and absence of local credentials/runtime artifacts.
+- [ ] **Packages verified.** Run `python -m build`, `python -m twine check dist/*`, then `python scripts/check-package.py dist/lope_agent-X.Y.Z-py3-none-any.whl --sdist dist/lope_agent-X.Y.Z.tar.gz`. Use a fresh output directory. This qualifies installation outside the checkout, eight host file layouts, backups, configuration preservation, repeated install and offline pip update. Add `--baseline-wheel <previous.whl>` for an actual previous-version migration. These are filesystem checks, not eight live AI-host sessions. Verify pipx separately with isolated `PIPX_HOME`/`PIPX_BIN_DIR`.
 - [ ] **Native adapter smoke.** Exercise changed provider paths with an approved bounded fixture. A keyless test is not native-provider proof; a successful fixture is not a universal permission guarantee.
 
 ### Commit and tag
@@ -77,6 +77,21 @@ Copy this into the PR description (or into the commit body for a direct-to-main 
 - [ ] **Commit with a release body.** Subject: `vX.Y.Z — <tagline>`. Body: the CHANGELOG section pasted verbatim (minus the `## X.Y.Z —` header). Use a HEREDOC, not inline `-m`.
 - [ ] **Tag annotated, not lightweight.** `git tag -a vX.Y.Z -m "vX.Y.Z — <tagline>"`. Lightweight tags don't carry metadata and break GitHub's release UI.
 - [ ] **Push main first; verify CI for that exact commit before publishing the tag.** Only after explicit publication approval and green CI, push `vX.Y.Z`. Confirm the requested destination: GitHub-only means both package-publishing repository variables are unset/false; package publication additionally requires the matching trusted publishers and opt-in variables. Do not infer readiness from an earlier branch/test run.
+
+### Artifact promotion and index verification
+
+The `publish.yml` build job checks tag/version agreement, builds wheel and sdist once,
+runs package qualification, and uploads one immutable workflow artifact. Enabled
+PyPI/TestPyPI jobs download those same bytes; they never rebuild. TestPyPI is optional
+and independently authorized. When skipped, say so; never claim a TestPyPI rehearsal.
+The PyPI publisher must match owner `traylinx`, repository `lope`, workflow `publish.yml`,
+and environment `pypi` (`testpypi` on the separate test index). Keep OIDC write permission
+only on upload jobs. Never store browser cookies, passwords, or long-lived upload tokens
+in source, logs, or workflow artifacts.
+
+After upload, compare public index JSON digests with the workflow artifact, test a
+fresh installation from the public index outside the checkout, and use the identical
+wheel/sdist for GitHub release assets. An upload success is not an install test.
 
 ### Post-push verification
 

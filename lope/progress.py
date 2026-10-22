@@ -76,20 +76,16 @@ class ProgressReporter:
             snapshot = self.budget.snapshot()
             actual = snapshot["actual"]
             forecast = snapshot["forecast"]["calls"] or actual["calls"]
-            print(
+            self._write(
                 f"progress: {stage} · {validator} {outcome or 'finished'} · "
                 f"{actual['completed_calls']}/{forecast} calls · "
                 f"{snapshot['timing']['elapsed_seconds']:.1f}s elapsed",
-                file=self.stream,
-                flush=True,
             )
 
     def retry(self, validator: str, delay: float, reason: str) -> None:
         if self.emit:
-            print(
+            self._write(
                 f"progress: retry {validator} in {delay:.2f}s · {reason}",
-                file=self.stream,
-                flush=True,
             )
 
     def heartbeat(self) -> None:
@@ -105,13 +101,20 @@ class ProgressReporter:
         with self._lock:
             active = ",".join(sorted(self._active)) or "none"
             stage = self._stage
-        print(
+        self._write(
             f"heartbeat: {stage} · {timing['elapsed_seconds']:.1f}s elapsed · "
             f"{remaining_text} remaining · {actual['completed_calls']}/{forecast} calls · "
             f"active={active}",
-            file=self.stream,
-            flush=True,
         )
+
+    def _write(self, message: str) -> None:
+        try:
+            print(message, file=self.stream, flush=True)
+        except (OSError, ValueError):
+            # A closed capture/pipe must not kill owner liveness reporting or
+            # turn a completed provider call into a failure. Registry heartbeats
+            # continue even when the optional human-readable stream disappears.
+            self.emit = False
 
     def _heartbeat_owner(self) -> None:
         if self.registry is None:

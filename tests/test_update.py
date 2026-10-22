@@ -238,7 +238,10 @@ def test_pip_update_dry_run_plans_pip_upgrade(tmp_path, monkeypatch):
     result = run_update(method="pip", dry_run=True, root=tmp_path, emit=lines.append)
 
     assert result.method == "pip"
-    assert result.commands == [[sys.executable, "-m", "pip", "install", "--upgrade", "lope-agent"]]
+    assert result.commands == [
+        [sys.executable, "-m", "pip", "install", "--upgrade", "lope-agent"],
+        [sys.executable, "-m", "lope", "install", "--host", "all"],
+    ]
     assert "pip install --upgrade lope-agent" in "\n".join(lines)
 
 
@@ -246,7 +249,6 @@ def test_pip_update_rejects_git_only_flags(tmp_path, monkeypatch):
     monkeypatch.setattr(update, "_python_version", lambda root=None: "1.2.3")
 
     cases = [
-        {"host": "codex"},
         {"allow_dirty": True},
     ]
     for kwargs in cases:
@@ -258,11 +260,11 @@ def test_pip_update_rejects_git_only_flags(tmp_path, monkeypatch):
             raise AssertionError(f"expected pip mode to reject {kwargs}")
 
 
-def test_pip_update_skip_install_is_noop_note(tmp_path, monkeypatch):
+def test_pip_update_skip_install_omits_skill_refresh(tmp_path, monkeypatch):
     monkeypatch.setattr(update, "_python_version", lambda root=None: "1.2.3")
     lines = []
 
-    run_update(
+    result = run_update(
         method="pip",
         dry_run=True,
         root=tmp_path,
@@ -270,7 +272,38 @@ def test_pip_update_skip_install_is_noop_note(tmp_path, monkeypatch):
         emit=lines.append,
     )
 
-    assert "--skip-install is already implicit" in "\n".join(lines)
+    assert result.commands == [[sys.executable, "-m", "pip", "install", "--upgrade", "lope-agent"]]
+
+
+def test_pip_update_refreshes_selected_host_after_upgrade(tmp_path, monkeypatch):
+    monkeypatch.setattr(update, "_python_version", lambda root=None: "1.2.3")
+    executed = []
+    monkeypatch.setattr(update, "_run", lambda cmd, cwd=None: executed.append(cmd))
+    result = run_update(method="pip", host="codex", root=tmp_path, emit=lambda _: None)
+    assert executed == result.commands
+    assert executed[-1] == [sys.executable, "-m", "lope", "install", "--host", "codex"]
+
+
+def test_pip_update_invalid_host_never_runs_pip(tmp_path, monkeypatch):
+    import pytest
+    executed = []
+    monkeypatch.setattr(update, "_run", lambda cmd, cwd=None: executed.append(cmd))
+    with pytest.raises(UpdateError, match="unknown install host"):
+        run_update(method="pip", host="badhost", root=tmp_path, emit=lambda _: None)
+    assert executed == []
+
+
+def test_pip_update_failure_does_not_refresh_skills(tmp_path, monkeypatch):
+    import pytest
+    monkeypatch.setattr(update, "_python_version", lambda root=None: "1.2.3")
+    executed = []
+    def fail(cmd, cwd=None):
+        executed.append(cmd)
+        raise UpdateError("fixture upgrade failed")
+    monkeypatch.setattr(update, "_run", fail)
+    with pytest.raises(UpdateError, match="upgrade failed"):
+        run_update(method="pip", root=tmp_path, emit=lambda _: None)
+    assert len(executed) == 1 and "pip" in executed[0]
 
 
 def test_update_and_upgrade_help_are_registered():

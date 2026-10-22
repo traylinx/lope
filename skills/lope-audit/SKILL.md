@@ -18,7 +18,7 @@ This skill is invoked **two ways**:
 2. Run the audit:
 
 ```bash
-PYTHONPATH=~/.lope python3 -m lope audit "$SPRINT_PATH"
+lope audit "$SPRINT_PATH"
 ```
 
 3. Present the scorecard to the user
@@ -29,7 +29,7 @@ PYTHONPATH=~/.lope python3 -m lope audit "$SPRINT_PATH"
 - `--no-journal` — skip writing to the lope journal at `~/.lope/journal/YYYY_MM_DD.md`
 
 ```bash
-PYTHONPATH=~/.lope python3 -m lope audit "$SPRINT_PATH" --no-journal
+lope audit "$SPRINT_PATH" --no-journal
 ```
 
 ## Scorecard format
