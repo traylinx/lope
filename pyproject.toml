@@ -53,6 +53,9 @@ packages = ["lope"]
 "CHANGELOG.md" = "lope/_assets/CHANGELOG.md"
 
 [tool.hatch.build.targets.sdist]
+# Unanchored README/LICENSE include globs also match vendored editor packages.
+# Keep local tooling and operator state out even when those files match a glob.
+exclude = ["/.opencode", "/node_modules", "/lope-runs"]
 include = [
     "lope/",
     "skills/",

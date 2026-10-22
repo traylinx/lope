@@ -3,6 +3,7 @@
 ## 0.17.2 — Publishing metadata compatibility
 
 - Update the SHA-pinned PyPA publisher to v1.14.3 and align artifact-check Twine/Packaging versions with its runtime. The previous action rejected Metadata-Version 2.5 before upload, despite current local and CI validation passing.
+- Exclude local editor dependencies and operator state from source archives; reject accidental inclusions in artifact checks. Broad README/LICENSE globs previously picked up vendored editor documentation in local builds (not clean CI builds).
 - Preserve the v0.17.1 tag unchanged. No 0.17.1 package was uploaded to PyPI; this patch carries the complete packaging and installation fixes below. TestPyPI remains disabled.
 
 ## 0.17.1 — Complete Python packages and preservation-aware installation

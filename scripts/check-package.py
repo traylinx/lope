@@ -50,6 +50,11 @@ def inspect(wheel, sdist):
     if sdist:
         with tarfile.open(sdist) as archive:
             members = {n.split("/", 1)[1]: n for n in archive.getnames() if "/" in n}
+            for name in members:
+                check(not any(p in name.split("/") for p in
+                              (".opencode", "node_modules", "lope-runs", ".env",
+                               "config.json", "memory.db", "latency.json")),
+                      f"local tooling or private state in sdist: {name}")
             for name, content in assets.items():
                 check(name in members, f"sdist missing {name}")
                 check(archive.extractfile(members[name]).read() == content,
